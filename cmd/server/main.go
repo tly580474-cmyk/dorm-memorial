@@ -16,6 +16,7 @@ import (
 	"dorm-memorial/internal/identity"
 	"dorm-memorial/internal/storage"
 	"dorm-memorial/internal/storage/alist"
+	storagecache "dorm-memorial/internal/storage/cache"
 )
 
 func main() {
@@ -62,6 +63,14 @@ func main() {
 		}
 		objects = alistClient
 		logger.Info("storage_ready", "provider", "alist", "root", cfg.AListRoot)
+		if cfg.MediaCacheMaxBytes > 0 {
+			objects, err = storagecache.New(objects, cfg.MediaCacheDir, cfg.MediaCacheMaxBytes)
+			if err != nil {
+				logger.Error("media_cache_initialization_failed", "error", err)
+				os.Exit(1)
+			}
+			logger.Info("media_cache_ready", "directory", cfg.MediaCacheDir, "max_bytes", cfg.MediaCacheMaxBytes)
+		}
 	} else {
 		logger.Warn("storage_disabled", "reason", "AList credentials are not configured")
 	}

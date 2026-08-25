@@ -210,6 +210,18 @@ a { color: inherit; text-decoration: none; }
 .avatar-editor span { color: var(--muted); font-size: 13px; }
 .avatar-editor .secondary-button { min-height: 44px; margin-top: 4px; }
 .avatar-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.avatar-editor.is-cropping { grid-template-columns: 1fr; }
+.avatar-crop-workspace { width: 100%; display: grid; justify-items: center; gap: 16px; }
+.avatar-crop-workspace > div:first-child { width: 100%; display: grid; gap: 4px; }
+.avatar-crop-frame { position: relative; width: min(300px, 100%); aspect-ratio: 1; overflow: hidden; border-radius: 14px; background: #2f2a24; box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
+.avatar-crop-frame img { position: absolute; max-width: none; object-fit: fill; user-select: none; }
+.avatar-crop-frame > span { position: absolute; inset: 0; border: 2px solid rgba(255,255,255,.9); border-radius: 50%; box-shadow: 0 0 0 80px rgba(25,22,19,.48); pointer-events: none; }
+.avatar-crop-controls { width: min(420px, 100%); display: grid; grid-template-columns: minmax(100px, auto) minmax(0, 1fr); align-items: center; gap: 9px 14px; }
+.avatar-crop-controls label { display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
+.avatar-crop-controls output { color: var(--muted); font-weight: 400; }
+.avatar-crop-controls input[type="range"] { width: 100%; min-height: 44px; accent-color: var(--primary); cursor: pointer; }
+.avatar-crop-controls select { min-height: 44px; padding: 0 10px; border: 1px solid #cfc4b5; border-radius: 9px; background: var(--surface); }
+.avatar-crop-workspace > .avatar-buttons { justify-content: center; }
 .detail-dialog { width: min(820px, 100%); max-height: calc(100vh - 40px); overflow: auto; padding: 28px; border-radius: 16px; background: var(--surface); box-shadow: 0 20px 56px rgba(30, 25, 20, .18); }
 .detail-dialog > header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 20px; }
 .detail-dialog h2 { margin: 0; font: 700 29px/1.3 "Noto Serif SC", "Songti SC", serif; }
@@ -296,6 +308,7 @@ a { color: inherit; text-decoration: none; }
   .detail-dialog { width: 100%; max-height: 94vh; padding: 24px 18px max(24px, env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }
   .avatar-editor { grid-template-columns: 72px minmax(0, 1fr); padding: 14px; }
   .avatar-preview { width: 72px; height: 72px; }
+  .avatar-crop-controls { grid-template-columns: 1fr; gap: 3px; }
   .detail-actions { justify-content: space-between; }
   .comment-row header { align-items: flex-start; flex-direction: column; gap: 0; }
   .composer-dialog { width: 100%; max-height: 92vh; padding: 24px 18px max(24px, env(safe-area-inset-bottom)); border-radius: 18px 18px 0 0; }

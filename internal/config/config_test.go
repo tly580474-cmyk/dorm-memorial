@@ -21,6 +21,17 @@ func TestEnvironmentOverridesFileValues(t *testing.T) {
 	if cfg.Address != "127.0.0.1:9090" {
 		t.Fatalf("address=%q", cfg.Address)
 	}
+	if cfg.MediaCacheMaxBytes != 2<<30 || cfg.MediaCacheDir != "data/media-cache" {
+		t.Fatalf("unexpected cache defaults: dir=%q bytes=%d", cfg.MediaCacheDir, cfg.MediaCacheMaxBytes)
+	}
+}
+
+func TestRejectsInvalidMediaCacheSize(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("APP_MEDIA_CACHE_MAX_BYTES", "2GiB")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected non-integer cache size to fail")
+	}
 }
 
 func TestProductionRequiresSecureCookie(t *testing.T) {

@@ -11,22 +11,24 @@ import (
 )
 
 type Config struct {
-	Environment       string
-	Address           string
-	DatabasePath      string
-	FrontendDir       string
-	PublicURL         string
-	CookieSecure      bool
-	SessionTTL        time.Duration
-	BootstrapUsername string
-	BootstrapEmail    string
-	BootstrapPassword string
-	BootstrapNickname string
-	AListBaseURL      string
-	AListUsername     string
-	AListPassword     string
-	AListToken        string
-	AListRoot         string
+	Environment        string
+	Address            string
+	DatabasePath       string
+	FrontendDir        string
+	PublicURL          string
+	CookieSecure       bool
+	SessionTTL         time.Duration
+	BootstrapUsername  string
+	BootstrapEmail     string
+	BootstrapPassword  string
+	BootstrapNickname  string
+	AListBaseURL       string
+	AListUsername      string
+	AListPassword      string
+	AListToken         string
+	AListRoot          string
+	MediaCacheDir      string
+	MediaCacheMaxBytes int64
 }
 
 func Load() (Config, error) {
@@ -49,7 +51,13 @@ func Load() (Config, error) {
 		AListPassword:     env(fileValues, "ALIST_PASSWORD", ""),
 		AListToken:        strings.TrimSpace(env(fileValues, "ALIST_TOKEN", "")),
 		AListRoot:         strings.TrimSpace(env(fileValues, "ALIST_ROOT", "/")),
+		MediaCacheDir:     strings.TrimSpace(env(fileValues, "APP_MEDIA_CACHE_DIR", "data/media-cache")),
 	}
+	cacheMaxBytes, err := strconv.ParseInt(env(fileValues, "APP_MEDIA_CACHE_MAX_BYTES", "2147483648"), 10, 64)
+	if err != nil || cacheMaxBytes < 0 {
+		return Config{}, errors.New("APP_MEDIA_CACHE_MAX_BYTES must be a non-negative integer")
+	}
+	cfg.MediaCacheMaxBytes = cacheMaxBytes
 
 	secure, err := strconv.ParseBool(env(fileValues, "APP_COOKIE_SECURE", "false"))
 	if err != nil {
@@ -66,8 +74,8 @@ func Load() (Config, error) {
 	if cfg.Environment == "production" && !cfg.CookieSecure {
 		return Config{}, errors.New("APP_COOKIE_SECURE must be true in production")
 	}
-	if cfg.DatabasePath == "" || cfg.Address == "" {
-		return Config{}, errors.New("APP_DATABASE_PATH and APP_ADDRESS are required")
+	if cfg.DatabasePath == "" || cfg.Address == "" || (cfg.MediaCacheMaxBytes > 0 && cfg.MediaCacheDir == "") {
+		return Config{}, errors.New("APP_DATABASE_PATH, APP_ADDRESS, and enabled cache directory are required")
 	}
 	bootstrapSet := cfg.BootstrapUsername != "" || cfg.BootstrapEmail != "" || cfg.BootstrapPassword != ""
 	if bootstrapSet && (cfg.BootstrapUsername == "" || cfg.BootstrapEmail == "" || len(cfg.BootstrapPassword) < 12) {

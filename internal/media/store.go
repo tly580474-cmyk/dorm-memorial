@@ -281,10 +281,12 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	}
 	if preview && previewPath != "" {
 		body, err := s.objects.Open(ctx, previewPath)
-		if err != nil {
-			return Content{}, fmt.Errorf("open preview object: %w", errors.Join(ErrStorageUnavailable, err))
+		if err == nil {
+			return Content{Body: body, StatusCode: http.StatusOK, MimeType: "image/jpeg", Filename: filename, ContentLength: -1}, nil
 		}
-		return Content{Body: body, StatusCode: http.StatusOK, MimeType: "image/jpeg", Filename: filename, ContentLength: -1}, nil
+		// AList-backed drivers can acknowledge a newly written preview before its
+		// raw URL becomes readable. The original remains a valid display source,
+		// so a transient preview failure must not leave avatars or cards broken.
 	}
 	if byteRange != "" {
 		if ranged, ok := s.objects.(storage.RangeStorage); ok {

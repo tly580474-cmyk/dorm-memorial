@@ -37,6 +37,23 @@ const profileMessage = ref('')
 const avatarInput = ref<HTMLInputElement | null>(null)
 const avatarBusy = ref(false)
 const avatarProgress = ref(0)
+const brokenAvatarIDs = ref(new Set<string>())
+const avatarCropFrame = ref<HTMLElement | null>(null)
+const avatarCropFrameSize = ref(300)
+const avatarCrop = reactive({ sourceURL: '', filename: '', imageWidth: 0, imageHeight: 0, zoom: 1, x: 50, y: 50, outputSize: 512 })
+const avatarCropStyle = computed(() => {
+  if (!avatarCrop.imageWidth || !avatarCrop.imageHeight) return {}
+  const frame = avatarCropFrameSize.value
+  const baseScale = Math.max(frame / avatarCrop.imageWidth, frame / avatarCrop.imageHeight)
+  const width = avatarCrop.imageWidth * baseScale * avatarCrop.zoom
+  const height = avatarCrop.imageHeight * baseScale * avatarCrop.zoom
+  return {
+    width: `${width}px`,
+    height: `${height}px`,
+    left: `${-(width - frame) * avatarCrop.x / 100}px`,
+    top: `${-(height - frame) * avatarCrop.y / 100}px`,
+  }
+})
 const sessions = ref<Session[]>([])
 const inviteCodes = ref<string[]>([])
 const inviteCount = ref(5)
@@ -170,6 +187,7 @@ async function openProfile() {
 }
 
 function closeProfile() {
+  resetAvatarCrop()
   profileOpen.value = false
   nextTick(() => profileTrigger?.focus())
 }
@@ -211,23 +229,92 @@ function avatarURL(value: string) {
   return value ? mediaContentURL(value, true) : ''
 }
 
+function avatarVisible(value: string) {
+  return Boolean(value) && !brokenAvatarIDs.value.has(value)
+}
+
+function markAvatarBroken(value: string) {
+  brokenAvatarIDs.value = new Set([...brokenAvatarIDs.value, value])
+}
+
+function resetAvatarCrop() {
+  if (avatarCrop.sourceURL) URL.revokeObjectURL(avatarCrop.sourceURL)
+  Object.assign(avatarCrop, { sourceURL: '', filename: '', imageWidth: 0, imageHeight: 0, zoom: 1, x: 50, y: 50, outputSize: 512 })
+}
+
 async function handleAvatarInput(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
   if (!file || !user.value) return
-  if (!file.type.startsWith('image/') || file.type === 'image/svg+xml' || file.size <= 0 || file.size > 10 * 1024 * 1024) {
-    profileMessage.value = '头像请选择 10 MiB 以内的普通图片。'
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > 25 * 1024 * 1024) {
+    profileMessage.value = '头像请选择 25 MiB 以内的 JPEG、PNG 或 WebP 图片。'
     return
   }
+  resetAvatarCrop()
+  const sourceURL = URL.createObjectURL(file)
+  const image = new window.Image()
+  image.onload = () => {
+    avatarCrop.sourceURL = sourceURL
+    avatarCrop.filename = file.name
+    avatarCrop.imageWidth = image.naturalWidth
+    avatarCrop.imageHeight = image.naturalHeight
+    profileMessage.value = file.size > 2 * 1024 * 1024 ? '原图大于 2 MiB，确认裁剪后会压缩上传。' : ''
+    nextTick(() => { avatarCropFrameSize.value = avatarCropFrame.value?.clientWidth || 300 })
+  }
+  image.onerror = () => {
+    URL.revokeObjectURL(sourceURL)
+    profileMessage.value = '无法读取这张图片，请换一张重试。'
+  }
+  image.src = sourceURL
+}
+
+function canvasBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('无法生成头像图片')), 'image/jpeg', quality))
+}
+
+async function buildCroppedAvatar() {
+  const image = new window.Image()
+  image.src = avatarCrop.sourceURL
+  await image.decode()
+  const visibleSize = Math.min(avatarCrop.imageWidth, avatarCrop.imageHeight) / avatarCrop.zoom
+  const sourceX = (avatarCrop.imageWidth - visibleSize) * avatarCrop.x / 100
+  const sourceY = (avatarCrop.imageHeight - visibleSize) * avatarCrop.y / 100
+  const canvas = document.createElement('canvas')
+  canvas.width = avatarCrop.outputSize
+  canvas.height = avatarCrop.outputSize
+  const context = canvas.getContext('2d')
+  if (!context) throw new Error('当前浏览器无法处理图片')
+  context.fillStyle = '#fff'
+  context.fillRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(image, sourceX, sourceY, visibleSize, visibleSize, 0, 0, canvas.width, canvas.height)
+  let quality = .9
+  let blob = await canvasBlob(canvas, quality)
+  while (blob.size > 2 * 1024 * 1024 && quality > .55) {
+    quality -= .08
+    blob = await canvasBlob(canvas, quality)
+  }
+  if (blob.size > 2 * 1024 * 1024) throw new Error('压缩后仍超过 2 MiB，请选择较小的输出尺寸')
+  const baseName = avatarCrop.filename.replace(/\.[^.]+$/, '') || 'avatar'
+  return new File([blob], `${baseName}-${avatarCrop.outputSize}.jpg`, { type: 'image/jpeg' })
+}
+
+async function uploadCroppedAvatar() {
+  if (!avatarCrop.sourceURL || !user.value || avatarBusy.value) return
   avatarBusy.value = true
   avatarProgress.value = 0
   profileMessage.value = ''
+  let uploadedID = ''
   try {
-    const uploaded = await api.uploadMedia(file, crypto.randomUUID(), {}, (progress) => { avatarProgress.value = progress })
+    const file = await buildCroppedAvatar()
+    const uploaded = await api.uploadMedia(file, crypto.randomUUID(), { width: avatarCrop.outputSize, height: avatarCrop.outputSize }, (progress) => { avatarProgress.value = progress })
+    uploadedID = uploaded.media.id
     applyUser((await api.setAvatar(uploaded.media.id)).user)
+    brokenAvatarIDs.value = new Set([...brokenAvatarIDs.value].filter((id) => id !== uploaded.media.id))
+    resetAvatarCrop()
     profileMessage.value = '头像已更新'
   } catch (error) {
+    if (uploadedID) await api.deleteMedia(uploadedID).catch(() => undefined)
     profileMessage.value = error instanceof Error ? error.message : '头像上传失败'
   } finally {
     avatarBusy.value = false
@@ -640,7 +727,7 @@ async function copyInvites() {
     <header class="topbar">
       <button class="icon-button mobile-only" type="button" aria-label="打开菜单" @click="mobileMenuOpen = true"><Menu /></button>
       <a class="brand" href="#"><BookHeart :size="25" aria-hidden="true" /><span>妙妙小屋</span></a>
-      <div class="top-actions"><button class="icon-button" type="button" aria-label="查看通知"><Bell /></button><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="user.avatar_path" :src="avatarURL(user.avatar_path)" alt="" @error="user.avatar_path = ''" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
+      <div class="top-actions"><button class="icon-button" type="button" aria-label="查看通知"><Bell /></button><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
     </header>
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
@@ -657,11 +744,11 @@ async function copyInvites() {
       <p v-if="contentError" class="form-error content-alert" role="alert">{{ contentError }}</p>
       <section class="content-columns">
         <div class="feed-column">
-          <button class="quick-composer" type="button" @click="openComposer()"><span class="mini-avatar">{{ user.nickname.slice(0, 1) }}</span><span>想记录今天的什么？</span><FileEdit :size="20" aria-hidden="true" /></button>
+          <button class="quick-composer" type="button" @click="openComposer()"><span class="mini-avatar"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></span><span>想记录今天的什么？</span><FileEdit :size="20" aria-hidden="true" /></button>
           <div v-if="contentLoading" class="content-empty" role="status"><span class="loader"></span><span>正在读取回忆…</span></div>
           <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>投稿通过审核后，会出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
-            <header><span class="mini-avatar"><img v-if="post.author.avatar_path" :src="avatarURL(post.author.avatar_path)" alt="" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
+            <header><span class="mini-avatar"><img v-if="avatarVisible(post.author.avatar_path)" :src="avatarURL(post.author.avatar_path)" alt="" @error="markAvatarBroken(post.author.avatar_path)" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
             <p class="post-body">{{ post.body }}</p>
             <div v-if="post.media.length" class="post-media-grid">
               <figure v-for="item in post.media" :key="item.id">
@@ -749,7 +836,24 @@ async function copyInvites() {
     <div v-if="profileOpen" class="dialog-layer" role="presentation" @click.self="closeProfile">
       <section ref="profileDialog" class="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title" @keydown="trapProfileFocus">
         <header><div><p class="eyebrow">账号与个人资料</p><h2 id="profile-title">{{ user.nickname }}</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="closeProfile"><X /></button></header>
-        <section class="avatar-editor" aria-labelledby="avatar-editor-title"><div class="avatar-preview"><img v-if="user.avatar_path" :src="avatarURL(user.avatar_path)" :alt="`${user.nickname}的头像`" /><UserRound v-else :size="34" aria-hidden="true" /></div><div><strong id="avatar-editor-title">个人头像</strong><span>支持 JPEG、PNG、GIF 或 WebP，最大 10 MiB。</span><input ref="avatarInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp" @change="handleAvatarInput" /><div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="avatarInput?.click()">{{ avatarBusy ? `处理中 ${avatarProgress}%` : '选择新头像' }}</button><button v-if="user.avatar_path" type="button" class="text-danger" :disabled="avatarBusy" @click="clearAvatar">移除头像</button></div></div></section>
+        <section class="avatar-editor" :class="{ 'is-cropping': avatarCrop.sourceURL }" aria-labelledby="avatar-editor-title">
+          <template v-if="avatarCrop.sourceURL">
+            <div class="avatar-crop-workspace">
+              <div><strong id="avatar-editor-title">裁剪头像</strong><span>调整范围后生成正方形头像，大于 2 MiB 的原图会先压缩再上传。</span></div>
+              <div ref="avatarCropFrame" class="avatar-crop-frame" aria-label="头像裁剪预览"><img :src="avatarCrop.sourceURL" alt="待裁剪头像预览" :style="avatarCropStyle" /><span aria-hidden="true"></span></div>
+              <div class="avatar-crop-controls">
+                <label for="avatar-zoom">缩放 <output>{{ avatarCrop.zoom.toFixed(1) }}×</output></label><input id="avatar-zoom" v-model.number="avatarCrop.zoom" type="range" min="1" max="3" step="0.1" />
+                <label for="avatar-x">水平位置 <output>{{ avatarCrop.x }}%</output></label><input id="avatar-x" v-model.number="avatarCrop.x" type="range" min="0" max="100" step="1" />
+                <label for="avatar-y">垂直位置 <output>{{ avatarCrop.y }}%</output></label><input id="avatar-y" v-model.number="avatarCrop.y" type="range" min="0" max="100" step="1" />
+                <label for="avatar-size">输出尺寸</label><select id="avatar-size" v-model.number="avatarCrop.outputSize"><option :value="256">256 × 256</option><option :value="512">512 × 512</option><option :value="1024">1024 × 1024</option></select>
+              </div>
+              <div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="resetAvatarCrop">重新选择</button><button class="primary-button compact" type="button" :disabled="avatarBusy" @click="uploadCroppedAvatar"><UploadCloud :size="18" />{{ avatarBusy ? `上传中 ${avatarProgress}%` : '应用头像' }}</button></div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="avatar-preview"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" :alt="`${user.nickname}的头像`" @error="markAvatarBroken(user.avatar_path)" /><UserRound v-else :size="34" aria-hidden="true" /></div><div><strong id="avatar-editor-title">个人头像</strong><span>支持 JPEG、PNG 或 WebP，最大 25 MiB；上传前可裁剪。</span><input ref="avatarInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="handleAvatarInput" /><div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="avatarInput?.click()">选择新头像</button><button v-if="user.avatar_path" type="button" class="text-danger" :disabled="avatarBusy" @click="clearAvatar">移除头像</button></div></div>
+          </template>
+        </section>
         <form @submit.prevent="saveProfile">
           <div class="field-grid"><div class="field"><label for="profile-nickname">昵称</label><input id="profile-nickname" v-model.trim="profile.nickname" maxlength="40" required /></div><div class="field"><label for="bed-no">床号或位置</label><input id="bed-no" v-model.trim="profile.bed_no" maxlength="30" placeholder="例如 2 号床" /></div></div>
           <div class="field"><label for="bio">个人简介</label><textarea id="bio" v-model="profile.bio" maxlength="500" rows="3"></textarea></div>
@@ -764,11 +868,11 @@ async function copyInvites() {
     <div v-if="detailOpen && detailPost" class="dialog-layer" role="presentation" @click.self="closeDetail">
       <section ref="detailDialog" class="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title" @keydown="trapDetailFocus">
         <header><div><p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p><h2 id="detail-title">{{ detailPost.author.nickname }}的回忆</h2></div><button class="icon-button" type="button" aria-label="关闭详情" @click="closeDetail"><X /></button></header>
-        <div class="detail-author"><span class="mini-avatar"><img v-if="detailPost.author.avatar_path" :src="avatarURL(detailPost.author.avatar_path)" alt="" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ detailPost.author.nickname }}</strong><span>{{ displayDate(detailPost.published_at) }}</span></div></div>
+        <div class="detail-author"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ detailPost.author.nickname }}</strong><span>{{ displayDate(detailPost.published_at) }}</span></div></div>
         <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
         <div v-if="detailPost.media.length" class="detail-media"><template v-for="item in detailPost.media" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename"></video></template></div>
         <div class="detail-actions"><button type="button" :class="{ liked: detailPost.liked_by_me }" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.liked_by_me ? '已点赞' : '点赞' }} · {{ detailPost.like_count }}</button><span><MessageCircle :size="19" />{{ detailPost.comment_count }} 条评论</span></div>
-        <section class="comments-section" aria-labelledby="comments-title"><h3 id="comments-title">评论</h3><p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p><div v-if="detailLoading" class="comment-empty" role="status">正在读取评论…</div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div><article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="comment.author.avatar_path" :src="avatarURL(comment.author.avatar_path)" alt="" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article><form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="3" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form></section>
+        <section class="comments-section" aria-labelledby="comments-title"><h3 id="comments-title">评论</h3><p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p><div v-if="detailLoading" class="comment-empty" role="status">正在读取评论…</div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div><article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="avatarVisible(comment.author.avatar_path)" :src="avatarURL(comment.author.avatar_path)" alt="" @error="markAvatarBroken(comment.author.avatar_path)" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article><form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="3" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form></section>
       </section>
     </div>
   </div>

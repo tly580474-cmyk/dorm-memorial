@@ -122,6 +122,38 @@ func TestUploadReservesQuotaVerifiesAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestPreviewFailureFallsBackToOriginal(t *testing.T) {
+	db, user := mediaTestUser(t)
+	objects := newMemoryObjects()
+	store := NewStore(db, objects)
+	store.verifyDelays = []time.Duration{0}
+	var imageBytes bytes.Buffer
+	if err := png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 4, 4))); err != nil {
+		t.Fatal(err)
+	}
+	payload := imageBytes.Bytes()
+	record, err := store.Upload(context.Background(), user, UploadInput{ClientRequestID: "preview-fallback", Filename: "avatar.png", MimeType: "image/png", Size: int64(len(payload)), Body: bytes.NewReader(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previewPath string
+	if err := db.QueryRow("SELECT preview_path FROM media WHERE id = ?", record.ID).Scan(&previewPath); err != nil {
+		t.Fatal(err)
+	}
+	objects.mu.Lock()
+	delete(objects.objects, previewPath)
+	objects.mu.Unlock()
+	content, err := store.OpenContent(context.Background(), user, record.ID, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer content.Body.Close()
+	got, _ := io.ReadAll(content.Body)
+	if content.MimeType != "image/png" || !bytes.Equal(got, payload) {
+		t.Fatalf("fallback mime=%q bytes=%d", content.MimeType, len(got))
+	}
+}
+
 func TestUploadRejectsQuotaBeforeWriting(t *testing.T) {
 	db, user := mediaTestUser(t)
 	if _, err := db.Exec("UPDATE users SET media_quota_bytes = 3 WHERE id = ?", user.ID); err != nil {
