@@ -48,13 +48,16 @@ export const api = {
   deletePost: (id: string) => request<void>(`/api/posts/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),
   deleteMedia: (id: string) => request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
-  uploadMedia: (file: File, uploadID: string, onProgress: (percent: number) => void) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
+  uploadMedia: (file: File, uploadID: string, metadata: { width?: number; height?: number; duration_ms?: number }, onProgress: (percent: number) => void) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/media/uploads')
     xhr.withCredentials = true
     xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
     xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name))
     xhr.setRequestHeader('X-Upload-ID', uploadID)
+    if (metadata.width) xhr.setRequestHeader('X-Media-Width', String(metadata.width))
+    if (metadata.height) xhr.setRequestHeader('X-Media-Height', String(metadata.height))
+    if (metadata.duration_ms) xhr.setRequestHeader('X-Media-Duration-MS', String(metadata.duration_ms))
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
     })

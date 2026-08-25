@@ -104,6 +104,27 @@ a { color: inherit; text-decoration: none; }
 .post-media-grid figcaption small { flex: none; color: var(--muted); }
 .media-unavailable { aspect-ratio: 4 / 3; display: grid; place-content: center; justify-items: center; gap: 7px; padding: 16px; color: var(--muted); text-align: center; }
 .media-unavailable button { min-height: 40px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--secondary); background: var(--raised); }
+.timeline-list { position: relative; display: grid; gap: 34px; }
+.timeline-list::before { content: ""; position: absolute; left: 8px; top: 18px; bottom: 18px; width: 1px; background: #cdbfaf; }
+.timeline-group { position: relative; }
+.timeline-group > header { min-height: 44px; display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.timeline-group > header > span { z-index: 1; width: 17px; height: 17px; flex: none; border: 4px solid var(--bg); border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.timeline-group > header h2 { margin: 0; font: 700 24px/1.3 "Noto Serif SC", "Songti SC", serif; }
+.timeline-group > header small { color: var(--muted); }
+.timeline-group > div { display: grid; gap: 12px; margin-left: 34px; }
+.timeline-entry { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 20px; padding: 20px 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+.timeline-entry > time { color: var(--primary); font-weight: 700; }
+.timeline-entry p { margin: 4px 0 12px; white-space: pre-wrap; }
+.timeline-media { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-bottom: 10px; }
+.timeline-media img { width: 100%; aspect-ratio: 1; display: block; border-radius: 8px; object-fit: cover; background: #eee8df; }
+.photo-wall { columns: 3 260px; column-gap: 14px; }
+.photo-wall figure { position: relative; break-inside: avoid; overflow: hidden; margin: 0 0 14px; border: 1px solid var(--border); border-radius: 13px; background: var(--surface); }
+.photo-wall figure > a { display: block; }
+.photo-wall img, .photo-wall video { width: 100%; min-height: 180px; max-height: 520px; display: block; object-fit: cover; background: #2f2a24; }
+.photo-wall figcaption { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 13px; }
+.photo-wall figcaption div { min-width: 0; display: grid; }
+.photo-wall figcaption span { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.photo-wall figcaption time { flex: none; color: var(--muted); font-size: 12px; }
 .tag-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
 .tag-row span { padding: 3px 9px; border-radius: 999px; color: var(--secondary); background: #e8f0ed; font-size: 13px; }
 .post-card > footer { display: flex; flex-wrap: wrap; gap: 16px; padding-top: 15px; border-top: 1px solid #eee6da; color: var(--muted); font-size: 13px; }
@@ -215,6 +236,9 @@ a { color: inherit; text-decoration: none; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .page-heading .primary-button { width: 100%; }
   .content-rail { grid-template-columns: 1fr; }
+  .timeline-entry { grid-template-columns: 1fr; gap: 5px; }
+  .timeline-media { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .photo-wall { columns: 2 180px; }
   .welcome-card { min-height: 340px; align-items: flex-start; flex-direction: column; padding: 28px 22px; background: linear-gradient(160deg, var(--surface) 58%, #ead8ca); }
   .welcome-card h1 { font-size: 34px; } .dashboard-grid { gap: 12px; }
   .admin-card { align-items: flex-start; flex-direction: column; padding: 24px 20px; }
@@ -233,6 +257,7 @@ a { color: inherit; text-decoration: none; }
   .composer-dialog form > footer { align-items: stretch; flex-direction: column-reverse; }
   .media-dropzone { justify-content: flex-start; }
   .post-media-grid { grid-template-columns: 1fr; }
+  .photo-wall { columns: 1; }
   .session-row span { max-width: 220px; }
 }
 @media (prefers-reduced-motion: reduce) {

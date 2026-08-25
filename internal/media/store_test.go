@@ -5,6 +5,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"path"
 	"sync"
@@ -84,14 +87,20 @@ func TestUploadReservesQuotaVerifiesAndIsIdempotent(t *testing.T) {
 	objects := newMemoryObjects()
 	store := NewStore(db, objects)
 	store.verifyDelays = []time.Duration{0}
-	payload := []byte("a small image")
+	var imageBytes bytes.Buffer
+	source := image.NewRGBA(image.Rect(0, 0, 4, 3))
+	source.Set(1, 1, color.RGBA{R: 180, G: 60, B: 40, A: 255})
+	if err := png.Encode(&imageBytes, source); err != nil {
+		t.Fatal(err)
+	}
+	payload := imageBytes.Bytes()
 	input := UploadInput{ClientRequestID: "request-0001", Filename: "room.png", MimeType: "image/png", Size: int64(len(payload)), Body: bytes.NewReader(payload)}
 
 	record, err := store.Upload(context.Background(), user, input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Status != "ready" || record.SHA256 == "" || record.SizeBytes != int64(len(payload)) {
+	if record.Status != "ready" || record.SHA256 == "" || record.SizeBytes != int64(len(payload)) || !record.HasPreview || record.Width == nil || *record.Width != 4 || record.Height == nil || *record.Height != 3 {
 		t.Fatalf("unexpected record: %+v", record)
 	}
 	usage, err := store.Usage(context.Background(), user.ID)
@@ -107,7 +116,8 @@ func TestUploadReservesQuotaVerifiesAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.ID != record.ID || objects.putCount != 1 {
+	// One write stores the original and one stores its generated preview.
+	if again.ID != record.ID || objects.putCount != 2 {
 		t.Fatalf("idempotency failed: ids %q/%q putCount=%d", record.ID, again.ID, objects.putCount)
 	}
 }

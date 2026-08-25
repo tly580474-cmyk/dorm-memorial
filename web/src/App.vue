@@ -15,6 +15,10 @@ type EditorMedia = {
   progress: number
   error: string
   persisted: boolean
+  width?: number
+  height?: number
+  duration_ms?: number
+  metadataPromise?: Promise<void>
 }
 
 const user = ref<User | null>(null)
@@ -56,6 +60,20 @@ const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
+const activeView = ref<'home' | 'timeline' | 'wall'>('home')
+const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
+const timelineGroups = computed(() => {
+  const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime())
+  const groups = new Map<string, { label: string; posts: Post[] }>()
+  for (const post of sorted) {
+    const date = timelineDate(post)
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+    const group = groups.get(key) ?? { label: date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' }), posts: [] }
+    group.posts.push(post)
+    groups.set(key, group)
+  }
+  return [...groups.entries()].map(([key, group]) => ({ key, ...group }))
+})
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -63,13 +81,23 @@ const greeting = computed(() => {
 })
 
 const nav = [
-  { label: '首页', icon: Home, active: true, available: true },
-  { label: '时间线', icon: Sparkles, available: false },
-  { label: '照片墙', icon: Camera, available: false },
+  { id: 'home' as const, label: '首页', icon: Home, available: true },
+  { id: 'timeline' as const, label: '时间线', icon: Sparkles, available: true },
+  { id: 'wall' as const, label: '照片墙', icon: Camera, available: true },
   { label: '留言册', icon: BookHeart, available: false },
   { label: '论坛', icon: BookOpenText, available: false },
   { label: '消息', icon: MessageCircle, available: false },
 ]
+
+function setView(view: 'home' | 'timeline' | 'wall') {
+  activeView.value = view
+  mobileMenuOpen.value = false
+  nextTick(() => document.querySelector<HTMLElement>('#main-content h1')?.focus())
+}
+
+function timelineDate(post: Post) {
+  return new Date(post.content_date || post.published_at || post.created_at)
+}
 
 onMounted(async () => {
   try {
@@ -217,7 +245,7 @@ async function openComposer(post?: Post) {
   editor.content_date = post?.content_date?.slice(0, 10) ?? ''
   editor.visibility = post?.visibility ?? 'members'
   editor.tags = post?.tags.join('、') ?? ''
-  editorMedia.value = (post?.media ?? []).map((item) => ({ key: item.id, media: item, name: item.original_filename, size: item.size_bytes, kind: item.media_type, status: 'ready', progress: 100, error: '', persisted: true }))
+  editorMedia.value = (post?.media ?? []).map((item) => ({ key: item.id, media: item, name: item.original_filename, size: item.size_bytes, kind: item.media_type, status: 'ready', progress: 100, error: '', persisted: true, width: item.width ?? undefined, height: item.height ?? undefined, duration_ms: item.duration_ms ?? undefined }))
   removedMediaIDs.value = []
   mediaSelectionError.value = ''
   composerError.value = ''
@@ -307,17 +335,20 @@ function addMediaFiles(files: File[]) {
       mediaSelectionError.value = `${file.name} 为空或超过 8 GiB。`
       continue
     }
-    editorMedia.value.push({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
+    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    editorMedia.value.push(item)
+    if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
   }
 }
 
 async function uploadEditorMedia(item: EditorMedia) {
   if (!item.file) throw new Error(`${item.name} 无法重新读取，请移除后再次选择。`)
+  await item.metadataPromise
   item.status = 'uploading'
   item.error = ''
   item.progress = 0
   try {
-    const response = await api.uploadMedia(item.file, crypto.randomUUID(), (percent) => { item.progress = percent })
+    const response = await api.uploadMedia(item.file, crypto.randomUUID(), { width: item.width, height: item.height, duration_ms: item.duration_ms }, (percent) => { item.progress = percent })
     item.media = response.media
     item.status = 'ready'
     item.progress = 100
@@ -326,6 +357,30 @@ async function uploadEditorMedia(item: EditorMedia) {
     item.status = 'error'
     item.error = error instanceof Error ? error.message : '上传失败'
     throw error
+  }
+}
+
+async function readVideoMetadata(item: EditorMedia) {
+  if (!item.file) return
+  const objectURL = URL.createObjectURL(item.file)
+  try {
+    await new Promise<void>((resolve) => {
+      const video = document.createElement('video')
+      const finish = () => resolve()
+      const timeout = window.setTimeout(finish, 5000)
+      video.preload = 'metadata'
+      video.onloadedmetadata = () => {
+        window.clearTimeout(timeout)
+        item.width = video.videoWidth
+        item.height = video.videoHeight
+        if (Number.isFinite(video.duration)) item.duration_ms = Math.round(video.duration * 1000)
+        finish()
+      }
+      video.onerror = () => { window.clearTimeout(timeout); finish() }
+      video.src = objectURL
+    })
+  } finally {
+    URL.revokeObjectURL(objectURL)
   }
 }
 
@@ -368,8 +423,8 @@ function retryEditorMedia(item: EditorMedia) {
   item.progress = 0
 }
 
-function mediaContentURL(id: string) {
-  return `/api/media/${encodeURIComponent(id)}/content`
+function mediaContentURL(id: string, preview = false) {
+  return `/api/media/${encodeURIComponent(id)}/content${preview ? '?variant=preview' : ''}`
 }
 
 function markMediaLoadError(id: string) {
@@ -459,13 +514,14 @@ async function copyInvites() {
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
       <div class="mobile-menu-head"><span>浏览纪念册</span><button class="icon-button" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"><X /></button></div>
-      <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.active }" :disabled="!item.available" :title="item.available ? item.label : `${item.label}正在开发`"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small></button></nav>
+      <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.id === activeView }" :disabled="!item.available" :aria-current="item.id === activeView ? 'page' : undefined" :title="item.available ? item.label : `${item.label}正在开发`" @click="item.id && setView(item.id)"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small></button></nav>
       <div class="sidebar-bottom"><button v-if="user.role === 'admin'" type="button"><ShieldCheck :size="20" />管理</button><button type="button" @click="openProfile"><Settings :size="20" />设置</button></div>
     </aside>
     <button v-if="mobileMenuOpen" class="scrim" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"></button>
 
     <main id="main-content" class="main-content">
-      <header class="page-heading"><div><p class="eyebrow">{{ greeting }}，{{ user.nickname }}</p><h1>最近的回忆</h1><p>记录一句话，也可以先存进草稿箱慢慢写。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />分享回忆</button></header>
+      <template v-if="activeView === 'home'">
+      <header class="page-heading"><div><p class="eyebrow">{{ greeting }}，{{ user.nickname }}</p><h1 tabindex="-1">最近的回忆</h1><p>记录一句话，也可以先存进草稿箱慢慢写。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />分享回忆</button></header>
 
       <p v-if="contentError" class="form-error content-alert" role="alert">{{ contentError }}</p>
       <section class="content-columns">
@@ -503,9 +559,33 @@ async function copyInvites() {
           <p class="copy-status" aria-live="polite">{{ inviteCopyStatus === 'copied' ? `已复制 ${inviteCodes.length} 个邀请码` : '' }}</p>
         </div>
       </section>
+      </template>
+
+      <template v-else-if="activeView === 'timeline'">
+        <header class="page-heading"><div><p class="eyebrow">按发生日期整理</p><h1 tabindex="-1">我们的时间线</h1><p>没有填写内容日期的回忆，会按照发布日期归档。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />补一段回忆</button></header>
+        <div v-if="timelineGroups.length === 0" class="content-empty"><Sparkles :size="34" aria-hidden="true" /><h2>时间线还是空的</h2><p>发布第一段回忆后，它会出现在这里。</p></div>
+        <div v-else class="timeline-list">
+          <section v-for="group in timelineGroups" :key="group.key" class="timeline-group"><header><span></span><h2>{{ group.label }}</h2><small>{{ group.posts.length }} 条</small></header><div>
+            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><strong>{{ post.author.nickname }}</strong><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length" class="timeline-media"><img v-for="item in post.media.filter((media) => media.media_type === 'image').slice(0, 4)" :key="item.id" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div></div></article>
+          </div></section>
+        </div>
+      </template>
+
+      <template v-else>
+        <header class="page-heading"><div><p class="eyebrow">照片与视频</p><h1 tabindex="-1">宿舍照片墙</h1><p>按最近发布排序，共收藏 {{ wallItems.length }} 个媒体文件。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />添加照片</button></header>
+        <div v-if="wallItems.length === 0" class="content-empty"><Camera :size="34" aria-hidden="true" /><h2>照片墙还没有内容</h2><p>发布带照片或视频的回忆后，就会陈列在这里。</p></div>
+        <div v-else class="photo-wall">
+          <figure v-for="item in wallItems" :key="item.media.id">
+            <div v-if="mediaLoadErrors.has(item.media.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.media.id)"><RotateCcw :size="17" />重试</button></div>
+            <a v-else-if="item.media.media_type === 'image'" :href="mediaContentURL(item.media.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.media.original_filename}`"><img :src="mediaContentURL(item.media.id, item.media.has_preview)" :alt="item.media.original_filename" loading="lazy" @error="markMediaLoadError(item.media.id)" /></a>
+            <video v-else :src="mediaContentURL(item.media.id)" controls preload="metadata" :aria-label="item.media.original_filename" @error="markMediaLoadError(item.media.id)"></video>
+            <figcaption><div><strong>{{ item.post.author.nickname }}</strong><span>{{ item.post.body || item.media.original_filename }}</span></div><time :datetime="item.post.content_date || item.post.published_at || item.post.created_at">{{ displayDate(item.post.content_date || item.post.published_at || item.post.created_at) }}</time></figcaption>
+          </figure>
+        </div>
+      </template>
     </main>
 
-    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item active"><Home /><span>首页</span></button><button type="button" class="nav-item" disabled title="照片墙正在开发"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" disabled title="论坛正在开发"><BookOpenText /><span>论坛</span></button><button type="button" class="nav-item" disabled title="消息正在开发"><MessageCircle /><span>消息</span></button></nav>
+    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'timeline' }" @click="setView('timeline')"><Sparkles /><span>时间线</span></button><button type="button" class="nav-item" disabled title="消息正在开发"><MessageCircle /><span>消息</span></button></nav>
 
     <div v-if="composerOpen" class="dialog-layer" role="presentation" @click.self="closeComposer">
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">

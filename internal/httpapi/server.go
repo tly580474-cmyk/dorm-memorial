@@ -393,6 +393,9 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		Size:            r.ContentLength,
 		Body:            r.Body,
 		IPAddress:       remoteIP(r),
+		Width:           parsePositiveHeader(r.Header.Get("X-Media-Width")),
+		Height:          parsePositiveHeader(r.Header.Get("X-Media-Height")),
+		DurationMS:      int64(parsePositiveHeader(r.Header.Get("X-Media-Duration-MS"))),
 	})
 	if err != nil {
 		s.logger.Warn("media_upload_failed", "user_id", mustPrincipal(r).User.ID, "error", err)
@@ -401,6 +404,14 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"media": record, "usage": usage})
+}
+
+func parsePositiveHeader(value string) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 0 {
+		return 0
+	}
+	return parsed
 }
 
 func (s *Server) mediaUsage(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +432,7 @@ func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
-	content, err := s.media.OpenContent(r.Context(), mustPrincipal(r).User, r.PathValue("id"), r.Header.Get("Range"))
+	content, err := s.media.OpenContent(r.Context(), mustPrincipal(r).User, r.PathValue("id"), r.Header.Get("Range"), r.URL.Query().Get("variant") == "preview")
 	if err != nil {
 		writeMediaError(w, err)
 		return

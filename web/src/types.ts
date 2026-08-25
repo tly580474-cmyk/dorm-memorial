@@ -33,6 +33,10 @@ export interface Media {
   sha256?: string
   status: 'uploading' | 'ready' | 'unavailable' | 'deleted'
   created_at?: string
+  width?: number | null
+  height?: number | null
+  duration_ms?: number | null
+  has_preview: boolean
 }
 
 export interface MediaUsage {

@@ -42,6 +42,10 @@ type Record struct {
 	SizeBytes        int64     `json:"size_bytes"`
 	SHA256           string    `json:"sha256"`
 	Status           string    `json:"status"`
+	Width            *int      `json:"width"`
+	Height           *int      `json:"height"`
+	DurationMS       *int64    `json:"duration_ms"`
+	HasPreview       bool      `json:"has_preview"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -52,6 +56,9 @@ type UploadInput struct {
 	Size            int64
 	Body            io.Reader
 	IPAddress       string
+	Width           int
+	Height          int
+	DurationMS      int64
 }
 
 type Usage struct {
@@ -118,9 +125,25 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	}
 
 	now := time.Now().UTC()
+	imageInfo := imageDetails{}
+	if mediaType == "image" {
+		imageInfo = buildImagePreview(ctx, s.objects, objectPath, actor.ID, mediaID, now)
+	}
 	record := Record{
 		ID: mediaID, OwnerID: actor.ID, OriginalFilename: input.Filename, MediaType: mediaType,
 		MimeType: input.MimeType, SizeBytes: input.Size, SHA256: hex.EncodeToString(hasher.Sum(nil)), Status: "ready", CreatedAt: now,
+	}
+	if mediaType == "video" && input.Width > 0 && input.Width <= 16384 && input.Height > 0 && input.Height <= 16384 {
+		record.Width = &input.Width
+		record.Height = &input.Height
+	}
+	if mediaType == "video" && input.DurationMS > 0 && input.DurationMS <= int64((48*time.Hour)/time.Millisecond) {
+		record.DurationMS = &input.DurationMS
+	}
+	if imageInfo.width > 0 {
+		record.Width = &imageInfo.width
+		record.Height = &imageInfo.height
+		record.HasPreview = imageInfo.previewPath != ""
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -128,14 +151,20 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 		return Record{}, err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`, mediaID, actor.ID, objectPath, input.Filename, mediaType, input.MimeType, input.Size, record.SHA256, nowText(now), nowText(now)); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, preview_path, original_filename, media_type, mime_type, size_bytes, sha256, width, height, duration_ms, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`, mediaID, actor.ID, objectPath, imageInfo.previewPath, input.Filename, mediaType, input.MimeType, input.Size, record.SHA256, nullableInt(record.Width), nullableInt(record.Height), nullableInt64(record.DurationMS), nowText(now), nowText(now)); err != nil {
 		_ = tx.Rollback()
+		if imageInfo.previewPath != "" {
+			_ = s.objects.Delete(context.WithoutCancel(ctx), imageInfo.previewPath)
+		}
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
 		return Record{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE upload_jobs SET state = 'completed', updated_at = ? WHERE id = ?`, nowText(now), jobID); err != nil {
 		_ = tx.Rollback()
+		if imageInfo.previewPath != "" {
+			_ = s.objects.Delete(context.WithoutCancel(ctx), imageInfo.previewPath)
+		}
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
 		return Record{}, err
 	}
@@ -190,10 +219,10 @@ func (s *Store) Usage(ctx context.Context, userID string) (Usage, error) {
 }
 
 func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) error {
-	var ownerID, objectPath, status string
+	var ownerID, objectPath, previewPath, status string
 	var attached int
-	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.status, EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
-		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &status, &attached)
+	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.status, EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
+		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &status, &attached)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return ErrNotFound
 	}
@@ -212,6 +241,11 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 	if err := s.objects.Delete(ctx, objectPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return fmt.Errorf("delete object: %w", errors.Join(ErrStorageUnavailable, err))
 	}
+	if previewPath != "" {
+		if err := s.objects.Delete(ctx, previewPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("delete preview object: %w", errors.Join(ErrStorageUnavailable, err))
+		}
+	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE media SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND status <> 'deleted'`, nowText(now), nowText(now), id)
 	if err != nil {
@@ -224,13 +258,13 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 	return nil
 }
 
-func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string) (Content, error) {
-	var ownerID, objectPath, filename, mimeType, status string
+func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {
+	var ownerID, objectPath, previewPath, filename, mimeType, status string
 	var size int64
 	var publiclyReadable int
-	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
+	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
-		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &filename, &mimeType, &size, &status, &publiclyReadable)
+		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &publiclyReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return Content{}, ErrNotFound
 	}
@@ -242,6 +276,13 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	}
 	if status != "ready" || s.objects == nil {
 		return Content{}, ErrStorageUnavailable
+	}
+	if preview && previewPath != "" {
+		body, err := s.objects.Open(ctx, previewPath)
+		if err != nil {
+			return Content{}, fmt.Errorf("open preview object: %w", errors.Join(ErrStorageUnavailable, err))
+		}
+		return Content{Body: body, StatusCode: http.StatusOK, MimeType: "image/jpeg", Filename: filename, ContentLength: -1}, nil
 	}
 	if byteRange != "" {
 		if ranged, ok := s.objects.(storage.RangeStorage); ok {
@@ -278,8 +319,10 @@ func (s *Store) existingRequest(ctx context.Context, userID, requestID string) (
 func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Record, error) {
 	var record Record
 	var created string
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at FROM media WHERE object_path = ?`, objectPath).
-		Scan(&record.ID, &record.OwnerID, &record.OriginalFilename, &record.MediaType, &record.MimeType, &record.SizeBytes, &record.SHA256, &record.Status, &created)
+	var width, height sql.NullInt64
+	var previewPath string
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, width, height, preview_path FROM media WHERE object_path = ?`, objectPath).
+		Scan(&record.ID, &record.OwnerID, &record.OriginalFilename, &record.MediaType, &record.MimeType, &record.SizeBytes, &record.SHA256, &record.Status, &created, &width, &height, &previewPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -287,6 +330,15 @@ func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Reco
 		return Record{}, err
 	}
 	record.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if width.Valid {
+		value := int(width.Int64)
+		record.Width = &value
+	}
+	if height.Valid {
+		value := int(height.Int64)
+		record.Height = &value
+	}
+	record.HasPreview = previewPath != ""
 	return record, nil
 }
 
@@ -376,3 +428,17 @@ func newID() string {
 }
 
 func nowText(value time.Time) string { return value.Format(time.RFC3339Nano) }
+
+func nullableInt(value *int) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func nullableInt64(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}

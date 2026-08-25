@@ -54,6 +54,10 @@ type Media struct {
 	MimeType         string `json:"mime_type"`
 	SizeBytes        int64  `json:"size_bytes"`
 	Status           string `json:"status"`
+	Width            *int   `json:"width"`
+	Height           *int   `json:"height"`
+	DurationMS       *int64 `json:"duration_ms"`
+	HasPreview       bool   `json:"has_preview"`
 }
 
 type WriteInput struct {
@@ -401,7 +405,7 @@ func (s *Store) loadTags(ctx context.Context, post *Post) error {
 }
 
 func (s *Store) loadMedia(ctx context.Context, post *Post) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.width, m.height, m.duration_ms, m.preview_path <> ''
 		FROM media m JOIN post_media pm ON pm.media_id = m.id WHERE pm.post_id = ? AND m.status <> 'deleted' ORDER BY pm.position`, post.ID)
 	if err != nil {
 		return err
@@ -409,8 +413,20 @@ func (s *Store) loadMedia(ctx context.Context, post *Post) error {
 	defer rows.Close()
 	for rows.Next() {
 		var item Media
-		if err := rows.Scan(&item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status); err != nil {
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status, &width, &height, &duration, &item.HasPreview); err != nil {
 			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			item.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			item.Height = &value
+		}
+		if duration.Valid {
+			item.DurationMS = &duration.Int64
 		}
 		post.Media = append(post.Media, item)
 	}
