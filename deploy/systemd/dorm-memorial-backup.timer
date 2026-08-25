@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Dorm Memorial database backup
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=15m
+Unit=dorm-memorial-backup.service
+
+[Install]
+WantedBy=timers.target

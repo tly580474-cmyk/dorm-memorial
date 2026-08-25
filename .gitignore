@@ -15,6 +15,11 @@ build/
 coverage/
 *.log
 
+# Local AList runtime and application state
+/alist.exe
+/data/
+/backups/
+
 # Local prototype tooling and generated preflight previews
 .tmp-scripts/
 **/.preflight/

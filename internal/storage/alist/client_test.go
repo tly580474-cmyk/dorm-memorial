@@ -40,8 +40,12 @@ func TestPutStreamsBodyWithContentLength(t *testing.T) {
 	defer server.Close()
 
 	client := newTestClient(t, server.URL)
-	if err := client.Put(context.Background(), "/originals/u1/a.txt", strings.NewReader(payload), int64(len(payload))); err != nil {
+	reader := &closeTrackingReader{Reader: strings.NewReader(payload)}
+	if err := client.Put(context.Background(), "/originals/u1/a.txt", reader, int64(len(payload))); err != nil {
 		t.Fatal(err)
+	}
+	if reader.closed {
+		t.Fatal("Put closed a reader owned by the caller")
 	}
 }
 
@@ -138,6 +142,52 @@ func TestMapsAuthorizationFailure(t *testing.T) {
 	}
 }
 
+func TestAuthenticateReplacesStaleToken(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/auth/login":
+			if r.Header.Get("Authorization") != "" {
+				t.Fatal("login request must not send a stale token")
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload["username"] != "dorm-memorial" || payload["password"] != "secret" {
+				t.Fatalf("unexpected login payload: %#v", payload)
+			}
+			writeOK(w, map[string]string{"token": "fresh-token"})
+		case "/api/fs/put":
+			if r.Header.Get("Authorization") != "fresh-token" {
+				t.Fatalf("authorization = %q", r.Header.Get("Authorization"))
+			}
+			_, _ = io.Copy(io.Discard, r.Body)
+			writeOK(w, nil)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := New(Config{
+		BaseURL:  server.URL,
+		Token:    "stale-token",
+		Username: "dorm-memorial",
+		Password: "secret",
+		Root:     "/dorm-memorial",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Authenticate(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Put(context.Background(), "/probe.txt", strings.NewReader("x"), 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
 	client, err := New(Config{BaseURL: baseURL, Token: "test-token", Root: "/dorm-memorial"})
@@ -150,4 +200,14 @@ func newTestClient(t *testing.T, baseURL string) *Client {
 func writeOK(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "message": "success", "data": data})
+}
+
+type closeTrackingReader struct {
+	*strings.Reader
+	closed bool
+}
+
+func (r *closeTrackingReader) Close() error {
+	r.closed = true
+	return nil
 }

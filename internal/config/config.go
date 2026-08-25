@@ -1,0 +1,107 @@
+package config
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+type Config struct {
+	Environment       string
+	Address           string
+	DatabasePath      string
+	FrontendDir       string
+	PublicURL         string
+	CookieSecure      bool
+	SessionTTL        time.Duration
+	BootstrapUsername string
+	BootstrapEmail    string
+	BootstrapPassword string
+	BootstrapNickname string
+}
+
+func Load() (Config, error) {
+	fileValues, err := readEnvFile(".env")
+	if err != nil {
+		return Config{}, fmt.Errorf("read .env: %w", err)
+	}
+	cfg := Config{
+		Environment:       env(fileValues, "APP_ENV", "development"),
+		Address:           env(fileValues, "APP_ADDRESS", "127.0.0.1:8080"),
+		DatabasePath:      env(fileValues, "APP_DATABASE_PATH", "data/dorm-memorial.db"),
+		FrontendDir:       env(fileValues, "APP_FRONTEND_DIR", "web/dist"),
+		PublicURL:         strings.TrimRight(env(fileValues, "APP_PUBLIC_URL", "http://127.0.0.1:8080"), "/"),
+		BootstrapUsername: strings.TrimSpace(env(fileValues, "APP_BOOTSTRAP_ADMIN_USERNAME", "")),
+		BootstrapEmail:    strings.TrimSpace(env(fileValues, "APP_BOOTSTRAP_ADMIN_EMAIL", "")),
+		BootstrapPassword: env(fileValues, "APP_BOOTSTRAP_ADMIN_PASSWORD", ""),
+		BootstrapNickname: strings.TrimSpace(env(fileValues, "APP_BOOTSTRAP_ADMIN_NICKNAME", "")),
+	}
+
+	secure, err := strconv.ParseBool(env(fileValues, "APP_COOKIE_SECURE", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("parse APP_COOKIE_SECURE: %w", err)
+	}
+	cfg.CookieSecure = secure
+
+	ttl, err := time.ParseDuration(env(fileValues, "APP_SESSION_TTL", "720h"))
+	if err != nil || ttl < time.Hour {
+		return Config{}, errors.New("APP_SESSION_TTL must be a duration of at least one hour")
+	}
+	cfg.SessionTTL = ttl
+
+	if cfg.Environment == "production" && !cfg.CookieSecure {
+		return Config{}, errors.New("APP_COOKIE_SECURE must be true in production")
+	}
+	if cfg.DatabasePath == "" || cfg.Address == "" {
+		return Config{}, errors.New("APP_DATABASE_PATH and APP_ADDRESS are required")
+	}
+	bootstrapSet := cfg.BootstrapUsername != "" || cfg.BootstrapEmail != "" || cfg.BootstrapPassword != ""
+	if bootstrapSet && (cfg.BootstrapUsername == "" || cfg.BootstrapEmail == "" || len(cfg.BootstrapPassword) < 12) {
+		return Config{}, errors.New("bootstrap admin requires username, email, and a password of at least 12 characters")
+	}
+	return cfg, nil
+}
+
+func env(fileValues map[string]string, name, fallback string) string {
+	if value, ok := os.LookupEnv(name); ok {
+		return value
+	}
+	if value, ok := fileValues[name]; ok {
+		return value
+	}
+	return fallback
+}
+
+func readEnvFile(path string) (map[string]string, error) {
+	values := make(map[string]string)
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return values, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(strings.TrimPrefix(scanner.Text(), "\ufeff"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		name, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
+			value = value[1 : len(value)-1]
+		}
+		values[name] = value
+	}
+	return values, scanner.Err()
+}

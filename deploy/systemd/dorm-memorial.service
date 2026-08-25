@@ -1,0 +1,27 @@
+[Unit]
+Description=Dorm Memorial Community
+After=network-online.target alist.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dorm-memorial
+Group=dorm-memorial
+WorkingDirectory=/opt/dorm-memorial
+EnvironmentFile=/etc/dorm-memorial/app.env
+ExecStart=/opt/dorm-memorial/bin/dorm-memorial
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dorm-memorial /var/cache/dorm-memorial
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

@@ -7,29 +7,34 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	pathpkg "path"
 	"strings"
+	"sync"
 	"time"
 
 	"dorm-memorial/internal/storage"
 )
 
-const defaultTimeout = 30 * time.Second
-
 type Config struct {
-	BaseURL string
-	Token   string
-	Root    string
-	Client  *http.Client
+	BaseURL  string
+	Token    string
+	Username string
+	Password string
+	Root     string
+	Client   *http.Client
 }
 
 type Client struct {
-	baseURL string
-	token   string
-	root    string
-	http    *http.Client
+	baseURL  string
+	tokenMu  sync.RWMutex
+	token    string
+	username string
+	password string
+	root     string
+	http     *http.Client
 }
 
 type apiEnvelope struct {
@@ -51,6 +56,10 @@ type fileData struct {
 	} `json:"hash_info"`
 }
 
+type loginData struct {
+	Token string `json:"token"`
+}
+
 func New(cfg Config) (*Client, error) {
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	parsed, err := url.Parse(baseURL)
@@ -68,15 +77,60 @@ func New(cfg Config) (*Client, error) {
 
 	httpClient := cfg.Client
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: defaultTimeout}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DialContext = (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext
+		transport.TLSHandshakeTimeout = 10 * time.Second
+		transport.ResponseHeaderTimeout = 5 * time.Minute
+		transport.IdleConnTimeout = 90 * time.Second
+		// Do not set http.Client.Timeout: it includes the entire response body
+		// and would abort legitimate multi-gigabyte uploads and downloads.
+		httpClient = &http.Client{Transport: transport}
 	}
 
 	return &Client{
-		baseURL: baseURL,
-		token:   strings.TrimSpace(cfg.Token),
-		root:    root,
-		http:    httpClient,
+		baseURL:  baseURL,
+		token:    strings.TrimSpace(cfg.Token),
+		username: strings.TrimSpace(cfg.Username),
+		password: cfg.Password,
+		root:     root,
+		http:     httpClient,
 	}, nil
+}
+
+// Authenticate obtains a fresh AList token for a dedicated service user.
+// This avoids depending on a browser session token that may be invalidated
+// when the user logs out or changes account settings.
+func (c *Client) Authenticate(ctx context.Context) error {
+	if c.username == "" || c.password == "" {
+		return fmt.Errorf("alist username and password are required: %w", storage.ErrUnauthorized)
+	}
+	body, err := json.Marshal(map[string]string{
+		"username": c.username,
+		"password": c.password,
+		"otp_code": "",
+	})
+	if err != nil {
+		return fmt.Errorf("encode alist login request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/auth/login", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create alist login request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	var data loginData
+	if err := c.doEnvelope(req, &data); err != nil {
+		return fmt.Errorf("alist login: %w", err)
+	}
+	if strings.TrimSpace(data.Token) == "" {
+		return fmt.Errorf("alist login returned no token: %w", storage.ErrUnauthorized)
+	}
+	c.tokenMu.Lock()
+	c.token = data.Token
+	c.tokenMu.Unlock()
+	return nil
 }
 
 func (c *Client) Put(ctx context.Context, objectPath string, body io.Reader, size int64) error {
@@ -88,7 +142,10 @@ func (c *Client) Put(ctx context.Context, objectPath string, body io.Reader, siz
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/api/fs/put", body)
+	// Hide any io.Closer implemented by the caller. net/http closes request
+	// bodies after sending, but ownership of the source reader remains with the
+	// caller because probes may need to seek and verify it afterward.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.baseURL+"/api/fs/put", io.NopCloser(body))
 	if err != nil {
 		return fmt.Errorf("create alist upload request: %w", err)
 	}
@@ -137,7 +194,7 @@ func (c *Client) Stat(ctx context.Context, objectPath string) (storage.ObjectInf
 		return storage.ObjectInfo{}, err
 	}
 	var data fileData
-	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": ""}, &data); err != nil {
+	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": "", "refresh": true}, &data); err != nil {
 		return storage.ObjectInfo{}, err
 	}
 	modified, _ := time.Parse(time.RFC3339Nano, data.Modified)
@@ -149,6 +206,23 @@ func (c *Client) Stat(ctx context.Context, objectPath string) (storage.ObjectInf
 		Modified: modified,
 		Hash:     firstNonEmpty(data.HashInfo.SHA256, data.HashInfo.SHA1, data.HashInfo.MD5),
 	}, nil
+}
+
+// RefreshDirectory forces AList to refresh a directory from its backing driver.
+// Some remote drivers acknowledge uploads before the new object is present in
+// AList's directory cache, so callers should refresh the parent before Stat.
+func (c *Client) RefreshDirectory(ctx context.Context, objectPath string) error {
+	remotePath, err := c.remotePath(objectPath)
+	if err != nil {
+		return err
+	}
+	return c.postJSON(ctx, "/api/fs/list", map[string]any{
+		"path":     remotePath,
+		"password": "",
+		"page":     1,
+		"per_page": 1,
+		"refresh":  true,
+	}, nil)
 }
 
 func (c *Client) Delete(ctx context.Context, objectPath string) error {
@@ -207,7 +281,7 @@ func (c *Client) ResolveURL(ctx context.Context, objectPath string) (string, err
 		return "", err
 	}
 	var data fileData
-	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": ""}, &data); err != nil {
+	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": "", "refresh": true}, &data); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(data.RawURL) == "" {
@@ -265,8 +339,11 @@ func (c *Client) doEnvelope(req *http.Request, out any) error {
 }
 
 func (c *Client) authorize(req *http.Request) {
-	if c.token != "" {
-		req.Header.Set("Authorization", c.token)
+	c.tokenMu.RLock()
+	token := c.token
+	c.tokenMu.RUnlock()
+	if token != "" {
+		req.Header.Set("Authorization", token)
 	}
 }
 

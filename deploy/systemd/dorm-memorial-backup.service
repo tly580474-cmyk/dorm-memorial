@@ -1,0 +1,16 @@
+[Unit]
+Description=Back up Dorm Memorial SQLite database
+After=dorm-memorial.service
+
+[Service]
+Type=oneshot
+User=dorm-memorial
+Group=dorm-memorial
+WorkingDirectory=/var/lib/dorm-memorial
+ExecStart=/opt/dorm-memorial/bin/dbtool backup -source /var/lib/dorm-memorial/app.db
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/dorm-memorial
+UMask=0027
