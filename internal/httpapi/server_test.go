@@ -113,6 +113,36 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("moderate post status=%d body=%s", moderatePost.StatusCode, readBody(moderatePost))
 	}
 	moderatePost.Body.Close()
+	likeResponse := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID+"/like", http.MethodPost, map[string]any{}, memberCookie)
+	if likeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("like status=%d body=%s", likeResponse.StatusCode, readBody(likeResponse))
+	}
+	var likeBody struct {
+		Liked     bool `json:"liked"`
+		LikeCount int  `json:"like_count"`
+	}
+	decodeResponse(t, likeResponse, &likeBody)
+	if !likeBody.Liked || likeBody.LikeCount != 1 {
+		t.Fatalf("like body=%+v", likeBody)
+	}
+	commentResponse := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID+"/comments", http.MethodPost, map[string]any{"body": "接口评论"}, memberCookie)
+	if commentResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("comment status=%d body=%s", commentResponse.StatusCode, readBody(commentResponse))
+	}
+	commentResponse.Body.Close()
+	commentsResponse := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID+"/comments", http.MethodGet, nil, memberCookie)
+	if commentsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("comments status=%d", commentsResponse.StatusCode)
+	}
+	var commentsBody struct {
+		Comments []struct {
+			Body string `json:"body"`
+		} `json:"comments"`
+	}
+	decodeResponse(t, commentsResponse, &commentsBody)
+	if len(commentsBody.Comments) != 1 || commentsBody.Comments[0].Body != "接口评论" {
+		t.Fatalf("comments=%+v", commentsBody.Comments)
+	}
 	feedResponse := doJSON(t, server.URL+"/api/posts?scope=feed", http.MethodGet, nil, memberCookie)
 	if feedResponse.StatusCode != http.StatusOK {
 		t.Fatalf("feed status=%d body=%s", feedResponse.StatusCode, readBody(feedResponse))
@@ -190,6 +220,17 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 		} `json:"media"`
 	}
 	decodeResponse(t, response, &uploaded)
+	avatarResponse := doJSON(t, server.URL+"/api/profile/avatar", http.MethodPost, map[string]any{"media_id": uploaded.Media.ID}, cookie)
+	if avatarResponse.StatusCode != http.StatusOK {
+		t.Fatalf("avatar status=%d body=%s", avatarResponse.StatusCode, readBody(avatarResponse))
+	}
+	var avatarBody struct {
+		User identity.User `json:"user"`
+	}
+	decodeResponse(t, avatarResponse, &avatarBody)
+	if avatarBody.User.AvatarPath != uploaded.Media.ID {
+		t.Fatalf("avatar path=%q", avatarBody.User.AvatarPath)
+	}
 	contentRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/media/"+uploaded.Media.ID+"/content", nil)
 	contentRequest.AddCookie(cookie)
 	contentResponse, err := http.DefaultClient.Do(contentRequest)
@@ -201,7 +242,6 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 	if contentResponse.StatusCode != http.StatusOK || !bytes.Equal(contentBytes, payload) || contentResponse.Header.Get("Content-Type") != "image/png" {
 		t.Fatalf("content response status=%d type=%q bytes=%q", contentResponse.StatusCode, contentResponse.Header.Get("Content-Type"), contentBytes)
 	}
-
 	postResponse := doJSON(t, server.URL+"/api/posts", http.MethodPost, map[string]any{
 		"body": "", "visibility": "members", "media_ids": []string{uploaded.Media.ID}, "submit": true,
 	}, cookie)
@@ -225,6 +265,11 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 		t.Fatalf("attached media deletion status=%d body=%s", deleteResponse.StatusCode, readBody(deleteResponse))
 	}
 	deleteResponse.Body.Close()
+	clearAvatarResponse := doJSON(t, server.URL+"/api/profile/avatar", http.MethodDelete, nil, cookie)
+	if clearAvatarResponse.StatusCode != http.StatusOK {
+		t.Fatalf("clear avatar status=%d body=%s", clearAvatarResponse.StatusCode, readBody(clearAvatarResponse))
+	}
+	clearAvatarResponse.Body.Close()
 }
 
 type httpTestObjects struct{ values map[string][]byte }

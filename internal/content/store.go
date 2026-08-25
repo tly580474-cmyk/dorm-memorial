@@ -60,6 +60,14 @@ type Media struct {
 	HasPreview       bool   `json:"has_preview"`
 }
 
+type Comment struct {
+	ID        string    `json:"id"`
+	PostID    string    `json:"post_id"`
+	Author    Author    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type WriteInput struct {
 	Body        string   `json:"body"`
 	ContentDate string   `json:"content_date"`
@@ -240,6 +248,103 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'post.delete', 'post', ?, ?, ?)`, actor.ID, id, ip, nowText())
 	return nil
+}
+
+func (s *Store) ListComments(ctx context.Context, actor identity.User, postID string) ([]Comment, error) {
+	post, err := s.Get(ctx, actor, postID)
+	if err != nil {
+		return nil, err
+	}
+	if post.Status != "published" {
+		return nil, ErrConflict
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.post_id, c.body, c.created_at, u.id, u.username, p.nickname, p.avatar_path
+		FROM comments c JOIN users u ON u.id = c.author_id JOIN profiles p ON p.user_id = u.id
+		WHERE c.post_id = ? AND c.status = 'visible' ORDER BY c.created_at, c.id LIMIT 500`, postID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	comments := []Comment{}
+	for rows.Next() {
+		var item Comment
+		var created string
+		if err := rows.Scan(&item.ID, &item.PostID, &item.Body, &created, &item.Author.ID, &item.Author.Username, &item.Author.Nickname, &item.Author.AvatarPath); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		comments = append(comments, item)
+	}
+	return comments, rows.Err()
+}
+
+func (s *Store) AddComment(ctx context.Context, actor identity.User, postID, body, ip string) (Comment, error) {
+	body = strings.TrimSpace(body)
+	if body == "" || len([]rune(body)) > 2000 {
+		return Comment{}, errors.New("comment must be 1-2000 characters")
+	}
+	var allowed int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members')`, postID).Scan(&allowed); err != nil {
+		return Comment{}, err
+	}
+	if allowed == 0 {
+		return Comment{}, ErrForbidden
+	}
+	id, now := newID(), time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO comments(id, post_id, author_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, postID, actor.ID, body, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		return Comment{}, err
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'comment.create', 'comment', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
+	return Comment{ID: id, PostID: postID, Author: Author{ID: actor.ID, Username: actor.Username, Nickname: actor.Nickname, AvatarPath: actor.AvatarPath}, Body: body, CreatedAt: now}, nil
+}
+
+func (s *Store) DeleteComment(ctx context.Context, actor identity.User, id, ip string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE comments SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND status = 'visible' AND (author_id = ? OR ? = 'admin')`, nowText(), nowText(), id, actor.ID, actor.Role)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrNotFound
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'comment.delete', 'comment', ?, ?, ?)`, actor.ID, id, ip, nowText())
+	return nil
+}
+
+func (s *Store) ToggleLike(ctx context.Context, actor identity.User, postID, ip string) (bool, int, error) {
+	var allowed int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members')`, postID).Scan(&allowed); err != nil {
+		return false, 0, err
+	}
+	if allowed == 0 {
+		return false, 0, ErrForbidden
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM reactions WHERE post_id = ? AND user_id = ? AND kind = 'like')`, postID, actor.ID).Scan(&exists); err != nil {
+		return false, 0, err
+	}
+	liked := exists == 0
+	if liked {
+		_, err = tx.ExecContext(ctx, `INSERT INTO reactions(post_id, user_id, kind, created_at) VALUES(?, ?, 'like', ?)`, postID, actor.ID, nowText())
+	} else {
+		_, err = tx.ExecContext(ctx, `DELETE FROM reactions WHERE post_id = ? AND user_id = ? AND kind = 'like'`, postID, actor.ID)
+	}
+	if err != nil {
+		return false, 0, err
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM reactions WHERE post_id = ? AND kind = 'like'`, postID).Scan(&count); err != nil {
+		return false, 0, err
+	}
+	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, ?, 'post', ?, ?, ?)`, actor.ID, map[bool]string{true: "post.like", false: "post.unlike"}[liked], postID, ip, nowText())
+	if err := tx.Commit(); err != nil {
+		return false, 0, err
+	}
+	return liked, count, nil
 }
 
 func (s *Store) Get(ctx context.Context, actor identity.User, id string) (Post, error) {

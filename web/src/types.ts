@@ -68,3 +68,11 @@ export interface PostPage {
   posts: Post[]
   next_cursor?: string
 }
+
+export interface Comment {
+  id: string
+  post_id: string
+  author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+  body: string
+  created_at: string
+}

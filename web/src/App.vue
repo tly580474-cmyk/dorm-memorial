@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, X } from 'lucide-vue-next'
+import { AlertCircle, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, UserRound, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { Media, MediaUsage, Post, Session, User } from './types'
+import type { Comment, Media, MediaUsage, Post, Session, User } from './types'
 
 type EditorMedia = {
   key: string
@@ -34,6 +34,9 @@ let profileTrigger: HTMLElement | null = null
 const mobileMenuOpen = ref(false)
 const profileBusy = ref(false)
 const profileMessage = ref('')
+const avatarInput = ref<HTMLInputElement | null>(null)
+const avatarBusy = ref(false)
+const avatarProgress = ref(0)
 const sessions = ref<Session[]>([])
 const inviteCodes = ref<string[]>([])
 const inviteCount = ref(5)
@@ -60,6 +63,15 @@ const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
+const detailOpen = ref(false)
+const detailDialog = ref<HTMLElement | null>(null)
+let detailTrigger: HTMLElement | null = null
+const detailPost = ref<Post | null>(null)
+const detailComments = ref<Comment[]>([])
+const detailLoading = ref(false)
+const detailError = ref('')
+const commentBody = ref('')
+const commentBusy = ref(false)
 const activeView = ref<'home' | 'timeline' | 'wall'>('home')
 const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
 const timelineGroups = computed(() => {
@@ -192,6 +204,125 @@ async function saveProfile() {
     profileMessage.value = error instanceof Error ? error.message : '保存失败'
   } finally {
     profileBusy.value = false
+  }
+}
+
+function avatarURL(value: string) {
+  return value ? mediaContentURL(value, true) : ''
+}
+
+async function handleAvatarInput(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !user.value) return
+  if (!file.type.startsWith('image/') || file.type === 'image/svg+xml' || file.size <= 0 || file.size > 10 * 1024 * 1024) {
+    profileMessage.value = '头像请选择 10 MiB 以内的普通图片。'
+    return
+  }
+  avatarBusy.value = true
+  avatarProgress.value = 0
+  profileMessage.value = ''
+  try {
+    const uploaded = await api.uploadMedia(file, crypto.randomUUID(), {}, (progress) => { avatarProgress.value = progress })
+    applyUser((await api.setAvatar(uploaded.media.id)).user)
+    profileMessage.value = '头像已更新'
+  } catch (error) {
+    profileMessage.value = error instanceof Error ? error.message : '头像上传失败'
+  } finally {
+    avatarBusy.value = false
+  }
+}
+
+async function clearAvatar() {
+  if (!user.value?.avatar_path || avatarBusy.value) return
+  avatarBusy.value = true
+  profileMessage.value = ''
+  try {
+    applyUser((await api.clearAvatar()).user)
+    profileMessage.value = '头像已移除'
+  } catch (error) {
+    profileMessage.value = error instanceof Error ? error.message : '无法移除头像'
+  } finally {
+    avatarBusy.value = false
+  }
+}
+
+async function openDetail(post: Post) {
+  detailTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  detailPost.value = post
+  detailComments.value = []
+  detailError.value = ''
+  commentBody.value = ''
+  detailOpen.value = true
+  detailLoading.value = true
+  await nextTick()
+  detailDialog.value?.querySelector<HTMLElement>('button, textarea, [href]')?.focus()
+  try {
+    const [fresh, comments] = await Promise.all([api.post(post.id), api.comments(post.id)])
+    detailPost.value = fresh.post
+    detailComments.value = comments.comments
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : '无法读取详情'
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+function closeDetail() {
+  detailOpen.value = false
+  nextTick(() => detailTrigger?.focus())
+}
+
+function trapDetailFocus(event: KeyboardEvent) {
+  if (event.key === 'Escape') { event.preventDefault(); closeDetail(); return }
+  if (event.key !== 'Tab' || !detailDialog.value) return
+  const items = [...detailDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled), [href]')]
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+}
+
+function replacePost(next: Post) {
+  feedPosts.value = feedPosts.value.map((post) => post.id === next.id ? next : post)
+  myPosts.value = myPosts.value.map((post) => post.id === next.id ? next : post)
+  if (detailPost.value?.id === next.id) detailPost.value = next
+}
+
+async function togglePostLike(post: Post) {
+  try {
+    const response = await api.toggleLike(post.id)
+    replacePost({ ...post, liked_by_me: response.liked, like_count: response.like_count })
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : '点赞失败'
+  }
+}
+
+async function submitComment() {
+  if (!detailPost.value || !commentBody.value.trim()) return
+  commentBusy.value = true
+  detailError.value = ''
+  try {
+    const response = await api.addComment(detailPost.value.id, commentBody.value)
+    detailComments.value.push(response.comment)
+    replacePost({ ...detailPost.value, comment_count: detailPost.value.comment_count + 1 })
+    commentBody.value = ''
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : '评论失败'
+  } finally {
+    commentBusy.value = false
+  }
+}
+
+async function removeComment(comment: Comment) {
+  try {
+    await api.deleteComment(comment.id)
+    detailComments.value = detailComments.value.filter((item) => item.id !== comment.id)
+    if (detailPost.value) replacePost({ ...detailPost.value, comment_count: Math.max(0, detailPost.value.comment_count - 1) })
+  } catch (error) {
+    detailError.value = error instanceof Error ? error.message : '删除评论失败'
   }
 }
 
@@ -509,7 +640,7 @@ async function copyInvites() {
     <header class="topbar">
       <button class="icon-button mobile-only" type="button" aria-label="打开菜单" @click="mobileMenuOpen = true"><Menu /></button>
       <a class="brand" href="#"><BookHeart :size="25" aria-hidden="true" /><span>妙妙小屋</span></a>
-      <div class="top-actions"><button class="icon-button" type="button" aria-label="查看通知"><Bell /></button><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile">{{ user.nickname.slice(0, 1) }}</button></div>
+      <div class="top-actions"><button class="icon-button" type="button" aria-label="查看通知"><Bell /></button><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="user.avatar_path" :src="avatarURL(user.avatar_path)" alt="" @error="user.avatar_path = ''" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
     </header>
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
@@ -530,7 +661,7 @@ async function copyInvites() {
           <div v-if="contentLoading" class="content-empty" role="status"><span class="loader"></span><span>正在读取回忆…</span></div>
           <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>投稿通过审核后，会出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
-            <header><span class="mini-avatar">{{ post.author.nickname.slice(0, 1) }}</span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
+            <header><span class="mini-avatar"><img v-if="post.author.avatar_path" :src="avatarURL(post.author.avatar_path)" alt="" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
             <p class="post-body">{{ post.body }}</p>
             <div v-if="post.media.length" class="post-media-grid">
               <figure v-for="item in post.media" :key="item.id">
@@ -541,7 +672,7 @@ async function copyInvites() {
               </figure>
             </div>
             <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
-            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><span><Heart :size="17" />{{ post.like_count }}</span><span><MessageCircle :size="17" />{{ post.comment_count }}</span></footer>
+            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
           </article>
         </div>
 
@@ -618,6 +749,7 @@ async function copyInvites() {
     <div v-if="profileOpen" class="dialog-layer" role="presentation" @click.self="closeProfile">
       <section ref="profileDialog" class="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title" @keydown="trapProfileFocus">
         <header><div><p class="eyebrow">账号与个人资料</p><h2 id="profile-title">{{ user.nickname }}</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="closeProfile"><X /></button></header>
+        <section class="avatar-editor" aria-labelledby="avatar-editor-title"><div class="avatar-preview"><img v-if="user.avatar_path" :src="avatarURL(user.avatar_path)" :alt="`${user.nickname}的头像`" /><UserRound v-else :size="34" aria-hidden="true" /></div><div><strong id="avatar-editor-title">个人头像</strong><span>支持 JPEG、PNG、GIF 或 WebP，最大 10 MiB。</span><input ref="avatarInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp" @change="handleAvatarInput" /><div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="avatarInput?.click()">{{ avatarBusy ? `处理中 ${avatarProgress}%` : '选择新头像' }}</button><button v-if="user.avatar_path" type="button" class="text-danger" :disabled="avatarBusy" @click="clearAvatar">移除头像</button></div></div></section>
         <form @submit.prevent="saveProfile">
           <div class="field-grid"><div class="field"><label for="profile-nickname">昵称</label><input id="profile-nickname" v-model.trim="profile.nickname" maxlength="40" required /></div><div class="field"><label for="bed-no">床号或位置</label><input id="bed-no" v-model.trim="profile.bed_no" maxlength="30" placeholder="例如 2 号床" /></div></div>
           <div class="field"><label for="bio">个人简介</label><textarea id="bio" v-model="profile.bio" maxlength="500" rows="3"></textarea></div>
@@ -626,6 +758,17 @@ async function copyInvites() {
         </form>
         <div class="session-section"><h3>登录设备</h3><div v-for="session in sessions" :key="session.id" class="session-row"><div><strong>{{ session.current ? '当前设备' : '其他设备' }}</strong><span>{{ session.user_agent || '未知浏览器' }}</span><small>{{ session.ip_address }} · {{ new Date(session.last_seen_at).toLocaleString('zh-CN') }}</small></div><button class="text-danger" type="button" @click="revoke(session)">{{ session.current ? '退出此设备' : '注销' }}</button></div></div>
         <button class="logout-button" type="button" @click="logout"><LogOut :size="18" />退出登录</button>
+      </section>
+    </div>
+
+    <div v-if="detailOpen && detailPost" class="dialog-layer" role="presentation" @click.self="closeDetail">
+      <section ref="detailDialog" class="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title" @keydown="trapDetailFocus">
+        <header><div><p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p><h2 id="detail-title">{{ detailPost.author.nickname }}的回忆</h2></div><button class="icon-button" type="button" aria-label="关闭详情" @click="closeDetail"><X /></button></header>
+        <div class="detail-author"><span class="mini-avatar"><img v-if="detailPost.author.avatar_path" :src="avatarURL(detailPost.author.avatar_path)" alt="" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ detailPost.author.nickname }}</strong><span>{{ displayDate(detailPost.published_at) }}</span></div></div>
+        <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
+        <div v-if="detailPost.media.length" class="detail-media"><template v-for="item in detailPost.media" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename"></video></template></div>
+        <div class="detail-actions"><button type="button" :class="{ liked: detailPost.liked_by_me }" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.liked_by_me ? '已点赞' : '点赞' }} · {{ detailPost.like_count }}</button><span><MessageCircle :size="19" />{{ detailPost.comment_count }} 条评论</span></div>
+        <section class="comments-section" aria-labelledby="comments-title"><h3 id="comments-title">评论</h3><p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p><div v-if="detailLoading" class="comment-empty" role="status">正在读取评论…</div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div><article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="comment.author.avatar_path" :src="avatarURL(comment.author.avatar_path)" alt="" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article><form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="3" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form></section>
       </section>
     </div>
   </div>

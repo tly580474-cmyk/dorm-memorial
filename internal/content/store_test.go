@@ -71,6 +71,28 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	if err != nil || len(feed.Posts) != 1 || feed.Posts[0].ID != draft.ID {
 		t.Fatalf("feed after approval=%+v err=%v", feed, err)
 	}
+	liked, likeCount, err := store.ToggleLike(ctx, other, draft.ID, "127.0.0.1")
+	if err != nil || !liked || likeCount != 1 {
+		t.Fatalf("first like liked=%v count=%d err=%v", liked, likeCount, err)
+	}
+	liked, likeCount, err = store.ToggleLike(ctx, other, draft.ID, "127.0.0.1")
+	if err != nil || liked || likeCount != 0 {
+		t.Fatalf("unlike liked=%v count=%d err=%v", liked, likeCount, err)
+	}
+	comment, err := store.AddComment(ctx, other, draft.ID, "以后看到这段还会笑。", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	comments, err := store.ListComments(ctx, member, draft.ID)
+	if err != nil || len(comments) != 1 || comments[0].ID != comment.ID {
+		t.Fatalf("comments=%+v err=%v", comments, err)
+	}
+	if err := store.DeleteComment(ctx, member, comment.ID, "127.0.0.1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("non-author comment delete err=%v", err)
+	}
+	if err := store.DeleteComment(ctx, admin, comment.ID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Delete(ctx, member, draft.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}

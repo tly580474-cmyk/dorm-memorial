@@ -1,4 +1,4 @@
-import type { Media, MediaUsage, Post, PostPage, Session, User } from './types'
+import type { Comment, Media, MediaUsage, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -38,6 +38,7 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)
   },
+  post: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`),
   createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
     request<{ post: Post }>('/api/posts', { method: 'POST', body: JSON.stringify(body) }),
   updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
@@ -46,6 +47,12 @@ export const api = {
   moderatePost: (id: string, action: 'approve' | 'hide', note = '') =>
     request<{ post: Post }>(`/api/admin/posts/${encodeURIComponent(id)}/moderate`, { method: 'POST', body: JSON.stringify({ action, note }) }),
   deletePost: (id: string) => request<void>(`/api/posts/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
+  comments: (postID: string) => request<{ comments: Comment[] }>(`/api/posts/${encodeURIComponent(postID)}/comments`),
+  addComment: (postID: string, body: string) => request<{ comment: Comment }>(`/api/posts/${encodeURIComponent(postID)}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
+  deleteComment: (id: string) => request<void>(`/api/comments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  toggleLike: (postID: string) => request<{ liked: boolean; like_count: number }>(`/api/posts/${encodeURIComponent(postID)}/like`, { method: 'POST', body: '{}' }),
+  setAvatar: (mediaID: string) => request<{ user: User }>('/api/profile/avatar', { method: 'POST', body: JSON.stringify({ media_id: mediaID }) }),
+  clearAvatar: () => request<{ user: User }>('/api/profile/avatar', { method: 'DELETE' }),
   mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),
   deleteMedia: (id: string) => request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   uploadMedia: (file: File, uploadID: string, metadata: { width?: number; height?: number; duration_ms?: number }, onProgress: (percent: number) => void) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {

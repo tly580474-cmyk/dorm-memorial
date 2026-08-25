@@ -60,6 +60,8 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/auth/sessions", s.requireAuth(http.HandlerFunc(s.sessions)))
 	mux.Handle("DELETE /api/auth/sessions/{id}", s.requireAuth(http.HandlerFunc(s.revokeSession)))
 	mux.Handle("PATCH /api/profile", s.requireAuth(http.HandlerFunc(s.updateProfile)))
+	mux.Handle("POST /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.updateAvatar)))
+	mux.Handle("DELETE /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.clearAvatar)))
 	mux.Handle("POST /api/admin/invites", s.requireAuth(http.HandlerFunc(s.createInvite)))
 	mux.Handle("GET /api/admin/health", s.requireAuth(http.HandlerFunc(s.adminHealth)))
 	mux.Handle("GET /api/posts", s.requireAuth(http.HandlerFunc(s.listPosts)))
@@ -68,6 +70,10 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("PATCH /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.updatePost)))
 	mux.Handle("DELETE /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.deletePost)))
 	mux.Handle("POST /api/posts/{id}/submit", s.requireAuth(http.HandlerFunc(s.submitPost)))
+	mux.Handle("GET /api/posts/{id}/comments", s.requireAuth(http.HandlerFunc(s.listComments)))
+	mux.Handle("POST /api/posts/{id}/comments", s.requireAuth(http.HandlerFunc(s.addComment)))
+	mux.Handle("POST /api/posts/{id}/like", s.requireAuth(http.HandlerFunc(s.toggleLike)))
+	mux.Handle("DELETE /api/comments/{id}", s.requireAuth(http.HandlerFunc(s.deleteComment)))
 	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
 	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
@@ -371,6 +377,47 @@ func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) listComments(w http.ResponseWriter, r *http.Request) {
+	comments, err := s.content.ListComments(r.Context(), mustPrincipal(r).User, r.PathValue("id"))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"comments": comments})
+}
+
+func (s *Server) addComment(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Body string `json:"body"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	comment, err := s.content.AddComment(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body.Body, remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"comment": comment})
+}
+
+func (s *Server) deleteComment(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.DeleteComment(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) toggleLike(w http.ResponseWriter, r *http.Request) {
+	liked, count, err := s.content.ToggleLike(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "like_count": count})
+}
+
 func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength <= 0 {
 		writeError(w, http.StatusLengthRequired, "上传文件必须提供大小")
@@ -453,6 +500,38 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, content.Body); err != nil {
 		s.logger.Warn("media_stream_interrupted", "media_id", r.PathValue("id"), "error", err)
 	}
+}
+
+func (s *Server) updateAvatar(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MediaID string `json:"media_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	p := mustPrincipal(r)
+	user, previous, err := s.identity.SetAvatar(r.Context(), p.User.ID, body.MediaID, remoteIP(r))
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	if previous != "" && previous != body.MediaID {
+		_ = s.media.Delete(r.Context(), p.User, previous, remoteIP(r))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (s *Server) clearAvatar(w http.ResponseWriter, r *http.Request) {
+	p := mustPrincipal(r)
+	user, previous, err := s.identity.ClearAvatar(r.Context(), p.User.ID, remoteIP(r))
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	if previous != "" {
+		_ = s.media.Delete(r.Context(), p.User, previous, remoteIP(r))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
 }
 
 func (s *Server) frontend() http.Handler {

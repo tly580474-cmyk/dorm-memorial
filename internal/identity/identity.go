@@ -298,6 +298,39 @@ func (s *Store) UpdateProfile(ctx context.Context, userID string, input ProfileI
 	return s.UserByID(ctx, userID)
 }
 
+func (s *Store) SetAvatar(ctx context.Context, userID, mediaID, ip string) (User, string, error) {
+	var valid int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media WHERE id = ? AND owner_id = ? AND media_type = 'image' AND status = 'ready')`, mediaID, userID).Scan(&valid); err != nil {
+		return User{}, "", err
+	}
+	if valid == 0 {
+		return User{}, "", ErrForbidden
+	}
+	var previous string
+	if err := s.db.QueryRowContext(ctx, "SELECT avatar_path FROM profiles WHERE user_id = ?", userID).Scan(&previous); err != nil {
+		return User{}, "", err
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE profiles SET avatar_path = ?, updated_at = ? WHERE user_id = ?", mediaID, nowText(), userID); err != nil {
+		return User{}, "", err
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'profile.avatar', 'user', ?, ?, ?)`, userID, userID, ip, nowText())
+	user, err := s.UserByID(ctx, userID)
+	return user, previous, err
+}
+
+func (s *Store) ClearAvatar(ctx context.Context, userID, ip string) (User, string, error) {
+	var previous string
+	if err := s.db.QueryRowContext(ctx, "SELECT avatar_path FROM profiles WHERE user_id = ?", userID).Scan(&previous); err != nil {
+		return User{}, "", err
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE profiles SET avatar_path = '', updated_at = ? WHERE user_id = ?", nowText(), userID); err != nil {
+		return User{}, "", err
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'profile.avatar.clear', 'user', ?, ?, ?)`, userID, userID, ip, nowText())
+	user, err := s.UserByID(ctx, userID)
+	return user, previous, err
+}
+
 func validateAccount(username, email, password, nickname string) error {
 	if !usernamePattern.MatchString(strings.TrimSpace(username)) {
 		return errors.New("username must be 3-24 letters, numbers, underscores, or hyphens")
