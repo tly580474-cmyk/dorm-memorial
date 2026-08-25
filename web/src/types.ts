@@ -23,6 +23,24 @@ export interface Session {
 
 export type PostStatus = 'draft' | 'pending' | 'published' | 'hidden' | 'deleted'
 
+export interface Media {
+  id: string
+  owner_id?: string
+  original_filename: string
+  media_type: 'image' | 'video'
+  mime_type: string
+  size_bytes: number
+  sha256?: string
+  status: 'uploading' | 'ready' | 'unavailable' | 'deleted'
+  created_at?: string
+}
+
+export interface MediaUsage {
+  used_bytes: number
+  reserved_bytes: number
+  quota_bytes: number
+}
+
 export interface Post {
   id: string
   author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
@@ -39,6 +57,7 @@ export interface Post {
   comment_count: number
   like_count: number
   liked_by_me: boolean
+  media: Media[]
 }
 
 export interface PostPage {

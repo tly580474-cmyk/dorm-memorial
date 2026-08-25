@@ -22,6 +22,11 @@ type Config struct {
 	BootstrapEmail    string
 	BootstrapPassword string
 	BootstrapNickname string
+	AListBaseURL      string
+	AListUsername     string
+	AListPassword     string
+	AListToken        string
+	AListRoot         string
 }
 
 func Load() (Config, error) {
@@ -39,6 +44,11 @@ func Load() (Config, error) {
 		BootstrapEmail:    strings.TrimSpace(env(fileValues, "APP_BOOTSTRAP_ADMIN_EMAIL", "")),
 		BootstrapPassword: env(fileValues, "APP_BOOTSTRAP_ADMIN_PASSWORD", ""),
 		BootstrapNickname: strings.TrimSpace(env(fileValues, "APP_BOOTSTRAP_ADMIN_NICKNAME", "")),
+		AListBaseURL:      strings.TrimRight(strings.TrimSpace(env(fileValues, "ALIST_BASE_URL", "")), "/"),
+		AListUsername:     strings.TrimSpace(env(fileValues, "ALIST_USERNAME", "")),
+		AListPassword:     env(fileValues, "ALIST_PASSWORD", ""),
+		AListToken:        strings.TrimSpace(env(fileValues, "ALIST_TOKEN", "")),
+		AListRoot:         strings.TrimSpace(env(fileValues, "ALIST_ROOT", "/")),
 	}
 
 	secure, err := strconv.ParseBool(env(fileValues, "APP_COOKIE_SECURE", "false"))

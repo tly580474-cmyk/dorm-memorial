@@ -1,8 +1,21 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Heart, Home, LogOut, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck, Sparkles, Users, X } from 'lucide-vue-next'
+import { AlertCircle, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { Post, Session, User } from './types'
+import type { Media, MediaUsage, Post, Session, User } from './types'
+
+type EditorMedia = {
+  key: string
+  file?: File
+  media?: Media
+  name: string
+  size: number
+  kind: 'image' | 'video'
+  status: 'pending' | 'uploading' | 'ready' | 'error'
+  progress: number
+  error: string
+  persisted: boolean
+}
 
 const user = ref<User | null>(null)
 const booting = ref(true)
@@ -36,6 +49,13 @@ const composerBusy = ref(false)
 const composerError = ref('')
 const editingPostID = ref('')
 const editor = reactive({ body: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '' })
+const editorMedia = ref<EditorMedia[]>([])
+const removedMediaIDs = ref<string[]>([])
+const mediaInput = ref<HTMLInputElement | null>(null)
+const mediaUsage = ref<MediaUsage | null>(null)
+const mediaSelectionError = ref('')
+const mediaLoadErrors = ref(new Set<string>())
+const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -182,6 +202,7 @@ async function loadContent() {
     feedPosts.value = feed.posts
     myPosts.value = mine.posts
     pendingPosts.value = pending.posts
+    mediaUsage.value = (await api.mediaUsage()).usage
   } catch (error) {
     contentError.value = error instanceof Error ? error.message : '暂时无法读取纪念内容'
   } finally {
@@ -196,6 +217,9 @@ async function openComposer(post?: Post) {
   editor.content_date = post?.content_date?.slice(0, 10) ?? ''
   editor.visibility = post?.visibility ?? 'members'
   editor.tags = post?.tags.join('、') ?? ''
+  editorMedia.value = (post?.media ?? []).map((item) => ({ key: item.id, media: item, name: item.original_filename, size: item.size_bytes, kind: item.media_type, status: 'ready', progress: 100, error: '', persisted: true }))
+  removedMediaIDs.value = []
+  mediaSelectionError.value = ''
   composerError.value = ''
   composerOpen.value = true
   await nextTick()
@@ -231,16 +255,21 @@ function trapComposerFocus(event: KeyboardEvent) {
 async function savePost(submit: boolean) {
   composerBusy.value = true
   composerError.value = ''
-  const body = {
-    body: editor.body,
-    content_date: editor.content_date,
-    visibility: editor.visibility,
-    tags: editor.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
-    submit,
-  }
   try {
+    for (const item of editorMedia.value) {
+      if (item.status === 'pending' || item.status === 'error') await uploadEditorMedia(item)
+    }
+    const body = {
+      body: editor.body,
+      content_date: editor.content_date,
+      visibility: editor.visibility,
+      tags: editor.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
+      media_ids: editorMedia.value.flatMap((item) => item.media ? [item.media.id] : []),
+      submit,
+    }
     if (editingPostID.value) await api.updatePost(editingPostID.value, body)
     else await api.createPost(body)
+    await Promise.allSettled(removedMediaIDs.value.map((id) => api.deleteMedia(id)))
     composerOpen.value = false
     await loadContent()
   } catch (error) {
@@ -248,6 +277,107 @@ async function savePost(submit: boolean) {
   } finally {
     composerBusy.value = false
   }
+}
+
+function chooseMedia() {
+  mediaInput.value?.click()
+}
+
+function handleMediaInput(event: Event) {
+  const input = event.target as HTMLInputElement
+  addMediaFiles(input.files ? [...input.files] : [])
+  input.value = ''
+}
+
+function handleMediaDrop(event: DragEvent) {
+  addMediaFiles(event.dataTransfer?.files ? [...event.dataTransfer.files] : [])
+}
+
+function addMediaFiles(files: File[]) {
+  mediaSelectionError.value = ''
+  const available = 20 - editorMedia.value.length
+  if (files.length > available) mediaSelectionError.value = `每篇回忆最多添加 20 个文件，本次只加入前 ${Math.max(available, 0)} 个。`
+  for (const file of files.slice(0, Math.max(available, 0))) {
+    const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null
+    if (!kind) {
+      mediaSelectionError.value = `${file.name} 不是支持的图片或视频格式。`
+      continue
+    }
+    if (file.size <= 0 || file.size > 8 * 1024 ** 3) {
+      mediaSelectionError.value = `${file.name} 为空或超过 8 GiB。`
+      continue
+    }
+    editorMedia.value.push({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
+  }
+}
+
+async function uploadEditorMedia(item: EditorMedia) {
+  if (!item.file) throw new Error(`${item.name} 无法重新读取，请移除后再次选择。`)
+  item.status = 'uploading'
+  item.error = ''
+  item.progress = 0
+  try {
+    const response = await api.uploadMedia(item.file, crypto.randomUUID(), (percent) => { item.progress = percent })
+    item.media = response.media
+    item.status = 'ready'
+    item.progress = 100
+    mediaUsage.value = response.usage
+  } catch (error) {
+    item.status = 'error'
+    item.error = error instanceof Error ? error.message : '上传失败'
+    throw error
+  }
+}
+
+async function removeEditorMedia(item: EditorMedia) {
+  if (item.status === 'uploading') return
+  editorMedia.value = editorMedia.value.filter((candidate) => candidate.key !== item.key)
+  if (!item.media) return
+  if (item.persisted) {
+    removedMediaIDs.value.push(item.media.id)
+    return
+  }
+  try {
+    await api.deleteMedia(item.media.id)
+    mediaUsage.value = (await api.mediaUsage()).usage
+  } catch (error) {
+    mediaSelectionError.value = error instanceof Error ? error.message : '已从本次投稿移除，但远端清理失败'
+  }
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`
+  const units = ['KiB', 'MiB', 'GiB', 'TiB']
+  let size = value / 1024
+  let unit = units[0]
+  for (let index = 1; size >= 1024 && index < units.length; index++) {
+    size /= 1024
+    unit = units[index]
+  }
+  return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${unit}`
+}
+
+function usagePercent() {
+  if (!mediaUsage.value?.quota_bytes) return 0
+  return Math.min(100, Math.round(((mediaUsage.value.used_bytes + mediaUsage.value.reserved_bytes) / mediaUsage.value.quota_bytes) * 100))
+}
+
+function retryEditorMedia(item: EditorMedia) {
+  item.status = 'pending'
+  item.error = ''
+  item.progress = 0
+}
+
+function mediaContentURL(id: string) {
+  return `/api/media/${encodeURIComponent(id)}/content`
+}
+
+function markMediaLoadError(id: string) {
+  mediaLoadErrors.value.add(id)
+}
+
+function retryMediaLoad(id: string) {
+  mediaLoadErrors.value.delete(id)
 }
 
 async function moderate(post: Post, action: 'approve' | 'hide') {
@@ -346,6 +476,14 @@ async function copyInvites() {
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
             <header><span class="mini-avatar">{{ post.author.nickname.slice(0, 1) }}</span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
             <p class="post-body">{{ post.body }}</p>
+            <div v-if="post.media.length" class="post-media-grid">
+              <figure v-for="item in post.media" :key="item.id">
+                <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" aria-hidden="true" /><strong>远端媒体暂时不可用</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重新加载</button></div>
+                <img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" />
+                <video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename" @error="markMediaLoadError(item.id)"></video>
+                <figcaption><span>{{ item.original_filename }}</span><small>{{ formatBytes(item.size_bytes) }}</small></figcaption>
+              </figure>
+            </div>
             <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
             <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><span><Heart :size="17" />{{ post.like_count }}</span><span><MessageCircle :size="17" />{{ post.comment_count }}</span></footer>
           </article>
@@ -373,11 +511,26 @@ async function copyInvites() {
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">
         <header><div><p class="eyebrow">{{ editingPostID ? '编辑草稿' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
         <form @submit.prevent="savePost(true)">
-          <div class="field"><label for="post-body">正文</label><textarea id="post-body" v-model="editor.body" rows="8" maxlength="10000" required autofocus placeholder="那天发生了什么？也可以只写一句想说的话。"></textarea><small>{{ editor.body.length }} / 10000</small></div>
+          <div class="field"><label for="post-body">正文</label><textarea id="post-body" v-model="editor.body" rows="8" maxlength="10000" autofocus placeholder="那天发生了什么？也可以只上传照片或视频。"></textarea><small>{{ editor.body.length }} / 10000</small></div>
+          <section class="media-editor" aria-labelledby="media-editor-title">
+            <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后会在保存投稿时上传，不会暂存在生产服务器。</small></div><span>{{ editorMedia.length }} / 20</span></header>
+            <input ref="mediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleMediaInput" />
+            <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>也可以把文件拖到这里，单个不超过 8 GiB</small></span></button>
+            <p v-if="mediaSelectionError" class="field-error" role="alert"><AlertCircle :size="17" aria-hidden="true" />{{ mediaSelectionError }}</p>
+            <div v-if="editorMedia.length" class="media-queue">
+              <article v-for="item in editorMedia" :key="item.key" :data-status="item.status">
+                <span class="media-kind"><Image v-if="item.kind === 'image'" :size="20" aria-hidden="true" /><Film v-else :size="20" aria-hidden="true" /></span>
+                <div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待保存' : item.status === 'uploading' ? `正在上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress></div>
+                <button v-if="item.status === 'error'" type="button" aria-label="下次保存时重试上传" title="下次保存时重试" @click="retryEditorMedia(item)"><RotateCcw :size="18" /></button>
+                <button v-else type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
+              </article>
+            </div>
+            <div v-if="mediaUsage" class="media-usage"><span>我的媒体空间</span><span>{{ formatBytes(mediaUsage.used_bytes + mediaUsage.reserved_bytes) }} / {{ formatBytes(mediaUsage.quota_bytes) }}</span><progress :value="usagePercent()" max="100">{{ usagePercent() }}%</progress></div>
+          </section>
           <div class="field-grid"><div class="field"><label for="content-date">内容日期</label><input id="content-date" v-model="editor.content_date" type="date" /></div><div class="field"><label for="post-visibility">可见范围</label><select id="post-visibility" v-model="editor.visibility"><option value="members">所有室友</option><option value="private">仅自己</option></select></div></div>
           <div class="field"><label for="post-tags">标签</label><input id="post-tags" v-model="editor.tags" maxlength="320" placeholder="用逗号或顿号分隔，最多 10 个" /></div>
           <p v-if="composerError" class="form-error" role="alert">{{ composerError }}</p>
-          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || !editor.body.trim()"><Send :size="18" />{{ composerBusy ? '保存中…' : '提交审核' }}</button></footer>
+          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || mediaUploading || (!editor.body.trim() && editorMedia.length === 0)"><Send :size="18" />{{ composerBusy ? '上传并保存中…' : '提交审核' }}</button></footer>
         </form>
       </section>
     </div>

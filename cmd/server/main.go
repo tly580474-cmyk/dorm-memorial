@@ -14,6 +14,8 @@ import (
 	"dorm-memorial/internal/database"
 	"dorm-memorial/internal/httpapi"
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/storage"
+	"dorm-memorial/internal/storage/alist"
 )
 
 func main() {
@@ -42,7 +44,29 @@ func main() {
 		logger.Info("bootstrap_admin_created", "username", cfg.BootstrapUsername)
 	}
 
-	api := httpapi.New(cfg, db, identities, logger)
+	var objects storage.ObjectStorage
+	if cfg.AListBaseURL != "" && (cfg.AListToken != "" || (cfg.AListUsername != "" && cfg.AListPassword != "")) {
+		alistClient, err := alist.New(alist.Config{BaseURL: cfg.AListBaseURL, Token: cfg.AListToken, Username: cfg.AListUsername, Password: cfg.AListPassword, Root: cfg.AListRoot})
+		if err != nil {
+			logger.Error("storage_configuration_invalid", "error", err)
+			os.Exit(1)
+		}
+		if cfg.AListUsername != "" && cfg.AListPassword != "" {
+			authCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			err = alistClient.Authenticate(authCtx)
+			cancel()
+			if err != nil {
+				logger.Error("storage_authentication_failed", "error", err)
+				os.Exit(1)
+			}
+		}
+		objects = alistClient
+		logger.Info("storage_ready", "provider", "alist", "root", cfg.AListRoot)
+	} else {
+		logger.Warn("storage_disabled", "reason", "AList credentials are not configured")
+	}
+
+	api := httpapi.New(cfg, db, identities, logger, objects)
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           api.Handler(),

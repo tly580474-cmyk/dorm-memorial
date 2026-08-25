@@ -44,6 +44,16 @@ type Post struct {
 	CommentCount   int        `json:"comment_count"`
 	LikeCount      int        `json:"like_count"`
 	LikedByMe      bool       `json:"liked_by_me"`
+	Media          []Media    `json:"media"`
+}
+
+type Media struct {
+	ID               string `json:"id"`
+	OriginalFilename string `json:"original_filename"`
+	MediaType        string `json:"media_type"`
+	MimeType         string `json:"mime_type"`
+	SizeBytes        int64  `json:"size_bytes"`
+	Status           string `json:"status"`
 }
 
 type WriteInput struct {
@@ -51,6 +61,7 @@ type WriteInput struct {
 	ContentDate string   `json:"content_date"`
 	Visibility  string   `json:"visibility"`
 	Tags        []string `json:"tags"`
+	MediaIDs    []string `json:"media_ids"`
 	Submit      bool     `json:"submit"`
 }
 
@@ -103,6 +114,9 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 	if err := replaceTags(ctx, tx, id, input.Tags); err != nil {
 		return Post{}, err
 	}
+	if err := replaceMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
+		return Post{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, metadata_json, ip_address, created_at)
 		VALUES(?, ?, 'post', ?, ?, ?, ?)`, actor.ID, "post.create", id, fmt.Sprintf(`{"status":%q}`, status), ip, now.Format(time.RFC3339Nano)); err != nil {
 		return Post{}, err
@@ -150,6 +164,9 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 		return Post{}, ErrConflict
 	}
 	if err := replaceTags(ctx, tx, id, input.Tags); err != nil {
+		return Post{}, err
+	}
+	if err := replaceMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
 		return Post{}, err
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'post.update', 'post', ?, ?, ?)`, actor.ID, id, ip, nowText())
@@ -294,6 +311,9 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 		if err := s.loadTags(ctx, &posts[index]); err != nil {
 			return Page{}, err
 		}
+		if err := s.loadMedia(ctx, &posts[index]); err != nil {
+			return Page{}, err
+		}
 	}
 	page := Page{Posts: posts}
 	if len(posts) > options.Limit {
@@ -327,6 +347,9 @@ func (s *Store) scanOne(ctx context.Context, viewerID, where string, args ...any
 	if err := s.loadTags(ctx, &post); err != nil {
 		return Post{}, "", err
 	}
+	if err := s.loadMedia(ctx, &post); err != nil {
+		return Post{}, "", err
+	}
 	return post, post.Author.ID, nil
 }
 
@@ -357,6 +380,7 @@ func scanPost(row scanner) (Post, error) {
 	post.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	post.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 	post.Tags = []string{}
+	post.Media = []Media{}
 	return post, nil
 }
 
@@ -372,6 +396,23 @@ func (s *Store) loadTags(ctx context.Context, post *Post) error {
 			return err
 		}
 		post.Tags = append(post.Tags, name)
+	}
+	return rows.Err()
+}
+
+func (s *Store) loadMedia(ctx context.Context, post *Post) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status
+		FROM media m JOIN post_media pm ON pm.media_id = m.id WHERE pm.post_id = ? AND m.status <> 'deleted' ORDER BY pm.position`, post.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item Media
+		if err := rows.Scan(&item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status); err != nil {
+			return err
+		}
+		post.Media = append(post.Media, item)
 	}
 	return rows.Err()
 }
@@ -392,12 +433,29 @@ func replaceTags(ctx context.Context, tx *sql.Tx, postID string, tags []string) 
 	return nil
 }
 
+func replaceMedia(ctx context.Context, tx *sql.Tx, ownerID, postID string, mediaIDs []string) error {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM post_media WHERE post_id = ?", postID); err != nil {
+		return err
+	}
+	for position, mediaID := range mediaIDs {
+		result, err := tx.ExecContext(ctx, `INSERT INTO post_media(post_id, media_id, position)
+			SELECT ?, id, ? FROM media WHERE id = ? AND owner_id = ? AND status = 'ready'`, postID, position, mediaID, ownerID)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrForbidden
+		}
+	}
+	return nil
+}
+
 func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	input.Body = strings.TrimSpace(input.Body)
 	if len([]rune(input.Body)) > 10000 {
 		return input, nil, errors.New("content body is too long")
 	}
-	if input.Submit && input.Body == "" {
+	if input.Submit && input.Body == "" && len(input.MediaIDs) == 0 {
 		return input, nil, errors.New("content body is required before submission")
 	}
 	if input.Visibility == "" {
@@ -432,6 +490,22 @@ func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 		}
 	}
 	input.Tags = cleanTags
+	if len(input.MediaIDs) > 20 {
+		return input, nil, errors.New("a post can have at most 20 media files")
+	}
+	seenMedia := make(map[string]bool)
+	cleanMedia := make([]string, 0, len(input.MediaIDs))
+	for _, mediaID := range input.MediaIDs {
+		mediaID = strings.TrimSpace(mediaID)
+		if len(mediaID) != 32 {
+			return input, nil, errors.New("invalid media id")
+		}
+		if !seenMedia[mediaID] {
+			seenMedia[mediaID] = true
+			cleanMedia = append(cleanMedia, mediaID)
+		}
+	}
+	input.MediaIDs = cleanMedia
 	return input, contentDate, nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"dorm-memorial/internal/config"
 	"dorm-memorial/internal/database"
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/storage"
 )
 
 func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
@@ -148,6 +150,115 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	}
 	afterRestart.Body.Close()
 }
+
+func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "media-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "mediaadmin", "mediaadmin@example.com", "correct-horse-battery", "媒体管理员"); err != nil {
+		t.Fatal(err)
+	}
+	objects := &httpTestObjects{values: make(map[string][]byte)}
+	cfg := config.Config{Environment: "test", SessionTTL: time.Hour, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	server := httptest.NewServer(New(cfg, db, identities, slog.New(slog.NewTextHandler(io.Discard, nil)), objects).Handler())
+	defer server.Close()
+	cookie := loginTestUser(t, server.URL, "mediaadmin", "correct-horse-battery")
+
+	payload := []byte("image payload")
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/media/uploads", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.AddCookie(cookie)
+	request.Header.Set("Content-Type", "image/png")
+	request.Header.Set("X-File-Name", "room.png")
+	request.Header.Set("X-Upload-ID", "http-upload-0001")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("upload status=%d body=%s", response.StatusCode, readBody(response))
+	}
+	var uploaded struct {
+		Media struct {
+			ID string `json:"id"`
+		} `json:"media"`
+	}
+	decodeResponse(t, response, &uploaded)
+	contentRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/api/media/"+uploaded.Media.ID+"/content", nil)
+	contentRequest.AddCookie(cookie)
+	contentResponse, err := http.DefaultClient.Do(contentRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentBytes, _ := io.ReadAll(contentResponse.Body)
+	contentResponse.Body.Close()
+	if contentResponse.StatusCode != http.StatusOK || !bytes.Equal(contentBytes, payload) || contentResponse.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("content response status=%d type=%q bytes=%q", contentResponse.StatusCode, contentResponse.Header.Get("Content-Type"), contentBytes)
+	}
+
+	postResponse := doJSON(t, server.URL+"/api/posts", http.MethodPost, map[string]any{
+		"body": "", "visibility": "members", "media_ids": []string{uploaded.Media.ID}, "submit": true,
+	}, cookie)
+	if postResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create media post status=%d body=%s", postResponse.StatusCode, readBody(postResponse))
+	}
+	var postBody struct {
+		Post struct {
+			Status string `json:"status"`
+			Media  []struct {
+				ID string `json:"id"`
+			} `json:"media"`
+		} `json:"post"`
+	}
+	decodeResponse(t, postResponse, &postBody)
+	if postBody.Post.Status != "pending" || len(postBody.Post.Media) != 1 || postBody.Post.Media[0].ID != uploaded.Media.ID {
+		t.Fatalf("unexpected media post: %+v", postBody.Post)
+	}
+	deleteResponse := doJSON(t, server.URL+"/api/media/"+uploaded.Media.ID, http.MethodDelete, nil, cookie)
+	if deleteResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("attached media deletion status=%d body=%s", deleteResponse.StatusCode, readBody(deleteResponse))
+	}
+	deleteResponse.Body.Close()
+}
+
+type httpTestObjects struct{ values map[string][]byte }
+
+func (s *httpTestObjects) Put(_ context.Context, objectPath string, body io.Reader, size int64) error {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != size {
+		return io.ErrUnexpectedEOF
+	}
+	s.values[objectPath] = data
+	return nil
+}
+func (s *httpTestObjects) Open(_ context.Context, objectPath string) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(s.values[objectPath])), nil
+}
+func (s *httpTestObjects) Stat(_ context.Context, objectPath string) (storage.ObjectInfo, error) {
+	data, ok := s.values[objectPath]
+	if !ok {
+		return storage.ObjectInfo{}, storage.ErrNotFound
+	}
+	return storage.ObjectInfo{Path: objectPath, Name: path.Base(objectPath), Size: int64(len(data))}, nil
+}
+func (s *httpTestObjects) Delete(_ context.Context, objectPath string) error {
+	if _, ok := s.values[objectPath]; !ok {
+		return storage.ErrNotFound
+	}
+	delete(s.values, objectPath)
+	return nil
+}
+func (*httpTestObjects) Move(context.Context, string, string) error         { return nil }
+func (*httpTestObjects) ResolveURL(context.Context, string) (string, error) { return "", nil }
 
 func loginTestUser(t *testing.T, baseURL, identifier, password string) *http.Cookie {
 	t.Helper()

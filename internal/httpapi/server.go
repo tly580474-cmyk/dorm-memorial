@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 	"dorm-memorial/internal/config"
 	"dorm-memorial/internal/content"
 	"dorm-memorial/internal/identity"
+	mediastore "dorm-memorial/internal/media"
+	"dorm-memorial/internal/storage"
 )
 
 const sessionCookie = "dm_session"
@@ -36,12 +39,17 @@ type Server struct {
 	db       *sql.DB
 	identity *identity.Store
 	content  *content.Store
+	media    *mediastore.Store
 	logger   *slog.Logger
 	handler  http.Handler
 }
 
-func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog.Logger) *Server {
-	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), logger: logger}
+func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog.Logger, objects ...storage.ObjectStorage) *Server {
+	var objectStore storage.ObjectStorage
+	if len(objects) > 0 {
+		objectStore = objects[0]
+	}
+	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore), logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
@@ -61,6 +69,10 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("DELETE /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.deletePost)))
 	mux.Handle("POST /api/posts/{id}/submit", s.requireAuth(http.HandlerFunc(s.submitPost)))
 	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
+	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
+	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
+	mux.Handle("DELETE /api/media/{id}", s.requireAuth(http.HandlerFunc(s.deleteMedia)))
+	mux.Handle("GET /api/media/{id}/content", s.requireAuth(http.HandlerFunc(s.mediaContent)))
 	mux.Handle("/", s.frontend())
 	s.handler = s.middleware(mux)
 	return s
@@ -359,6 +371,79 @@ func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
+	if r.ContentLength <= 0 {
+		writeError(w, http.StatusLengthRequired, "上传文件必须提供大小")
+		return
+	}
+	if r.ContentLength > mediastore.MaxFileSize {
+		writeError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 8 GiB")
+		return
+	}
+	filename, err := url.QueryUnescape(r.Header.Get("X-File-Name"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "文件名格式不正确")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, mediastore.MaxFileSize)
+	record, err := s.media.Upload(r.Context(), mustPrincipal(r).User, mediastore.UploadInput{
+		ClientRequestID: r.Header.Get("X-Upload-ID"),
+		Filename:        filename,
+		MimeType:        r.Header.Get("Content-Type"),
+		Size:            r.ContentLength,
+		Body:            r.Body,
+		IPAddress:       remoteIP(r),
+	})
+	if err != nil {
+		s.logger.Warn("media_upload_failed", "user_id", mustPrincipal(r).User.ID, "error", err)
+		writeMediaError(w, err)
+		return
+	}
+	usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
+	writeJSON(w, http.StatusCreated, map[string]any{"media": record, "usage": usage})
+}
+
+func (s *Server) mediaUsage(w http.ResponseWriter, r *http.Request) {
+	usage, err := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
+	if err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"usage": usage})
+}
+
+func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
+	if err := s.media.Delete(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
+	content, err := s.media.OpenContent(r.Context(), mustPrincipal(r).User, r.PathValue("id"), r.Header.Get("Range"))
+	if err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	defer content.Body.Close()
+	w.Header().Set("Content-Type", content.MimeType)
+	w.Header().Set("Content-Disposition", "inline")
+	if content.AcceptRanges != "" {
+		w.Header().Set("Accept-Ranges", content.AcceptRanges)
+	}
+	if content.ContentRange != "" {
+		w.Header().Set("Content-Range", content.ContentRange)
+	}
+	if content.ContentLength >= 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(content.ContentLength, 10))
+	}
+	w.WriteHeader(content.StatusCode)
+	if _, err := io.Copy(w, content.Body); err != nil {
+		s.logger.Warn("media_stream_interrupted", "media_id", r.PathValue("id"), "error", err)
+	}
+}
+
 func (s *Server) frontend() http.Handler {
 	index := filepath.Join(s.cfg.FrontendDir, "index.html")
 	files := http.FileServer(http.Dir(s.cfg.FrontendDir))
@@ -435,6 +520,25 @@ func writeContentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "内容状态已变化，请刷新后重试")
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func writeMediaError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, mediastore.ErrNotFound):
+		writeError(w, http.StatusNotFound, "媒体不存在")
+	case errors.Is(err, mediastore.ErrForbidden):
+		writeError(w, http.StatusForbidden, "无权访问该媒体")
+	case errors.Is(err, mediastore.ErrConflict):
+		writeError(w, http.StatusConflict, "上传任务或媒体状态已变化")
+	case errors.Is(err, mediastore.ErrQuotaExceeded):
+		writeError(w, http.StatusRequestEntityTooLarge, "媒体空间额度不足")
+	case errors.Is(err, mediastore.ErrStorageUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "远端存储暂时不可用，请稍后重试")
+	case errors.Is(err, mediastore.ErrInvalid):
+		writeError(w, http.StatusBadRequest, "仅支持有效的图片或视频文件")
+	default:
+		writeError(w, http.StatusInternalServerError, "媒体操作失败")
 	}
 }
 

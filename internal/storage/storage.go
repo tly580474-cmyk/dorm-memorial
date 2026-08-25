@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"time"
 )
 
@@ -30,4 +31,15 @@ type ObjectStorage interface {
 	Delete(ctx context.Context, objectPath string) error
 	Move(ctx context.Context, from, to string) error
 	ResolveURL(ctx context.Context, objectPath string) (string, error)
+}
+
+// RangeStorage is implemented by providers that can preserve upstream byte-range
+// responses. Video playback uses it without forcing every storage adapter to
+// depend on HTTP semantics.
+type RangeStorage interface {
+	OpenRange(ctx context.Context, objectPath, byteRange string) (*http.Response, error)
+}
+
+type DirectoryRefresher interface {
+	RefreshDirectory(ctx context.Context, objectPath string) error
 }

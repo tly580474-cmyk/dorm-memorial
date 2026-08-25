@@ -1,4 +1,4 @@
-import type { Post, PostPage, Session, User } from './types'
+import type { Media, MediaUsage, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -38,12 +38,32 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)
   },
-  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; submit: boolean }) =>
+  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
     request<{ post: Post }>('/api/posts', { method: 'POST', body: JSON.stringify(body) }),
-  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; submit: boolean }) =>
+  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
     request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   submitPost: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}/submit`, { method: 'POST', body: '{}' }),
   moderatePost: (id: string, action: 'approve' | 'hide', note = '') =>
     request<{ post: Post }>(`/api/admin/posts/${encodeURIComponent(id)}/moderate`, { method: 'POST', body: JSON.stringify({ action, note }) }),
   deletePost: (id: string) => request<void>(`/api/posts/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
+  mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),
+  deleteMedia: (id: string) => request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
+  uploadMedia: (file: File, uploadID: string, onProgress: (percent: number) => void) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/media/uploads')
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream')
+    xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name))
+    xhr.setRequestHeader('X-Upload-ID', uploadID)
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
+    })
+    xhr.addEventListener('load', () => {
+      const body = (() => { try { return JSON.parse(xhr.responseText) as ApiErrorBody & { media: Media; usage: MediaUsage } } catch { return {} as ApiErrorBody & { media: Media; usage: MediaUsage } } })()
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body)
+      else reject(new ApiError(body.error?.message ?? `上传失败（${xhr.status}）`, xhr.status))
+    })
+    xhr.addEventListener('error', () => reject(new ApiError('网络中断，文件尚未上传完成', 0)))
+    xhr.send(file)
+  }),
 }
