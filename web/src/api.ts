@@ -1,4 +1,4 @@
-import type { Session, User } from './types'
+import type { Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -33,4 +33,17 @@ export const api = {
   revokeSession: (id: string) => request<void>(`/api/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   createInvites: (body: { max_uses: number; expires_in_hours: number; count: number }) =>
     request<{ invites: Array<{ code: string; expires_at: string; max_uses: number }>; count: number }>('/api/admin/invites', { method: 'POST', body: JSON.stringify(body) }),
+  posts: (query: { scope?: 'feed' | 'mine' | 'pending'; status?: string; cursor?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)
+  },
+  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; submit: boolean }) =>
+    request<{ post: Post }>('/api/posts', { method: 'POST', body: JSON.stringify(body) }),
+  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; submit: boolean }) =>
+    request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  submitPost: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}/submit`, { method: 'POST', body: '{}' }),
+  moderatePost: (id: string, action: 'approve' | 'hide', note = '') =>
+    request<{ post: Post }>(`/api/admin/posts/${encodeURIComponent(id)}/moderate`, { method: 'POST', body: JSON.stringify({ action, note }) }),
+  deletePost: (id: string) => request<void>(`/api/posts/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
 }

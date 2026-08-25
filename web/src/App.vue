@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { Bell, BookHeart, BookOpenText, Camera, Check, Copy, Eye, EyeOff, Home, LogOut, Menu, MessageCircle, Plus, Settings, ShieldCheck, Sparkles, Users, X } from 'lucide-vue-next'
+import { Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Heart, Home, LogOut, Menu, MessageCircle, Plus, Send, Settings, ShieldCheck, Sparkles, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { Session, User } from './types'
+import type { Post, Session, User } from './types'
 
 const user = ref<User | null>(null)
 const booting = ref(true)
@@ -24,6 +24,18 @@ const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
 const inviteCopyStatus = ref<'idle' | 'copied' | 'error'>('idle')
 const inviteBusy = ref(false)
 const profile = reactive({ nickname: '', bio: '', bed_no: '', memorial_note: '' })
+const feedPosts = ref<Post[]>([])
+const myPosts = ref<Post[]>([])
+const pendingPosts = ref<Post[]>([])
+const contentLoading = ref(false)
+const contentError = ref('')
+const composerOpen = ref(false)
+const composerDialog = ref<HTMLElement | null>(null)
+let composerTrigger: HTMLElement | null = null
+const composerBusy = ref(false)
+const composerError = ref('')
+const editingPostID = ref('')
+const editor = reactive({ body: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '' })
 
 const greeting = computed(() => {
   const hour = new Date().getHours()
@@ -31,17 +43,18 @@ const greeting = computed(() => {
 })
 
 const nav = [
-  { label: '首页', icon: Home, active: true },
-  { label: '时间线', icon: Sparkles },
-  { label: '照片墙', icon: Camera },
-  { label: '留言册', icon: BookHeart },
-  { label: '论坛', icon: BookOpenText },
-  { label: '消息', icon: MessageCircle },
+  { label: '首页', icon: Home, active: true, available: true },
+  { label: '时间线', icon: Sparkles, available: false },
+  { label: '照片墙', icon: Camera, available: false },
+  { label: '留言册', icon: BookHeart, available: false },
+  { label: '论坛', icon: BookOpenText, available: false },
+  { label: '消息', icon: MessageCircle, available: false },
 ]
 
 onMounted(async () => {
   try {
     applyUser((await api.me()).user)
+    await loadContent()
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 401) console.error(error)
   } finally {
@@ -65,6 +78,7 @@ async function submitAuth() {
       ? await api.login({ identifier: auth.identifier, password: auth.password })
       : await api.register({ invite_code: auth.inviteCode, username: auth.username, email: auth.email, password: auth.password, nickname: auth.nickname })
     applyUser(response.user)
+    await loadContent()
     auth.password = ''
   } catch (error) {
     authError.value = error instanceof Error ? error.message : '暂时无法完成请求'
@@ -76,6 +90,9 @@ async function submitAuth() {
 async function logout() {
   await api.logout()
   user.value = null
+  feedPosts.value = []
+  myPosts.value = []
+  pendingPosts.value = []
   profileOpen.value = false
 }
 
@@ -151,6 +168,106 @@ async function createInvite() {
   }
 }
 
+async function loadContent() {
+  if (!user.value) return
+  contentLoading.value = true
+  contentError.value = ''
+  try {
+    const requests: [Promise<{ posts: Post[] }>, Promise<{ posts: Post[] }>, Promise<{ posts: Post[] }> | null] = [
+      api.posts({ scope: 'feed', limit: 20 }),
+      api.posts({ scope: 'mine', limit: 20 }),
+      user.value.role === 'admin' ? api.posts({ scope: 'pending', limit: 20 }) : null,
+    ]
+    const [feed, mine, pending] = await Promise.all([requests[0], requests[1], requests[2] ?? Promise.resolve({ posts: [] })])
+    feedPosts.value = feed.posts
+    myPosts.value = mine.posts
+    pendingPosts.value = pending.posts
+  } catch (error) {
+    contentError.value = error instanceof Error ? error.message : '暂时无法读取纪念内容'
+  } finally {
+    contentLoading.value = false
+  }
+}
+
+async function openComposer(post?: Post) {
+  composerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  editingPostID.value = post?.id ?? ''
+  editor.body = post?.body ?? ''
+  editor.content_date = post?.content_date?.slice(0, 10) ?? ''
+  editor.visibility = post?.visibility ?? 'members'
+  editor.tags = post?.tags.join('、') ?? ''
+  composerError.value = ''
+  composerOpen.value = true
+  await nextTick()
+  composerDialog.value?.querySelector<HTMLElement>('textarea, input, button')?.focus()
+}
+
+function closeComposer() {
+  if (composerBusy.value) return
+  composerOpen.value = false
+  nextTick(() => composerTrigger?.focus())
+}
+
+function trapComposerFocus(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeComposer()
+    return
+  }
+  if (event.key !== 'Tab' || !composerDialog.value) return
+  const items = [...composerDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled)')]
+  if (items.length === 0) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last?.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first?.focus()
+  }
+}
+
+async function savePost(submit: boolean) {
+  composerBusy.value = true
+  composerError.value = ''
+  const body = {
+    body: editor.body,
+    content_date: editor.content_date,
+    visibility: editor.visibility,
+    tags: editor.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
+    submit,
+  }
+  try {
+    if (editingPostID.value) await api.updatePost(editingPostID.value, body)
+    else await api.createPost(body)
+    composerOpen.value = false
+    await loadContent()
+  } catch (error) {
+    composerError.value = error instanceof Error ? error.message : '保存失败'
+  } finally {
+    composerBusy.value = false
+  }
+}
+
+async function moderate(post: Post, action: 'approve' | 'hide') {
+  try {
+    await api.moderatePost(post.id, action)
+    await loadContent()
+  } catch (error) {
+    contentError.value = error instanceof Error ? error.message : '审核失败'
+  }
+}
+
+function displayDate(value: string | null | undefined) {
+  if (!value) return ''
+  return new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+}
+
+function statusLabel(status: Post['status']) {
+  return { draft: '草稿', pending: '待审核', published: '已发布', hidden: '已隐藏', deleted: '已删除' }[status]
+}
+
 async function copyInvites() {
   if (inviteCodes.value.length === 0) return
   try {
@@ -212,20 +329,32 @@ async function copyInvites() {
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
       <div class="mobile-menu-head"><span>浏览纪念册</span><button class="icon-button" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"><X /></button></div>
-      <nav><a v-for="item in nav" :key="item.label" href="#" :class="{ active: item.active }"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span></a></nav>
+      <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.active }" :disabled="!item.available" :title="item.available ? item.label : `${item.label}正在开发`"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small></button></nav>
       <div class="sidebar-bottom"><button v-if="user.role === 'admin'" type="button"><ShieldCheck :size="20" />管理</button><button type="button" @click="openProfile"><Settings :size="20" />设置</button></div>
     </aside>
     <button v-if="mobileMenuOpen" class="scrim" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"></button>
 
     <main id="main-content" class="main-content">
-      <section class="welcome-card">
-        <div><p class="eyebrow">{{ greeting }}，{{ user.nickname }}</p><h1>欢迎回到我们的妙妙小屋</h1><p>基础平台已经就绪。下一阶段，照片、故事和留言会从这里慢慢长出来。</p></div>
-        <button class="primary-button compact" type="button"><Plus :size="19" />分享回忆</button>
-      </section>
-      <section class="dashboard-grid" aria-label="社区概览">
-        <article class="dashboard-card"><Users aria-hidden="true" /><h2>室友成员</h2><p>邀请注册已启用，只有拿到邀请码的室友可以加入。</p></article>
-        <article class="dashboard-card"><ShieldCheck aria-hidden="true" /><h2>私密空间</h2><p>登录状态由服务端安全会话维护，页面不会保存长期令牌。</p></article>
-        <article class="dashboard-card"><BookOpenText aria-hidden="true" /><h2>下一步</h2><p>阶段 2 将接入纪念内容、照片墙和留言册。</p></article>
+      <header class="page-heading"><div><p class="eyebrow">{{ greeting }}，{{ user.nickname }}</p><h1>最近的回忆</h1><p>记录一句话，也可以先存进草稿箱慢慢写。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />分享回忆</button></header>
+
+      <p v-if="contentError" class="form-error content-alert" role="alert">{{ contentError }}</p>
+      <section class="content-columns">
+        <div class="feed-column">
+          <button class="quick-composer" type="button" @click="openComposer()"><span class="mini-avatar">{{ user.nickname.slice(0, 1) }}</span><span>想记录今天的什么？</span><FileEdit :size="20" aria-hidden="true" /></button>
+          <div v-if="contentLoading" class="content-empty" role="status"><span class="loader"></span><span>正在读取回忆…</span></div>
+          <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>投稿通过审核后，会出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
+          <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
+            <header><span class="mini-avatar">{{ post.author.nickname.slice(0, 1) }}</span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
+            <p class="post-body">{{ post.body }}</p>
+            <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
+            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><span><Heart :size="17" />{{ post.like_count }}</span><span><MessageCircle :size="17" />{{ post.comment_count }}</span></footer>
+          </article>
+        </div>
+
+        <aside class="content-rail" aria-label="我的投稿">
+          <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与投稿</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有草稿</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft'" @click="post.status === 'draft' && openComposer(post)"><span>{{ post.body || '无标题草稿' }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
+          <section v-if="user.role === 'admin'" class="rail-card review-card"><header><div><p class="eyebrow">管理员审核</p><h2>待审核</h2></div><span>{{ pendingPosts.length }}</span></header><div v-if="pendingPosts.length === 0" class="rail-empty">当前没有待审核内容</div><article v-for="post in pendingPosts" :key="post.id" class="review-row"><strong>{{ post.author.nickname }}</strong><p>{{ post.body }}</p><div><button type="button" @click="moderate(post, 'hide')">退回隐藏</button><button type="button" @click="moderate(post, 'approve')">通过发布</button></div></article></section>
+        </aside>
       </section>
       <section v-if="user.role === 'admin'" class="admin-card">
         <div><p class="eyebrow">管理员工具</p><h2>批量邀请室友</h2><p class="muted">每个邀请码 7 天内有效，只能使用一次；一次最多生成 20 个。</p></div>
@@ -238,7 +367,20 @@ async function copyInvites() {
       </section>
     </main>
 
-    <nav class="bottom-nav" aria-label="移动端导航"><a href="#" class="active"><Home /><span>首页</span></a><a href="#"><Camera /><span>照片</span></a><button type="button" aria-label="发布回忆"><Plus /></button><a href="#"><BookOpenText /><span>论坛</span></a><a href="#"><MessageCircle /><span>消息</span></a></nav>
+    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item active"><Home /><span>首页</span></button><button type="button" class="nav-item" disabled title="照片墙正在开发"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" disabled title="论坛正在开发"><BookOpenText /><span>论坛</span></button><button type="button" class="nav-item" disabled title="消息正在开发"><MessageCircle /><span>消息</span></button></nav>
+
+    <div v-if="composerOpen" class="dialog-layer" role="presentation" @click.self="closeComposer">
+      <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">
+        <header><div><p class="eyebrow">{{ editingPostID ? '编辑草稿' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
+        <form @submit.prevent="savePost(true)">
+          <div class="field"><label for="post-body">正文</label><textarea id="post-body" v-model="editor.body" rows="8" maxlength="10000" required autofocus placeholder="那天发生了什么？也可以只写一句想说的话。"></textarea><small>{{ editor.body.length }} / 10000</small></div>
+          <div class="field-grid"><div class="field"><label for="content-date">内容日期</label><input id="content-date" v-model="editor.content_date" type="date" /></div><div class="field"><label for="post-visibility">可见范围</label><select id="post-visibility" v-model="editor.visibility"><option value="members">所有室友</option><option value="private">仅自己</option></select></div></div>
+          <div class="field"><label for="post-tags">标签</label><input id="post-tags" v-model="editor.tags" maxlength="320" placeholder="用逗号或顿号分隔，最多 10 个" /></div>
+          <p v-if="composerError" class="form-error" role="alert">{{ composerError }}</p>
+          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || !editor.body.trim()"><Send :size="18" />{{ composerBusy ? '保存中…' : '提交审核' }}</button></footer>
+        </form>
+      </section>
+    </div>
 
     <div v-if="profileOpen" class="dialog-layer" role="presentation" @click.self="closeProfile">
       <section ref="profileDialog" class="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title" @keydown="trapProfileFocus">

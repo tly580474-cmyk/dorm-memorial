@@ -80,6 +80,51 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("updated profile=%+v", profileBody.User)
 	}
 
+	createPost := doJSON(t, server.URL+"/api/posts", http.MethodPost, map[string]any{
+		"body": "一起搬进宿舍的第一天", "content_date": "2024-09-01", "visibility": "members", "tags": []string{"开学"}, "submit": false,
+	}, memberCookie)
+	if createPost.StatusCode != http.StatusCreated {
+		t.Fatalf("create post status=%d body=%s", createPost.StatusCode, readBody(createPost))
+	}
+	var createdPost struct {
+		Post struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"post"`
+	}
+	decodeResponse(t, createPost, &createdPost)
+	if createdPost.Post.Status != "draft" {
+		t.Fatalf("created post status=%q", createdPost.Post.Status)
+	}
+	submitPost := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID+"/submit", http.MethodPost, map[string]any{}, memberCookie)
+	if submitPost.StatusCode != http.StatusOK {
+		t.Fatalf("submit post status=%d body=%s", submitPost.StatusCode, readBody(submitPost))
+	}
+	submitPost.Body.Close()
+	memberPending := doJSON(t, server.URL+"/api/posts?scope=pending", http.MethodGet, nil, memberCookie)
+	if memberPending.StatusCode != http.StatusForbidden {
+		t.Fatalf("member pending status=%d", memberPending.StatusCode)
+	}
+	memberPending.Body.Close()
+	moderatePost := doJSON(t, server.URL+"/api/admin/posts/"+createdPost.Post.ID+"/moderate", http.MethodPost, map[string]any{"action": "approve", "note": ""}, adminCookie)
+	if moderatePost.StatusCode != http.StatusOK {
+		t.Fatalf("moderate post status=%d body=%s", moderatePost.StatusCode, readBody(moderatePost))
+	}
+	moderatePost.Body.Close()
+	feedResponse := doJSON(t, server.URL+"/api/posts?scope=feed", http.MethodGet, nil, memberCookie)
+	if feedResponse.StatusCode != http.StatusOK {
+		t.Fatalf("feed status=%d body=%s", feedResponse.StatusCode, readBody(feedResponse))
+	}
+	var feedBody struct {
+		Posts []struct {
+			ID string `json:"id"`
+		} `json:"posts"`
+	}
+	decodeResponse(t, feedResponse, &feedBody)
+	if len(feedBody.Posts) != 1 || feedBody.Posts[0].ID != createdPost.Post.ID {
+		t.Fatalf("feed=%+v", feedBody.Posts)
+	}
+
 	forbidden := doJSON(t, server.URL+"/api/admin/invites", http.MethodPost, map[string]any{"max_uses": 1, "expires_in_hours": 24}, memberCookie)
 	if forbidden.StatusCode != http.StatusForbidden {
 		t.Fatalf("member create invite status=%d", forbidden.StatusCode)

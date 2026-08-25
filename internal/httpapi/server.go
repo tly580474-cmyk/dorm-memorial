@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"dorm-memorial/internal/config"
+	"dorm-memorial/internal/content"
 	"dorm-memorial/internal/identity"
 )
 
@@ -34,12 +35,13 @@ type Server struct {
 	cfg      config.Config
 	db       *sql.DB
 	identity *identity.Store
+	content  *content.Store
 	logger   *slog.Logger
 	handler  http.Handler
 }
 
 func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog.Logger) *Server {
-	s := &Server{cfg: cfg, db: db, identity: identities, logger: logger}
+	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
@@ -52,6 +54,13 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("PATCH /api/profile", s.requireAuth(http.HandlerFunc(s.updateProfile)))
 	mux.Handle("POST /api/admin/invites", s.requireAuth(http.HandlerFunc(s.createInvite)))
 	mux.Handle("GET /api/admin/health", s.requireAuth(http.HandlerFunc(s.adminHealth)))
+	mux.Handle("GET /api/posts", s.requireAuth(http.HandlerFunc(s.listPosts)))
+	mux.Handle("POST /api/posts", s.requireAuth(http.HandlerFunc(s.createPost)))
+	mux.Handle("GET /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.getPost)))
+	mux.Handle("PATCH /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.updatePost)))
+	mux.Handle("DELETE /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.deletePost)))
+	mux.Handle("POST /api/posts/{id}/submit", s.requireAuth(http.HandlerFunc(s.submitPost)))
+	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
 	mux.Handle("/", s.frontend())
 	s.handler = s.middleware(mux)
 	return s
@@ -269,6 +278,87 @@ func (s *Server) adminHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active_users": users, "active_sessions": sessions})
 }
 
+func (s *Server) listPosts(w http.ResponseWriter, r *http.Request) {
+	p := mustPrincipal(r)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	page, err := s.content.List(r.Context(), p.User, content.ListOptions{
+		Scope: r.URL.Query().Get("scope"), Status: r.URL.Query().Get("status"), Cursor: r.URL.Query().Get("cursor"), Limit: limit,
+	})
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) createPost(w http.ResponseWriter, r *http.Request) {
+	var body content.WriteInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	post, err := s.content.Create(r.Context(), mustPrincipal(r).User, body, remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"post": post})
+}
+
+func (s *Server) getPost(w http.ResponseWriter, r *http.Request) {
+	post, err := s.content.Get(r.Context(), mustPrincipal(r).User, r.PathValue("id"))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
+}
+
+func (s *Server) updatePost(w http.ResponseWriter, r *http.Request) {
+	var body content.WriteInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	post, err := s.content.Update(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body, remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
+}
+
+func (s *Server) submitPost(w http.ResponseWriter, r *http.Request) {
+	post, err := s.content.Submit(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
+}
+
+func (s *Server) moderatePost(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Action string `json:"action"`
+		Note   string `json:"note"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	post, err := s.content.Moderate(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body.Action, body.Note, remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post": post})
+}
+
+func (s *Server) deletePost(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.Delete(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) frontend() http.Handler {
 	index := filepath.Join(s.cfg.FrontendDir, "index.html")
 	files := http.FileServer(http.Dir(s.cfg.FrontendDir))
@@ -330,6 +420,19 @@ func writeIdentityError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, identity.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func writeContentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, content.ErrNotFound):
+		writeError(w, http.StatusNotFound, "内容不存在")
+	case errors.Is(err, content.ErrForbidden):
+		writeError(w, http.StatusForbidden, "无权访问该内容")
+	case errors.Is(err, content.ErrConflict):
+		writeError(w, http.StatusConflict, "内容状态已变化，请刷新后重试")
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}
