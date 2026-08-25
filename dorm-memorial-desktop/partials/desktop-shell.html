@@ -1,0 +1,41 @@
+<!-- Desktop shared shell for Dorm Memorial Community -->
+<!-- Copy the following chrome into every desktop page, then place page-specific content inside <main class="desktop-main"> -->
+
+<!-- TOPBAR START -->
+<header class="fixed top-0 left-0 right-0 h-16 bg-card/80 backdrop-blur border-b border-border z-40">
+  <div class="max-w-[1440px] mx-auto h-full flex items-center justify-between px-6">
+    <div class="flex items-center gap-3">
+      <span class="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-display text-lg">舍</span>
+      <span class="font-display text-xl text-foreground">305 纪念社区</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-9 h-9 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium" aria-label="个人菜单">小</button>
+    </div>
+  </div>
+</header>
+<!-- TOPBAR END -->
+
+<!-- SIDEBAR START -->
+<aside class="fixed top-16 left-0 bottom-0 w-56 bg-card border-r border-border z-30 hidden lg:flex flex-col">
+  <nav class="flex-1 p-3 space-y-1" aria-label="主导航">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="home" class="w-5 h-5"></i><span>首页</span></a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="image" class="w-5 h-5"></i><span>照片墙</span></a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="messages-square" class="w-5 h-5"></i><span>论坛</span></a>
+    <a href="messages.html" data-nav-key="messages" data-dom-id="nav-messages" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="message-circle" class="w-5 h-5"></i><span>消息</span></a>
+    <a href="guestbook.html" data-nav-key="guestbook" data-dom-id="nav-guestbook" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="book-heart" class="w-5 h-5"></i><span>个人留言</span></a>
+  </nav>
+  <div class="p-3 border-t border-border">
+    <a href="composer.html" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors" data-dom-id="global-create"><i data-lucide="plus" class="w-4 h-4"></i><span>发布回忆</span></a>
+  </div>
+</aside>
+<!-- SIDEBAR END -->
+
+<!-- RIGHTRAIL FRAME START (optional, fill with page-specific widgets) -->
+<aside class="fixed top-16 right-0 bottom-0 w-[280px] bg-card border-l border-border z-30 hidden xl:block p-5 space-y-5" data-region="rightrail">
+  <!-- SLOT: rightrail-content -->
+</aside>
+<!-- RIGHTRAIL FRAME END -->
+
+<!-- MAIN CONTENT goes in <main class="desktop-main pt-16 lg:pl-56 xl:pr-[280px] min-h-screen bg-background">...</main> -->

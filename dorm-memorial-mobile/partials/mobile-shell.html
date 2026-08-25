@@ -1,0 +1,42 @@
+<!-- Mobile shared shell for Dorm Memorial Community -->
+<!-- Copy the following chrome into every mobile page, then place page-specific content inside <main class="mobile-main"> -->
+
+<!-- MOBILE TOPBAR START -->
+<header class="sticky top-0 left-0 right-0 h-14 bg-card/95 border-b border-border z-40">
+  <div class="max-w-md mx-auto h-full flex items-center justify-between px-4">
+    <span class="font-display text-lg text-foreground">305 纪念社区</span>
+    <div class="flex items-center gap-2">
+      <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+    </div>
+  </div>
+</header>
+<!-- MOBILE TOPBAR END -->
+
+<!-- MAIN CONTENT goes in <main class="mobile-main pb-[calc(4rem+env(safe-area-inset-bottom))] bg-background">...</main> -->
+
+<!-- MOBILE BOTTOM NAV START -->
+<nav data-mobile-nav="global" class="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]">
+  <div class="w-full max-w-md mx-auto grid grid-cols-5 h-16">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors">
+      <i data-lucide="home" class="w-5 h-5 shrink-0"></i>
+      <span class="text-[11px] leading-none whitespace-nowrap">首页</span>
+    </a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors">
+      <i data-lucide="image" class="w-5 h-5 shrink-0"></i>
+      <span class="text-[11px] leading-none whitespace-nowrap">照片</span>
+    </a>
+    <a href="composer.html" data-nav-key="create" data-dom-id="nav-create" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-primary">
+      <span class="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center"><i data-lucide="plus" class="w-5 h-5"></i></span>
+    </a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors">
+      <i data-lucide="messages-square" class="w-5 h-5 shrink-0"></i>
+      <span class="text-[11px] leading-none whitespace-nowrap">论坛</span>
+    </a>
+    <a href="chat.html" data-nav-key="messages" data-dom-id="nav-messages" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors">
+      <i data-lucide="message-circle" class="w-5 h-5 shrink-0"></i>
+      <span class="text-[11px] leading-none whitespace-nowrap">消息</span>
+    </a>
+  </div>
+</nav>
+<!-- MOBILE BOTTOM NAV END -->

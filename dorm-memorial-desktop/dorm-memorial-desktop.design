@@ -1,0 +1,464 @@
+{
+  "data": [
+    {
+      "id": "page-index",
+      "title": "首页",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1588,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-a3bce94f",
+          "measuredAt": 1787657867383
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/index.html",
+        "interactions": [
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          },
+          {
+            "domId": "composer-trigger",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "global-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-wall",
+      "title": "照片墙",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 480,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-6de7e524",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/wall.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          },
+          {
+            "domId": "global-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-composer",
+      "title": "发布",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 960,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-b13b925d",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/composer.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          },
+          {
+            "domId": "composer-cancel",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "composer-submit",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-forum",
+      "title": "论坛",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 1440,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1060,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-76320055",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/forum.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          },
+          {
+            "domId": "thread-1",
+            "targetPageId": "page-thread",
+            "hideEdge": true
+          },
+          {
+            "domId": "global-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-thread",
+      "title": "主题详情",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 1920,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1528,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-4946034a",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/thread.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          },
+          {
+            "domId": "back-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "reply-composer",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-messages",
+      "title": "消息",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 2400,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 900,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-b70d4c20",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/messages.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-guestbook",
+            "targetPageId": "page-guestbook",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "page-guestbook",
+      "title": "个人留言",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 2880,
+        "y": 0,
+        "group": 0,
+        "layoutSnapshot": {
+          "version": 1,
+          "contentHeight": 1160,
+          "viewportWidth": 1440,
+          "sourceHash": "fnv1a-fccb4c63",
+          "measuredAt": 1787656586743
+        }
+      },
+      "devMetadata": {
+        "htmlSrc": "pages/guestbook.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-messages",
+            "hideEdge": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "image-001",
+      "title": "宿舍主视觉",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 0,
+        "y": 573,
+        "naturalSize": {
+          "width": 2560,
+          "height": 1440
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/dorm-hero.jpg"
+      }
+    },
+    {
+      "id": "image-002",
+      "title": "宿舍回忆 1",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 480,
+        "y": 573,
+        "naturalSize": {
+          "width": 1920,
+          "height": 1920
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-1.jpg"
+      }
+    },
+    {
+      "id": "image-003",
+      "title": "宿舍回忆 2",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 960,
+        "y": 573,
+        "naturalSize": {
+          "width": 1920,
+          "height": 1920
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-2.jpg"
+      }
+    },
+    {
+      "id": "image-004",
+      "title": "宿舍回忆 3",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 1440,
+        "y": 573,
+        "naturalSize": {
+          "width": 1920,
+          "height": 1920
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-3.jpg"
+      }
+    },
+    {
+      "id": "image-005",
+      "title": "宿舍回忆 4",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "canvasData": {
+        "x": 1920,
+        "y": 573,
+        "naturalSize": {
+          "width": 1920,
+          "height": 1920
+        }
+      },
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-4.jpg"
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "desktop",
+    "projectName": "宿舍纪念社区 - 桌面端",
+    "designLibrary": null,
+    "visualEditorEnabled": false
+  }
+}

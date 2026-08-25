@@ -1,0 +1,1485 @@
+{
+  "schemaVersion": "1.0",
+  "skillProvenance": {
+    "name": "solo-design",
+    "version": "2026.08.06.19.15.08",
+    "release": "prompt-base-cloud-ssot-migration",
+    "version_source": "skill-release-manifest.json",
+    "read_status": "ok"
+  },
+  "project": {
+    "resolvedLane": "complex_html_page",
+    "intentProfile": {
+      "caseFamily": "complex_html_page",
+      "sourceType": "prd-text",
+      "multiDeviceProject": true
+    },
+    "selectedIntentWorkflowRead": true,
+    "contextRequirementsLoaded": [
+      {
+        "path": "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/page-rendering-quality-gate.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/design-artifact-validation.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "delivery-quality/delivery-evidence-contract.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "visual-experience/visual-experience-guidelines.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      },
+      {
+        "path": "visual-experience/visual-checkpoint-protocol.md",
+        "readStatus": "loaded",
+        "bodyRead": true
+      }
+    ],
+    "contextReadScope": "complex_html_page",
+    "validationRunDiscipline": {
+      "maxFullValidationRuns": 2,
+      "softWarningsTriggerRepair": false,
+      "blockingRepairMode": "targeted-once",
+      "forbiddenRepairTriggers": [
+        "soft-warning-only",
+        "provenance-warning-only",
+        "style-warning-only"
+      ]
+    },
+    "lowValueCallWatchdog": {
+      "applies": true,
+      "noProgressNextAction": "proceed-to-dispatch"
+    },
+    "operation": "create",
+    "projectName": "宿舍纪念社区 - 移动端",
+    "projectPath": "e:\\妙妙小屋\\dorm-memorial-mobile",
+    "deviceType": "mobile",
+    "designRead": "Dorm memorial community / Chinese college students / warm editorial scrapbook / medium density / avoid torn-paper random rotation",
+    "designDials": {
+      "layoutVariance": 3,
+      "motionIntensity": 2,
+      "visualDensity": 3
+    },
+    "cssPreflightEvidence": {
+      "command": "node c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css e:\\妙妙小屋\\dorm-memorial-mobile\\.preflight\\preflight.html --title=Preflight --lang=zh-CN --prefix=dmc",
+      "outputPath": "e:\\妙妙小屋\\dorm-memorial-mobile\\.preflight\\preflight.html",
+      "exitCode": 0,
+      "valid": true
+    },
+    "generationTree": {
+      "root": {
+        "nodeId": "root",
+        "type": "root",
+        "title": "宿舍纪念社区 - 移动端",
+        "children": [
+          {
+            "nodeId": "shared-mobile-shell",
+            "type": "shared-branch",
+            "title": "移动共享外壳",
+            "htmlSrc": "partials/mobile-shell.html",
+            "status": "generated",
+            "children": [
+              {
+                "nodeId": "page-index",
+                "type": "leaf",
+                "title": "首页",
+                "htmlSrc": "pages/index.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-wall",
+                "type": "leaf",
+                "title": "照片墙",
+                "htmlSrc": "pages/wall.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-composer",
+                "type": "leaf",
+                "title": "发布",
+                "htmlSrc": "pages/composer.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-forum",
+                "type": "leaf",
+                "title": "论坛",
+                "htmlSrc": "pages/forum.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-thread",
+                "type": "leaf",
+                "title": "主题详情",
+                "htmlSrc": "pages/thread.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-chat",
+                "type": "leaf",
+                "title": "聊天",
+                "htmlSrc": "pages/chat.html",
+                "status": "generated"
+              },
+              {
+                "nodeId": "page-guestbook",
+                "type": "leaf",
+                "title": "个人留言",
+                "htmlSrc": "pages/guestbook.html",
+                "status": "generated"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "sharedProjectShellContract": {
+      "navigationShell": "mobile-bottom-tab",
+      "topBar": {
+        "heightPx": 56
+      },
+      "mobileNavigation": {
+        "applies": true,
+        "type": "bottom-tab",
+        "items": [
+          {
+            "key": "home",
+            "label": "首页",
+            "icon": "home"
+          },
+          {
+            "key": "wall",
+            "label": "照片",
+            "icon": "image"
+          },
+          {
+            "key": "create",
+            "label": "发布",
+            "icon": "plus"
+          },
+          {
+            "key": "forum",
+            "label": "论坛",
+            "icon": "messages-square"
+          },
+          {
+            "key": "messages",
+            "label": "消息",
+            "icon": "message-circle"
+          }
+        ],
+        "heightPx": 64,
+        "position": "fixed-bottom",
+        "activeState": "primary icon+label color only; geometry stays identical",
+        "structure": {
+          "navTag": "nav",
+          "navClass": "fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]",
+          "innerClass": "w-full max-w-md mx-auto grid grid-cols-5 h-16",
+          "itemTag": "a",
+          "itemClass": "min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors",
+          "iconClass": "w-5 h-5 shrink-0",
+          "labelClass": "text-[11px] leading-none whitespace-nowrap max-w-full truncate",
+          "activeRule": "only color/font-weight/data-active may change; no class changes that affect layout",
+          "markerAttr": "data-mobile-nav=\"global\"",
+          "canonicalHtmlByKey": {
+            "home": "<nav data-mobile-nav=\"global\" class=\"fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]\">\n  <div class=\"w-full max-w-md mx-auto grid grid-cols-5 h-16\">\n    <a href=\"index.html\" data-nav-key=\"home\" data-dom-id=\"nav-home\" data-active=\"true\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"home\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">首页</span></a>\n    <a href=\"wall.html\" data-nav-key=\"wall\" data-dom-id=\"nav-wall\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"image\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">照片</span></a>\n    <a href=\"composer.html\" data-nav-key=\"create\" data-dom-id=\"nav-create\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><span class=\"w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center\"><i data-lucide=\"plus\" class=\"w-5 h-5 shrink-0\"></i></span><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">发布</span></a>\n    <a href=\"forum.html\" data-nav-key=\"forum\" data-dom-id=\"nav-forum\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"messages-square\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">论坛</span></a>\n    <a href=\"chat.html\" data-nav-key=\"messages\" data-dom-id=\"nav-messages\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"message-circle\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">消息</span></a>\n  </div>\n</nav>",
+            "wall": "<nav data-mobile-nav=\"global\" class=\"fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]\">\n  <div class=\"w-full max-w-md mx-auto grid grid-cols-5 h-16\">\n    <a href=\"index.html\" data-nav-key=\"home\" data-dom-id=\"nav-home\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"home\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">首页</span></a>\n    <a href=\"wall.html\" data-nav-key=\"wall\" data-dom-id=\"nav-wall\" data-active=\"true\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"image\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">照片</span></a>\n    <a href=\"composer.html\" data-nav-key=\"create\" data-dom-id=\"nav-create\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><span class=\"w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center\"><i data-lucide=\"plus\" class=\"w-5 h-5 shrink-0\"></i></span><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">发布</span></a>\n    <a href=\"forum.html\" data-nav-key=\"forum\" data-dom-id=\"nav-forum\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"messages-square\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">论坛</span></a>\n    <a href=\"chat.html\" data-nav-key=\"messages\" data-dom-id=\"nav-messages\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"message-circle\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">消息</span></a>\n  </div>\n</nav>",
+            "create": "<nav data-mobile-nav=\"global\" class=\"fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]\">\n  <div class=\"w-full max-w-md mx-auto grid grid-cols-5 h-16\">\n    <a href=\"index.html\" data-nav-key=\"home\" data-dom-id=\"nav-home\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"home\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">首页</span></a>\n    <a href=\"wall.html\" data-nav-key=\"wall\" data-dom-id=\"nav-wall\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"image\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">照片</span></a>\n    <a href=\"composer.html\" data-nav-key=\"create\" data-dom-id=\"nav-create\" data-active=\"true\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><span class=\"w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center\"><i data-lucide=\"plus\" class=\"w-5 h-5 shrink-0\"></i></span><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">发布</span></a>\n    <a href=\"forum.html\" data-nav-key=\"forum\" data-dom-id=\"nav-forum\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"messages-square\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">论坛</span></a>\n    <a href=\"chat.html\" data-nav-key=\"messages\" data-dom-id=\"nav-messages\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"message-circle\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">消息</span></a>\n  </div>\n</nav>",
+            "forum": "<nav data-mobile-nav=\"global\" class=\"fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]\">\n  <div class=\"w-full max-w-md mx-auto grid grid-cols-5 h-16\">\n    <a href=\"index.html\" data-nav-key=\"home\" data-dom-id=\"nav-home\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"home\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">首页</span></a>\n    <a href=\"wall.html\" data-nav-key=\"wall\" data-dom-id=\"nav-wall\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"image\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">照片</span></a>\n    <a href=\"composer.html\" data-nav-key=\"create\" data-dom-id=\"nav-create\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><span class=\"w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center\"><i data-lucide=\"plus\" class=\"w-5 h-5 shrink-0\"></i></span><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">发布</span></a>\n    <a href=\"forum.html\" data-nav-key=\"forum\" data-dom-id=\"nav-forum\" data-active=\"true\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"messages-square\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">论坛</span></a>\n    <a href=\"chat.html\" data-nav-key=\"messages\" data-dom-id=\"nav-messages\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"message-circle\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">消息</span></a>\n  </div>\n</nav>",
+            "messages": "<nav data-mobile-nav=\"global\" class=\"fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]\">\n  <div class=\"w-full max-w-md mx-auto grid grid-cols-5 h-16\">\n    <a href=\"index.html\" data-nav-key=\"home\" data-dom-id=\"nav-home\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"home\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">首页</span></a>\n    <a href=\"wall.html\" data-nav-key=\"wall\" data-dom-id=\"nav-wall\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"image\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">照片</span></a>\n    <a href=\"composer.html\" data-nav-key=\"create\" data-dom-id=\"nav-create\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><span class=\"w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center\"><i data-lucide=\"plus\" class=\"w-5 h-5 shrink-0\"></i></span><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">发布</span></a>\n    <a href=\"forum.html\" data-nav-key=\"forum\" data-dom-id=\"nav-forum\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"messages-square\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">论坛</span></a>\n    <a href=\"chat.html\" data-nav-key=\"messages\" data-dom-id=\"nav-messages\" data-active=\"true\" class=\"min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors\"><i data-lucide=\"message-circle\" class=\"w-5 h-5 shrink-0\"></i><span class=\"text-[11px] leading-none whitespace-nowrap max-w-full truncate\">消息</span></a>\n  </div>\n</nav>"
+          }
+        }
+      },
+      "surfaceDepthModel": "border-led-static-surfaces",
+      "radiusScale": {
+        "sm": "6px",
+        "md": "10px",
+        "lg": "14px"
+      }
+    },
+    "pages": [
+      {
+        "nodeId": "page-index",
+        "title": "首页",
+        "htmlSrc": "pages/index.html",
+        "pageIndex": 1,
+        "pageType": "showcase",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Mobile feed with top bar, greeting hero, quick composer, recent memories, and global bottom nav.",
+        "compositionPattern": "mobile-feed-stack",
+        "continuityAnchors": [
+          "mobile top bar + bottom tab shell",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MobileBottomNav",
+          "PostComposerMini",
+          "PostCard",
+          "MediaGrid"
+        ],
+        "imagePlan": [
+          "dorm-hero",
+          "dorm-memory-1",
+          "dorm-memory-2"
+        ],
+        "mobileNavigationActiveKey": "home",
+        "domIdsRequired": [
+          "nav-home",
+          "nav-wall",
+          "nav-create",
+          "nav-forum",
+          "nav-messages",
+          "composer-trigger"
+        ]
+      },
+      {
+        "nodeId": "page-wall",
+        "title": "照片墙",
+        "htmlSrc": "pages/wall.html",
+        "pageIndex": 2,
+        "pageType": "showcase",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Two-column masonry gallery with bottom filter sheet trigger and video covers.",
+        "compositionPattern": "mobile-masonry-gallery",
+        "continuityAnchors": [
+          "mobile top bar + bottom tab shell",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MobileBottomNav",
+          "FilterBar",
+          "MediaGrid"
+        ],
+        "imagePlan": [
+          "dorm-memory-1",
+          "dorm-memory-2",
+          "dorm-memory-3",
+          "dorm-memory-4"
+        ],
+        "mobileNavigationActiveKey": "wall",
+        "domIdsRequired": [
+          "nav-home",
+          "nav-wall",
+          "nav-create",
+          "nav-forum",
+          "nav-messages",
+          "filter-sheet-trigger"
+        ]
+      },
+      {
+        "nodeId": "page-composer",
+        "title": "发布",
+        "htmlSrc": "pages/composer.html",
+        "pageIndex": 3,
+        "pageType": "task-driven",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Full-screen mobile editor with text area, media upload list and per-file progress.",
+        "compositionPattern": "mobile-full-screen-form",
+        "continuityAnchors": [
+          "mobile top bar only (bottom nav hidden for task)",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "PostComposer",
+          "UploadProgress"
+        ],
+        "imagePlan": [],
+        "mobileNavigationActiveKey": "create",
+        "domIdsRequired": [
+          "composer-text",
+          "composer-media",
+          "composer-submit"
+        ]
+      },
+      {
+        "nodeId": "page-forum",
+        "title": "论坛",
+        "htmlSrc": "pages/forum.html",
+        "pageIndex": 4,
+        "pageType": "information-dense",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Board cards and a compact thread list with metadata folded under titles.",
+        "compositionPattern": "mobile-list-with-cards",
+        "continuityAnchors": [
+          "mobile top bar + bottom tab shell",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MobileBottomNav",
+          "BoardCard",
+          "ThreadListItem"
+        ],
+        "imagePlan": [],
+        "mobileNavigationActiveKey": "forum",
+        "domIdsRequired": [
+          "nav-home",
+          "nav-wall",
+          "nav-create",
+          "nav-forum",
+          "nav-messages",
+          "thread-1"
+        ]
+      },
+      {
+        "nodeId": "page-thread",
+        "title": "主题详情",
+        "htmlSrc": "pages/thread.html",
+        "pageIndex": 5,
+        "pageType": "information-dense",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Thread header and continuous reply floors with a fixed composer bar that does not cover the last reply.",
+        "compositionPattern": "mobile-thread-detail",
+        "continuityAnchors": [
+          "mobile top bar + bottom tab shell",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MobileBottomNav",
+          "ThreadHeader",
+          "ForumReply",
+          "ThreadComposer"
+        ],
+        "imagePlan": [],
+        "mobileNavigationActiveKey": "forum",
+        "domIdsRequired": [
+          "back-forum",
+          "reply-1",
+          "reply-composer"
+        ]
+      },
+      {
+        "nodeId": "page-chat",
+        "title": "聊天",
+        "htmlSrc": "pages/chat.html",
+        "pageIndex": 6,
+        "pageType": "task-driven",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Single chat detail with header, message bubbles, and input bar; bottom nav hidden.",
+        "compositionPattern": "mobile-chat-detail",
+        "continuityAnchors": [
+          "mobile top bar only (bottom nav hidden for chat)",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MessageList",
+          "MessageBubble",
+          "MessageComposer"
+        ],
+        "imagePlan": [],
+        "mobileNavigationActiveKey": "messages",
+        "domIdsRequired": [
+          "back-messages",
+          "message-input",
+          "message-send"
+        ]
+      },
+      {
+        "nodeId": "page-guestbook",
+        "title": "个人留言",
+        "htmlSrc": "pages/guestbook.html",
+        "pageIndex": 7,
+        "pageType": "showcase",
+        "targetDevice": "mobile",
+        "visualNorthStar": "Profile header and single-column message stream with a floating or bottom input.",
+        "compositionPattern": "mobile-profile-feed",
+        "continuityAnchors": [
+          "mobile top bar + bottom tab shell",
+          "warm white surface and terracotta primary"
+        ],
+        "componentPlan": [
+          "MobileTopBar",
+          "MobileBottomNav",
+          "ProfileHeader",
+          "GuestbookMessage"
+        ],
+        "imagePlan": [
+          "dorm-memory-3"
+        ],
+        "mobileNavigationActiveKey": "home",
+        "domIdsRequired": [
+          "nav-home",
+          "nav-wall",
+          "nav-create",
+          "nav-forum",
+          "nav-messages",
+          "guestbook-input"
+        ]
+      }
+    ],
+    "dispatchPreflightManifest": [
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-index",
+        "htmlSrc": "pages/index.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/index.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/index.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-index\" --html-src=\"pages/index.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\index.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\index.html\" --title=\"首页\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "home",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.home",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-wall",
+        "htmlSrc": "pages/wall.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/wall.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/wall.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-wall\" --html-src=\"pages/wall.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\wall.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\wall.html\" --title=\"照片墙\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "wall",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.wall",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-composer",
+        "htmlSrc": "pages/composer.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/composer.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/composer.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-composer\" --html-src=\"pages/composer.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\composer.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\composer.html\" --title=\"发布\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "create",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.create",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-forum",
+        "htmlSrc": "pages/forum.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/forum.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/forum.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-forum\" --html-src=\"pages/forum.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\forum.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\forum.html\" --title=\"论坛\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "forum",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.forum",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-thread",
+        "htmlSrc": "pages/thread.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/thread.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/thread.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-thread\" --html-src=\"pages/thread.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\thread.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\thread.html\" --title=\"主题详情\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "forum",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.forum",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-chat",
+        "htmlSrc": "pages/chat.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/chat.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/chat.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-chat\" --html-src=\"pages/chat.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\chat.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\chat.html\" --title=\"聊天\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "messages",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.messages",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      },
+      {
+        "recorded_at": "2026-08-25T11:02:34.930Z",
+        "generatedBy": "build-page-dispatch-manifest.mjs",
+        "packetType": "ComplexPagePacket",
+        "laneContract": {
+          "resolvedLane": "complex_html_page",
+          "packetType": "ComplexPagePacket",
+          "pageRuntimeGuide": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+          "dispatchContract": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md"
+        },
+        "taskLinePresent": true,
+        "outputPathPresent": true,
+        "sharedTemplate": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "nodeId": "page-guestbook",
+        "htmlSrc": "pages/guestbook.html",
+        "supplementaryReads": [],
+        "allowedWritePaths": [
+          "pages/guestbook.html",
+          "assets/"
+        ],
+        "forbiddenWriteRoots": [
+          "*.design",
+          "runtime-orchestration-summary.json",
+          "validation-report.json",
+          "finish-readiness-report.json",
+          "restore-contract-report.json",
+          "page-generation-summary.json"
+        ],
+        "toolPolicy": {
+          "todoWriteAllowed": false,
+          "validationScriptsAllowed": false,
+          "previewAllowed": false,
+          "helperScriptsAllowed": false,
+          "designFileWriteAllowed": false,
+          "allowedWritePaths": [
+            "pages/guestbook.html",
+            "assets/"
+          ]
+        },
+        "skillRuntime": {
+          "skillDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design",
+          "deterministicToolDir": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling",
+          "toolPaths": {
+            "applyHtmlHeadContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs",
+            "recordDispatchCompletion": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs",
+            "buildPageDispatchManifest": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\build-page-dispatch-manifest.mjs",
+            "validateDesignWorkspace": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-design-workspace.mjs",
+            "validateFinishReadiness": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-finish-readiness.mjs",
+            "validateRestoreContract": "c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\validate-restore-contract.mjs"
+          },
+          "requiredForPageSubAgent": [
+            "applyHtmlHeadContract",
+            "recordDispatchCompletion"
+          ],
+          "pathInjection": "absolute",
+          "pathContract": "Do not use {SKILL_DIR} placeholders inside Page Sub-Agent packets; use toolPaths.* absolute paths.",
+          "commandTemplates": {
+            "recordDispatchCompletion": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\record-dispatch-completion.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\" --node-id=\"page-guestbook\" --html-src=\"pages/guestbook.html\" --status=completed --changed-files=<comma-separated-project-relative-files> --trace-digest=<main-agent-runtime-trace-digest> --tool-ledger-json=<tool-ledger-json-or-file>"
+          }
+        },
+        "cssFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css",
+        "htmlFilePath": "e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\guestbook.html",
+        "brandPrefix": "dmc",
+        "aestheticsMode": "free-explore",
+        "toolDisciplineBlockPresent": true,
+        "fillHtmlHeadCommand": "node \"c:\\Users\\qjmzc\\.trae-cn\\builtin\\design\\default\\skills\\solo-design\\shared-runtime\\deterministic-tooling\\apply-html-head-contract.mjs\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\colors_and_type.css\" \"e:\\妙妙小屋\\dorm-memorial-mobile\\pages\\guestbook.html\" --title=\"个人留言\" --lang=\"zh-CN\" --prefix=\"dmc\" --replace-head",
+        "headFillMode": "replace-head-after-body",
+        "viewportMode": null,
+        "completionSchemaExpected": "full",
+        "restoreFields": null,
+        "restoreContractStatus": null,
+        "restoreCompactPacket": null,
+        "deterministicCommands": null,
+        "sourceAuthorityLock": null,
+        "preDispatchFileHashes": {
+          "dorm-memorial-mobile.design": "629fdc3b8c4c5618b3dec4404e075d9aa91188abc15ad2cae1d305b7bedf220d"
+        },
+        "contextPreflight": {
+          "workflowPath": "intent-workflows/intent-project-complex-build/INTENT_WORKFLOW.md",
+          "requiredContextFiles": [
+            "shared-runtime/runtime-boundaries/lane-runtime-contracts.md",
+            "shared-runtime/agent-dispatch-runtime/lane-dispatch-index.md",
+            "shared-runtime/agent-dispatch-runtime/shared-page-rendering-kernel.md",
+            "delivery-quality/page-rendering-quality-gate.md",
+            "delivery-quality/design-artifact-validation.md",
+            "delivery-quality/delivery-evidence-contract.md",
+            "visual-experience/visual-experience-guidelines.md",
+            "visual-experience/visual-checkpoint-protocol.md"
+          ],
+          "optionalContextFiles": [],
+          "passed": true
+        },
+        "pageSliceOnly": true,
+        "requiredFieldsPresent": true,
+        "missingFields": [],
+        "fillHtmlHeadCommandValid": true,
+        "mobileNavigation": {
+          "required": true,
+          "appliesToThisPage": true,
+          "activeKey": "home",
+          "contractPresent": true,
+          "structurePresent": true,
+          "canonicalHtmlIncluded": true,
+          "canonicalHtmlSource": "sharedProjectShellContract.mobileNavigation.structure.canonicalHtmlByKey.home",
+          "structureHash": "38ca2361b1d75e9c02fdf73f00dadea7a9721bc6355055cb5ea3004931038d5e",
+          "missingFields": []
+        },
+        "persistedToSummary": true,
+        "taskQueryAudited": false,
+        "proofSource": "summary-only",
+        "largeWorkflowFilesInTaskQuery": null
+      }
+    ],
+    "validationHistory": [],
+    "validationRepairLedger": [],
+    "artifactReadinessEvidence": {},
+    "readScopeLedger": [
+      {
+        "actor": "page-sub-agent",
+        "lane": "complex_html_page",
+        "path": "intent-workflows/intent-project-complex-build/complex-page-runtime.md",
+        "reason": "page runtime guide",
+        "scopeClass": "page-runtime",
+        "declaredBeforeRead": true,
+        "recordedAt": "2026-08-25T10:27:05.433Z",
+        "nodeId": "page-index",
+        "htmlSrc": "pages/index.html"
+      },
+      {
+        "actor": "page-sub-agent",
+        "lane": "complex_html_page",
+        "path": "intent-workflows/intent-project-complex-build/complex-page-dispatch-contract.md",
+        "reason": "dispatch contract",
+        "scopeClass": "dispatch-contract",
+        "declaredBeforeRead": true,
+        "recordedAt": "2026-08-25T10:27:05.433Z",
+        "nodeId": "page-index",
+        "htmlSrc": "pages/index.html"
+      }
+    ],
+    "mainAgentPostDispatchMutations": [
+      {
+        "path": "dorm-memorial-mobile.design",
+        "reason": "wiring-registration",
+        "owner": "main-agent",
+        "recordedAt": "2026-08-25T11:01:04.962Z",
+        "source": "main-agent"
+      }
+    ],
+    "wiringRegistrationEvidence": {
+      "expectedDomIds": [
+        "page-index:nav-wall",
+        "page-index:nav-create",
+        "page-index:nav-forum",
+        "page-index:nav-messages",
+        "page-index:composer-trigger",
+        "page-wall:nav-home",
+        "page-composer:composer-cancel",
+        "page-composer:composer-submit",
+        "page-forum:thread-1",
+        "page-thread:back-forum",
+        "page-thread:reply-composer",
+        "page-chat:back-messages"
+      ],
+      "allExpectedDomIdsRegistered": true,
+      "missingDomIds": []
+    },
+    "expectedDispatches": [
+      {
+        "nodeId": "page-index",
+        "pageId": "page-index",
+        "targetPageId": "page-index",
+        "htmlSrc": "pages/index.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/index.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch1-index",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:43.835Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-wall",
+        "pageId": "page-wall",
+        "targetPageId": "page-wall",
+        "htmlSrc": "pages/wall.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/wall.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch1-wall",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:43.927Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-composer",
+        "pageId": "page-composer",
+        "targetPageId": "page-composer",
+        "htmlSrc": "pages/composer.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/composer.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch1-composer",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:44.015Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-forum",
+        "pageId": "page-forum",
+        "targetPageId": "page-forum",
+        "htmlSrc": "pages/forum.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/forum.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch2-forum",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:44.102Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-thread",
+        "pageId": "page-thread",
+        "targetPageId": "page-thread",
+        "htmlSrc": "pages/thread.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/thread.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch2-thread",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:44.190Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-chat",
+        "pageId": "page-chat",
+        "targetPageId": "page-chat",
+        "htmlSrc": "pages/chat.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/chat.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch2-chat",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:44.276Z",
+        "source": "record-dispatch-completion.mjs"
+      },
+      {
+        "nodeId": "page-guestbook",
+        "pageId": "page-guestbook",
+        "targetPageId": "page-guestbook",
+        "htmlSrc": "pages/guestbook.html",
+        "packetType": "ComplexPagePacket",
+        "status": "completed",
+        "changedFiles": [
+          "pages/guestbook.html"
+        ],
+        "toolCallLedger": {
+          "source": "main-agent-runtime-trace",
+          "traceDigest": "mobile-batch3-guestbook",
+          "todoWriteCalls": 0,
+          "previewCalls": 0,
+          "validationScriptCalls": 0,
+          "helperScriptWrites": 0
+        },
+        "recordedAt": "2026-08-25T11:11:44.372Z",
+        "source": "record-dispatch-completion.mjs"
+      }
+    ]
+  },
+  "designSource": {
+    "operatingMode": "free-explore",
+    "cssFilePath": "colors_and_type.css",
+    "brandPrefix": "dmc",
+    "styleConstraints": {
+      "radiusMax": 16,
+      "staticShadowAlphaMax": 0.05,
+      "singlePrimaryHue": false
+    }
+  },
+  "pages": [
+    {
+      "nodeId": "page-index",
+      "title": "首页",
+      "htmlSrc": "pages/index.html",
+      "mobileNavigationActiveKey": "home"
+    },
+    {
+      "nodeId": "page-wall",
+      "title": "照片墙",
+      "htmlSrc": "pages/wall.html",
+      "mobileNavigationActiveKey": "wall"
+    },
+    {
+      "nodeId": "page-composer",
+      "title": "发布",
+      "htmlSrc": "pages/composer.html",
+      "mobileNavigationActiveKey": "create",
+      "mobileNavigationApplies": false,
+      "mobileNavigationOmitReason": "task-focused composer page where bottom nav risks draft loss"
+    },
+    {
+      "nodeId": "page-forum",
+      "title": "论坛",
+      "htmlSrc": "pages/forum.html",
+      "mobileNavigationActiveKey": "forum"
+    },
+    {
+      "nodeId": "page-thread",
+      "title": "主题详情",
+      "htmlSrc": "pages/thread.html",
+      "mobileNavigationActiveKey": "forum"
+    },
+    {
+      "nodeId": "page-chat",
+      "title": "聊天",
+      "htmlSrc": "pages/chat.html",
+      "mobileNavigationActiveKey": "messages",
+      "mobileNavigationApplies": false,
+      "mobileNavigationOmitReason": "task-focused chat page with its own composer bar"
+    },
+    {
+      "nodeId": "page-guestbook",
+      "title": "个人留言",
+      "htmlSrc": "pages/guestbook.html",
+      "mobileNavigationActiveKey": "home"
+    }
+  ]
+}

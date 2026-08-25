@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>论坛</title>
+    <style id="theme-vars">
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--dmc-background);
+    --color-foreground: var(--dmc-foreground);
+    --color-card: var(--dmc-card);
+    --color-card-foreground: var(--dmc-card-foreground);
+    --color-popover: var(--dmc-popover);
+    --color-popover-foreground: var(--dmc-popover-foreground);
+    --color-primary: var(--dmc-primary);
+    --color-primary-foreground: var(--dmc-primary-foreground);
+    --color-secondary: var(--dmc-secondary);
+    --color-secondary-foreground: var(--dmc-secondary-foreground);
+    --color-muted: var(--dmc-muted);
+    --color-muted-foreground: var(--dmc-muted-foreground);
+    --color-border: var(--dmc-border);
+    --color-input: var(--dmc-input);
+    --color-ring: var(--dmc-ring);
+    --radius-sm: var(--dmc-radius-small);
+    --radius-md: var(--dmc-radius-medium);
+    --radius-lg: var(--dmc-radius-large);
+  }
+  @layer base {
+    body { background: var(--dmc-background); color: var(--dmc-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--dmc-background); }
+      .text-background { color: var(--dmc-background); }
+      .border-background { border-color: var(--dmc-background); }
+      .ring-background { --tw-ring-color: var(--dmc-background); }
+      .bg-foreground { background-color: var(--dmc-foreground); }
+      .text-foreground { color: var(--dmc-foreground); }
+      .border-foreground { border-color: var(--dmc-foreground); }
+      .ring-foreground { --tw-ring-color: var(--dmc-foreground); }
+      .bg-card { background-color: var(--dmc-card); }
+      .text-card { color: var(--dmc-card); }
+      .border-card { border-color: var(--dmc-card); }
+      .ring-card { --tw-ring-color: var(--dmc-card); }
+      .bg-card-foreground { background-color: var(--dmc-card-foreground); }
+      .text-card-foreground { color: var(--dmc-card-foreground); }
+      .border-card-foreground { border-color: var(--dmc-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--dmc-card-foreground); }
+      .bg-popover { background-color: var(--dmc-popover); }
+      .text-popover { color: var(--dmc-popover); }
+      .border-popover { border-color: var(--dmc-popover); }
+      .ring-popover { --tw-ring-color: var(--dmc-popover); }
+      .bg-popover-foreground { background-color: var(--dmc-popover-foreground); }
+      .text-popover-foreground { color: var(--dmc-popover-foreground); }
+      .border-popover-foreground { border-color: var(--dmc-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--dmc-popover-foreground); }
+      .bg-primary { background-color: var(--dmc-primary); }
+      .text-primary { color: var(--dmc-primary); }
+      .border-primary { border-color: var(--dmc-primary); }
+      .ring-primary { --tw-ring-color: var(--dmc-primary); }
+      .bg-primary-foreground { background-color: var(--dmc-primary-foreground); }
+      .text-primary-foreground { color: var(--dmc-primary-foreground); }
+      .border-primary-foreground { border-color: var(--dmc-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--dmc-primary-foreground); }
+      .bg-secondary { background-color: var(--dmc-secondary); }
+      .text-secondary { color: var(--dmc-secondary); }
+      .border-secondary { border-color: var(--dmc-secondary); }
+      .ring-secondary { --tw-ring-color: var(--dmc-secondary); }
+      .bg-secondary-foreground { background-color: var(--dmc-secondary-foreground); }
+      .text-secondary-foreground { color: var(--dmc-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--dmc-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--dmc-secondary-foreground); }
+      .bg-muted { background-color: var(--dmc-muted); }
+      .text-muted { color: var(--dmc-muted); }
+      .border-muted { border-color: var(--dmc-muted); }
+      .ring-muted { --tw-ring-color: var(--dmc-muted); }
+      .bg-muted-foreground { background-color: var(--dmc-muted-foreground); }
+      .text-muted-foreground { color: var(--dmc-muted-foreground); }
+      .border-muted-foreground { border-color: var(--dmc-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--dmc-muted-foreground); }
+      .bg-border { background-color: var(--dmc-border); }
+      .text-border { color: var(--dmc-border); }
+      .border-border { border-color: var(--dmc-border); }
+      .ring-border { --tw-ring-color: var(--dmc-border); }
+      .bg-input { background-color: var(--dmc-input); }
+      .text-input { color: var(--dmc-input); }
+      .border-input { border-color: var(--dmc-input); }
+      .ring-input { --tw-ring-color: var(--dmc-input); }
+      .bg-ring { background-color: var(--dmc-ring); }
+      .text-ring { color: var(--dmc-ring); }
+      .border-ring { border-color: var(--dmc-ring); }
+      .ring-ring { --tw-ring-color: var(--dmc-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+    <style id="critical-layout">
+      .board-scroll {
+        display: flex;
+        gap: 12px;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 4px;
+      }
+      .board-card {
+        flex: 0 0 calc(50% - 6px);
+        scroll-snap-align: start;
+      }
+      .thread-list {
+        display: flex;
+        flex-direction: column;
+      }
+      .thread-item {
+        display: block;
+      }
+      .thread-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      @supports (padding-bottom: env(safe-area-inset-bottom)) {
+        [data-mobile-nav="global"] { padding-bottom: env(safe-area-inset-bottom); }
+        .mobile-main { padding-bottom: calc(var(--dmc-mobile-bottomnav-height, 64px) + env(safe-area-inset-bottom)); }
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+
+<!-- MOBILE TOPBAR START -->
+<header class="sticky top-0 left-0 right-0 h-14 bg-card/95 border-b border-border z-40">
+  <div class="max-w-md mx-auto h-full flex items-center justify-between px-4">
+    <span class="font-display text-lg text-foreground">305 纪念社区</span>
+    <div class="flex items-center gap-2">
+      <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+    </div>
+  </div>
+</header>
+<!-- MOBILE TOPBAR END -->
+
+<!-- MAIN CONTENT goes in <main class="mobile-main bg-background">...</main> -->
+<main class="mobile-main bg-background">
+  <div class="max-w-md mx-auto px-4 pt-4 space-y-5">
+
+    <!-- Page header -->
+    <section class="flex items-center justify-between" aria-label="页面标题">
+      <h1 class="font-display text-2xl text-foreground">论坛</h1>
+      <a href="composer.html" class="w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-sm hover:bg-primary-hover transition-colors" aria-label="发帖">
+        <i data-lucide="edit-3" class="w-5 h-5"></i>
+      </a>
+    </section>
+
+    <!-- Board cards -->
+    <section aria-label="版块卡片">
+      <div class="board-scroll no-scrollbar">
+        <a href="forum.html" class="board-card bg-card border border-border rounded-lg p-4 shadow-sm hover:border-primary/40 transition-colors">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="layout-grid" class="w-4 h-4 text-primary"></i>
+            <span class="font-body font-medium text-foreground">全部讨论</span>
+          </div>
+          <p class="text-xs text-muted-foreground">1,248 话题</p>
+        </a>
+        <a href="forum.html" class="board-card bg-card border border-border rounded-lg p-4 shadow-sm hover:border-primary/40 transition-colors">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="coffee" class="w-4 h-4 text-secondary"></i>
+            <span class="font-body font-medium text-foreground">生活日常</span>
+          </div>
+          <p class="text-xs text-muted-foreground">386 话题</p>
+        </a>
+        <a href="forum.html" class="board-card bg-card border border-border rounded-lg p-4 shadow-sm hover:border-primary/40 transition-colors">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="book-open" class="w-4 h-4 text-highlight"></i>
+            <span class="font-body font-medium text-foreground">学习互助</span>
+          </div>
+          <p class="text-xs text-muted-foreground">214 话题</p>
+        </a>
+        <a href="forum.html" class="board-card bg-card border border-border rounded-lg p-4 shadow-sm hover:border-primary/40 transition-colors">
+          <div class="flex items-center gap-2 mb-2">
+            <i data-lucide="heart" class="w-4 h-4 text-danger"></i>
+            <span class="font-body font-medium text-foreground">情感树洞</span>
+          </div>
+          <p class="text-xs text-muted-foreground">157 话题</p>
+        </a>
+      </div>
+    </section>
+
+    <!-- Thread list -->
+    <section aria-label="话题列表">
+      <div class="thread-list bg-card border border-border rounded-lg overflow-hidden shadow-sm">
+
+        <a href="thread.html" data-dom-id="thread-1" class="thread-item p-4 border-b border-border hover:bg-muted/30 transition-colors">
+          <h2 class="font-body font-medium text-foreground leading-snug mb-1">宿舍熄灯后大家一般都几点睡？</h2>
+          <p class="text-sm text-muted-foreground line-clamp-1 mb-2">最近发现凌晨一点走廊还有水声，想了解一下大家的作息习惯……</p>
+          <div class="thread-meta text-xs text-muted-foreground">
+            <span class="flex items-center gap-1"><i data-lucide="user" class="w-3 h-3"></i>小林</span>
+            <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i>42</span>
+            <span>2小时前</span>
+          </div>
+        </a>
+
+        <a href="thread.html" class="thread-item p-4 border-b border-border hover:bg-muted/30 transition-colors">
+          <h2 class="font-body font-medium text-foreground leading-snug mb-1">求推荐好用不贵的桌面收纳</h2>
+          <p class="text-sm text-muted-foreground line-clamp-1 mb-2">书桌太小，书本和化妆品放不下，想看看大家都怎么整理的。</p>
+          <div class="thread-meta text-xs text-muted-foreground">
+            <span class="flex items-center gap-1"><i data-lucide="user" class="w-3 h-3"></i>阿雯</span>
+            <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i>28</span>
+            <span>5小时前</span>
+          </div>
+        </a>
+
+        <a href="thread.html" class="thread-item p-4 border-b border-border hover:bg-muted/30 transition-colors">
+          <h2 class="font-body font-medium text-foreground leading-snug mb-1">下学期选课求避雷经验</h2>
+          <p class="text-sm text-muted-foreground line-clamp-1 mb-2">有没有学长学姐能分享下王老师的西方文学课作业量？</p>
+          <div class="thread-meta text-xs text-muted-foreground">
+            <span class="flex items-center gap-1"><i data-lucide="user" class="w-3 h-3"></i>橙子</span>
+            <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i>15</span>
+            <span>昨天</span>
+          </div>
+        </a>
+
+        <a href="thread.html" class="thread-item p-4 border-b border-border hover:bg-muted/30 transition-colors">
+          <h2 class="font-body font-medium text-foreground leading-snug mb-1">宿舍里养绿植的可行性</h2>
+          <p class="text-sm text-muted-foreground line-clamp-1 mb-2">想放一盆多肉在窗台，但担心假期没人浇水会枯掉。</p>
+          <div class="thread-meta text-xs text-muted-foreground">
+            <span class="flex items-center gap-1"><i data-lucide="user" class="w-3 h-3"></i>青青</span>
+            <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i>33</span>
+            <span>昨天</span>
+          </div>
+        </a>
+
+        <a href="thread.html" class="thread-item p-4 hover:bg-muted/30 transition-colors">
+          <h2 class="font-body font-medium text-foreground leading-snug mb-1">周五晚上有人一起看电影吗</h2>
+          <p class="text-sm text-muted-foreground line-clamp-1 mb-2">买了投影仪，想在大厅放一部老片，欢迎自带零食。</p>
+          <div class="thread-meta text-xs text-muted-foreground">
+            <span class="flex items-center gap-1"><i data-lucide="user" class="w-3 h-3"></i>大伟</span>
+            <span class="flex items-center gap-1"><i data-lucide="message-circle" class="w-3 h-3"></i>9</span>
+            <span>3天前</span>
+          </div>
+        </a>
+
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<!-- MOBILE BOTTOM NAV START -->
+<nav data-mobile-nav="global" class="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]">
+  <div class="w-full max-w-md mx-auto grid grid-cols-5 h-16">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="home" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">首页</span></a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="image" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">照片</span></a>
+    <a href="composer.html" data-nav-key="create" data-dom-id="nav-create" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><span class="w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center"><i data-lucide="plus" class="w-5 h-5 shrink-0"></i></span><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">发布</span></a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" data-active="true" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="messages-square" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">论坛</span></a>
+    <a href="chat.html" data-nav-key="messages" data-dom-id="nav-messages" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="message-circle" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">消息</span></a>
+  </div>
+</nav>
+<!-- MOBILE BOTTOM NAV END -->
+
+    <script>lucide.createIcons();</script>
+</body>
+</html>

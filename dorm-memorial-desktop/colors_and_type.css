@@ -1,0 +1,110 @@
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}

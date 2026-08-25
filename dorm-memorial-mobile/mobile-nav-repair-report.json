@@ -1,0 +1,44 @@
+{
+  "success": true,
+  "repairedPages": [
+    {
+      "htmlSrc": "pages/index.html",
+      "action": "replace-data-mobile-nav-global",
+      "activeKey": "home"
+    },
+    {
+      "htmlSrc": "pages/wall.html",
+      "action": "replace-data-mobile-nav-global",
+      "activeKey": "wall"
+    },
+    {
+      "htmlSrc": "pages/forum.html",
+      "action": "replace-data-mobile-nav-global",
+      "activeKey": "forum"
+    },
+    {
+      "htmlSrc": "pages/thread.html",
+      "action": "replace-data-mobile-nav-global",
+      "activeKey": "forum"
+    },
+    {
+      "htmlSrc": "pages/guestbook.html",
+      "action": "replace-data-mobile-nav-global",
+      "activeKey": "home"
+    }
+  ],
+  "skippedPages": [
+    {
+      "htmlSrc": "pages/composer.html",
+      "reason": "task-focused composer page where bottom nav risks draft loss"
+    },
+    {
+      "htmlSrc": "pages/chat.html",
+      "reason": "task-focused chat page with its own composer bar"
+    }
+  ],
+  "failedPages": [],
+  "repairCount": 5,
+  "previousFailedReportDetected": false,
+  "checkedAt": "2026-08-25T11:36:52.538Z"
+}

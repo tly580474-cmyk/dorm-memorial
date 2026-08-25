@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>照片墙</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@500;600;700&display=swap" rel="stylesheet">
+    <style id="theme-vars">
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--dmc-background);
+    --color-foreground: var(--dmc-foreground);
+    --color-card: var(--dmc-card);
+    --color-card-foreground: var(--dmc-card-foreground);
+    --color-popover: var(--dmc-popover);
+    --color-popover-foreground: var(--dmc-popover-foreground);
+    --color-primary: var(--dmc-primary);
+    --color-primary-foreground: var(--dmc-primary-foreground);
+    --color-secondary: var(--dmc-secondary);
+    --color-secondary-foreground: var(--dmc-secondary-foreground);
+    --color-muted: var(--dmc-muted);
+    --color-muted-foreground: var(--dmc-muted-foreground);
+    --color-border: var(--dmc-border);
+    --color-input: var(--dmc-input);
+    --color-ring: var(--dmc-ring);
+    --radius-sm: var(--dmc-radius-small);
+    --radius-md: var(--dmc-radius-medium);
+    --radius-lg: var(--dmc-radius-large);
+  }
+  @layer base {
+    body { background: var(--dmc-background); color: var(--dmc-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--dmc-background); }
+      .text-background { color: var(--dmc-background); }
+      .border-background { border-color: var(--dmc-background); }
+      .ring-background { --tw-ring-color: var(--dmc-background); }
+      .bg-foreground { background-color: var(--dmc-foreground); }
+      .text-foreground { color: var(--dmc-foreground); }
+      .border-foreground { border-color: var(--dmc-foreground); }
+      .ring-foreground { --tw-ring-color: var(--dmc-foreground); }
+      .bg-card { background-color: var(--dmc-card); }
+      .text-card { color: var(--dmc-card); }
+      .border-card { border-color: var(--dmc-card); }
+      .ring-card { --tw-ring-color: var(--dmc-card); }
+      .bg-card-foreground { background-color: var(--dmc-card-foreground); }
+      .text-card-foreground { color: var(--dmc-card-foreground); }
+      .border-card-foreground { border-color: var(--dmc-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--dmc-card-foreground); }
+      .bg-popover { background-color: var(--dmc-popover); }
+      .text-popover { color: var(--dmc-popover); }
+      .border-popover { border-color: var(--dmc-popover); }
+      .ring-popover { --tw-ring-color: var(--dmc-popover); }
+      .bg-popover-foreground { background-color: var(--dmc-popover-foreground); }
+      .text-popover-foreground { color: var(--dmc-popover-foreground); }
+      .border-popover-foreground { border-color: var(--dmc-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--dmc-popover-foreground); }
+      .bg-primary { background-color: var(--dmc-primary); }
+      .text-primary { color: var(--dmc-primary); }
+      .border-primary { border-color: var(--dmc-primary); }
+      .ring-primary { --tw-ring-color: var(--dmc-primary); }
+      .bg-primary-foreground { background-color: var(--dmc-primary-foreground); }
+      .text-primary-foreground { color: var(--dmc-primary-foreground); }
+      .border-primary-foreground { border-color: var(--dmc-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--dmc-primary-foreground); }
+      .bg-secondary { background-color: var(--dmc-secondary); }
+      .text-secondary { color: var(--dmc-secondary); }
+      .border-secondary { border-color: var(--dmc-secondary); }
+      .ring-secondary { --tw-ring-color: var(--dmc-secondary); }
+      .bg-secondary-foreground { background-color: var(--dmc-secondary-foreground); }
+      .text-secondary-foreground { color: var(--dmc-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--dmc-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--dmc-secondary-foreground); }
+      .bg-muted { background-color: var(--dmc-muted); }
+      .text-muted { color: var(--dmc-muted); }
+      .border-muted { border-color: var(--dmc-muted); }
+      .ring-muted { --tw-ring-color: var(--dmc-muted); }
+      .bg-muted-foreground { background-color: var(--dmc-muted-foreground); }
+      .text-muted-foreground { color: var(--dmc-muted-foreground); }
+      .border-muted-foreground { border-color: var(--dmc-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--dmc-muted-foreground); }
+      .bg-border { background-color: var(--dmc-border); }
+      .text-border { color: var(--dmc-border); }
+      .border-border { border-color: var(--dmc-border); }
+      .ring-border { --tw-ring-color: var(--dmc-border); }
+      .bg-input { background-color: var(--dmc-input); }
+      .text-input { color: var(--dmc-input); }
+      .border-input { border-color: var(--dmc-input); }
+      .ring-input { --tw-ring-color: var(--dmc-input); }
+      .bg-ring { background-color: var(--dmc-ring); }
+      .text-ring { color: var(--dmc-ring); }
+      .border-ring { border-color: var(--dmc-ring); }
+      .ring-ring { --tw-ring-color: var(--dmc-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+    <style id="critical-layout">
+      .masonry-grid {
+        column-count: 1;
+        column-gap: 1rem;
+      }
+      @media (min-width: 640px) {
+        .masonry-grid { column-count: 2; }
+      }
+      @media (min-width: 1024px) {
+        .masonry-grid { column-count: 3; }
+      }
+      .masonry-item {
+        break-inside: avoid;
+        margin-bottom: 1rem;
+        page-break-inside: avoid;
+      }
+      .masonry-item img {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: var(--dmc-radius-large);
+      }
+    </style>
+</head>
+<body class="min-h-screen font-body antialiased">
+<!-- Desktop shared shell for Dorm Memorial Community -->
+<!-- Copy the following chrome into every desktop page, then place page-specific content inside <main class="desktop-main"> -->
+
+<!-- TOPBAR START -->
+<header class="fixed top-0 left-0 right-0 h-16 bg-card/80 backdrop-blur border-b border-border z-40">
+  <div class="max-w-[1440px] mx-auto h-full flex items-center justify-between px-6">
+    <div class="flex items-center gap-3">
+      <span class="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-display text-lg">舍</span>
+      <span class="font-display text-xl text-foreground">305 纪念社区</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-9 h-9 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium" aria-label="个人菜单">小</button>
+    </div>
+  </div>
+</header>
+<!-- TOPBAR END -->
+
+<!-- SIDEBAR START -->
+<aside class="fixed top-16 left-0 bottom-0 w-56 bg-card border-r border-border z-30 hidden lg:flex flex-col">
+  <nav class="flex-1 p-3 space-y-1" aria-label="主导航">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="home" class="w-5 h-5"></i><span>首页</span></a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="flex items-center gap-3 px-3 py-2.5 rounded-md bg-muted/60 text-primary font-medium hover:bg-muted transition-colors"><i data-lucide="image" class="w-5 h-5"></i><span>照片墙</span></a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="messages-square" class="w-5 h-5"></i><span>论坛</span></a>
+    <a href="messages.html" data-nav-key="messages" data-dom-id="nav-messages" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="message-circle" class="w-5 h-5"></i><span>消息</span></a>
+    <a href="guestbook.html" data-nav-key="guestbook" data-dom-id="nav-guestbook" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="book-heart" class="w-5 h-5"></i><span>个人留言</span></a>
+  </nav>
+  <div class="p-3 border-t border-border">
+    <a href="composer.html" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors" data-dom-id="global-create"><i data-lucide="plus" class="w-4 h-4"></i><span>发布回忆</span></a>
+  </div>
+</aside>
+<!-- SIDEBAR END -->
+
+<!-- RIGHTRAIL FRAME START (optional, fill with page-specific widgets) -->
+<aside class="fixed top-16 right-0 bottom-0 w-[280px] bg-card border-l border-border z-30 hidden xl:block p-5 space-y-5" data-region="rightrail">
+  <!-- 热门标签 -->
+  <section class="space-y-3" aria-labelledby="popular-tags-title">
+    <h3 id="popular-tags-title" class="font-display text-base font-semibold text-foreground flex items-center gap-2">
+      <i data-lucide="flame" class="w-4 h-4" style="color: var(--dmc-highlight);"></i>热门标签
+    </h3>
+    <div class="flex flex-wrap gap-2">
+      <a href="#" class="px-3 py-1.5 rounded-full bg-popover border border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">#毕业季</a>
+      <a href="#" class="px-3 py-1.5 rounded-full bg-popover border border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">#宿舍夜话</a>
+      <a href="#" class="px-3 py-1.5 rounded-full bg-popover border border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">#305 生日</a>
+      <a href="#" class="px-3 py-1.5 rounded-full bg-popover border border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">#食堂打卡</a>
+      <a href="#" class="px-3 py-1.5 rounded-full bg-popover border border-border text-sm text-muted-foreground hover:border-primary hover:text-primary transition-colors">#周末出游</a>
+    </div>
+  </section>
+
+  <!-- 我的相册 -->
+  <section class="space-y-3" aria-labelledby="my-albums-title">
+    <h3 id="my-albums-title" class="font-display text-base font-semibold text-foreground flex items-center gap-2">
+      <i data-lucide="images" class="w-4 h-4 text-secondary"></i>我的相册
+    </h3>
+    <div class="space-y-2">
+      <a href="#" class="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors group">
+        <img src="../assets/dorm-memory-1.jpg" alt="" class="w-12 h-12 rounded-md object-cover border border-border">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">大一军训</p>
+          <p class="text-xs text-muted-foreground">12 张照片</p>
+        </div>
+      </a>
+      <a href="#" class="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors group">
+        <img src="../assets/dorm-memory-2.jpg" alt="" class="w-12 h-12 rounded-md object-cover border border-border">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">期末复习周</p>
+          <p class="text-xs text-muted-foreground">8 张照片</p>
+        </div>
+      </a>
+      <a href="#" class="flex items-center gap-3 p-2 rounded-md hover:bg-muted/50 transition-colors group">
+        <img src="../assets/dorm-memory-3.jpg" alt="" class="w-12 h-12 rounded-md object-cover border border-border">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-foreground truncate group-hover:text-primary transition-colors">跨年聚会</p>
+          <p class="text-xs text-muted-foreground">15 张照片</p>
+        </div>
+      </a>
+    </div>
+  </section>
+</aside>
+<!-- RIGHTRAIL FRAME END -->
+
+<!-- MAIN CONTENT goes in <main class="desktop-main pt-16 lg:pl-56 xl:pr-[280px] min-h-screen bg-background">...</main> -->
+<main class="desktop-main pt-16 lg:pl-56 xl:pr-[280px] min-h-screen bg-background">
+  <div class="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    <!-- Page header -->
+    <div class="mb-6">
+      <h1 class="font-display text-3xl font-semibold text-foreground">照片墙</h1>
+      <p class="mt-1 text-muted-foreground">定格 305 的每一个瞬间，留住属于我们的青春纪念。</p>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="sticky top-20 z-20 mb-6 -mx-4 px-4 sm:mx-0 sm:px-0">
+      <div class="inline-flex items-center gap-2 p-1.5 rounded-xl bg-card border border-border shadow-sm">
+        <button type="button" data-dom-id="filter-all" class="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary-hover transition-colors">全部</button>
+        <button type="button" data-dom-id="filter-photo" class="px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+          <span class="flex items-center gap-1.5"><i data-lucide="camera" class="w-4 h-4"></i>照片</span>
+        </button>
+        <button type="button" data-dom-id="filter-video" class="px-4 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
+          <span class="flex items-center gap-1.5"><i data-lucide="video" class="w-4 h-4"></i>视频</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Masonry media grid -->
+    <section class="masonry-grid" aria-label="回忆照片墙">
+      <article class="masonry-item group relative overflow-hidden rounded-lg bg-card border border-border shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1">
+        <img src="../assets/dorm-memory-1.jpg" alt="宿舍回忆 1" loading="lazy">
+        <div class="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          <p class="text-sm font-medium text-white">第一次宿舍聚餐</p>
+          <p class="text-xs text-white/80">@小林 · 2023-09-12</p>
+        </div>
+      </article>
+
+      <article class="masonry-item group relative overflow-hidden rounded-lg bg-card border border-border shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1">
+        <img src="../assets/dorm-memory-2.jpg" alt="宿舍回忆 2" loading="lazy">
+        <div class="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          <p class="text-sm font-medium text-white">期末复习夜</p>
+          <p class="text-xs text-white/80">@阿杰 · 2024-01-05</p>
+        </div>
+      </article>
+
+      <article class="masonry-item group relative overflow-hidden rounded-lg bg-card border border-border shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1">
+        <img src="../assets/dorm-memory-3.jpg" alt="宿舍回忆 3" loading="lazy">
+        <div class="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          <p class="text-sm font-medium text-white">跨年倒计时</p>
+          <p class="text-xs text-white/80">@燕子 · 2024-01-01</p>
+        </div>
+      </article>
+
+      <article class="masonry-item group relative overflow-hidden rounded-lg bg-card border border-border shadow-sm hover:shadow-md transition-all duration-300 hover:-translate-y-1">
+        <img src="../assets/dorm-memory-4.jpg" alt="宿舍回忆 4" loading="lazy">
+        <div class="absolute inset-x-0 bottom-0 p-4 bg-gradient-to-t from-black/60 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          <p class="text-sm font-medium text-white">阳台的黄昏</p>
+          <p class="text-xs text-white/80">@小雨 · 2024-03-20</p>
+        </div>
+      </article>
+    </section>
+  </div>
+</main>
+
+<script>lucide.createIcons();</script>
+</body>
+</html>

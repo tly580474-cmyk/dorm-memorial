@@ -1,0 +1,35 @@
+{
+  "root": {
+    "nodeId": "root",
+    "kind": "project-shell",
+    "title": "宿舍纪念社区 - 桌面端",
+    "pageIds": ["page-index","page-wall","page-composer","page-forum","page-thread","page-messages","page-guestbook"],
+    "output": "partials/desktop-shell.html",
+    "sharedRegions": ["topbar","sidebar","rightrail-frame","bg","type-scale","radius-scale","shadow-model"],
+    "privateRegions": ["main-content"],
+    "mutableSlots": ["page-title","active-nav-key","rightrail-content"],
+    "status": "planned",
+    "children": [
+      {
+        "nodeId": "shared-desktop-shell",
+        "kind": "shared-branch",
+        "title": "桌面共享外壳",
+        "pageIds": ["page-index","page-wall","page-composer","page-forum","page-thread","page-messages","page-guestbook"],
+        "output": "partials/desktop-shell.html",
+        "sharedRegions": ["topbar","sidebar","rightrail-frame"],
+        "privateRegions": ["main-content"],
+        "mutableSlots": ["page-title","active-nav-key","rightrail-content"],
+        "status": "planned",
+        "children": [
+          {"nodeId":"page-index","kind":"page-leaf","title":"首页","pageIds":["page-index"],"output":"pages/index.html","sharedRegions":["topbar","sidebar"],"privateRegions":["hero","on-this-day","quick-composer","feed"],"mutableSlots":["page-title","active-nav-key","rightrail-content"],"status":"planned","children":[]},
+          {"nodeId":"page-wall","kind":"page-leaf","title":"照片墙","pageIds":["page-wall"],"output":"pages/wall.html","sharedRegions":["topbar","sidebar"],"privateRegions":["filter-bar","media-grid"],"mutableSlots":["page-title","active-nav-key"],"status":"planned","children":[]},
+          {"nodeId":"page-composer","kind":"page-leaf","title":"发布","pageIds":["page-composer"],"output":"pages/composer.html","sharedRegions":["topbar","sidebar"],"privateRegions":["composer-form","upload-progress"],"mutableSlots":["page-title","active-nav-key"],"status":"planned","children":[]},
+          {"nodeId":"page-forum","kind":"page-leaf","title":"论坛","pageIds":["page-forum"],"output":"pages/forum.html","sharedRegions":["topbar","sidebar","rightrail-frame"],"privateRegions":["board-grid","thread-list"],"mutableSlots":["page-title","active-nav-key","rightrail-content"],"status":"planned","children":[]},
+          {"nodeId":"page-thread","kind":"page-leaf","title":"主题详情","pageIds":["page-thread"],"output":"pages/thread.html","sharedRegions":["topbar","sidebar"],"privateRegions":["thread-header","reply-list","reply-composer"],"mutableSlots":["page-title","active-nav-key"],"status":"planned","children":[]},
+          {"nodeId":"page-messages","kind":"page-leaf","title":"消息","pageIds":["page-messages"],"output":"pages/messages.html","sharedRegions":["topbar","sidebar","rightrail-frame"],"privateRegions":["conversation-list","message-list","message-composer"],"mutableSlots":["page-title","active-nav-key","rightrail-content"],"status":"planned","children":[]},
+          {"nodeId":"page-guestbook","kind":"page-leaf","title":"个人留言","pageIds":["page-guestbook"],"output":"pages/guestbook.html","sharedRegions":["topbar","sidebar"],"privateRegions":["profile-header","message-stream"],"mutableSlots":["page-title","active-nav-key"],"status":"planned","children":[]}
+        ]
+      }
+    ]
+  }
+}

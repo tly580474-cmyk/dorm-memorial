@@ -1,0 +1,27 @@
+# Local secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.local
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies, build output, and logs
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Local prototype tooling and generated preflight previews
+.tmp-scripts/
+**/.preflight/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

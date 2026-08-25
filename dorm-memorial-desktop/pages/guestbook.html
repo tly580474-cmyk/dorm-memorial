@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>个人留言</title>
+    <style id="theme-vars">
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--dmc-background);
+    --color-foreground: var(--dmc-foreground);
+    --color-card: var(--dmc-card);
+    --color-card-foreground: var(--dmc-card-foreground);
+    --color-popover: var(--dmc-popover);
+    --color-popover-foreground: var(--dmc-popover-foreground);
+    --color-primary: var(--dmc-primary);
+    --color-primary-foreground: var(--dmc-primary-foreground);
+    --color-secondary: var(--dmc-secondary);
+    --color-secondary-foreground: var(--dmc-secondary-foreground);
+    --color-muted: var(--dmc-muted);
+    --color-muted-foreground: var(--dmc-muted-foreground);
+    --color-border: var(--dmc-border);
+    --color-input: var(--dmc-input);
+    --color-ring: var(--dmc-ring);
+    --radius-sm: var(--dmc-radius-small);
+    --radius-md: var(--dmc-radius-medium);
+    --radius-lg: var(--dmc-radius-large);
+  }
+  @layer base {
+    body { background: var(--dmc-background); color: var(--dmc-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--dmc-background); }
+      .text-background { color: var(--dmc-background); }
+      .border-background { border-color: var(--dmc-background); }
+      .ring-background { --tw-ring-color: var(--dmc-background); }
+      .bg-foreground { background-color: var(--dmc-foreground); }
+      .text-foreground { color: var(--dmc-foreground); }
+      .border-foreground { border-color: var(--dmc-foreground); }
+      .ring-foreground { --tw-ring-color: var(--dmc-foreground); }
+      .bg-card { background-color: var(--dmc-card); }
+      .text-card { color: var(--dmc-card); }
+      .border-card { border-color: var(--dmc-card); }
+      .ring-card { --tw-ring-color: var(--dmc-card); }
+      .bg-card-foreground { background-color: var(--dmc-card-foreground); }
+      .text-card-foreground { color: var(--dmc-card-foreground); }
+      .border-card-foreground { border-color: var(--dmc-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--dmc-card-foreground); }
+      .bg-popover { background-color: var(--dmc-popover); }
+      .text-popover { color: var(--dmc-popover); }
+      .border-popover { border-color: var(--dmc-popover); }
+      .ring-popover { --tw-ring-color: var(--dmc-popover); }
+      .bg-popover-foreground { background-color: var(--dmc-popover-foreground); }
+      .text-popover-foreground { color: var(--dmc-popover-foreground); }
+      .border-popover-foreground { border-color: var(--dmc-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--dmc-popover-foreground); }
+      .bg-primary { background-color: var(--dmc-primary); }
+      .text-primary { color: var(--dmc-primary); }
+      .border-primary { border-color: var(--dmc-primary); }
+      .ring-primary { --tw-ring-color: var(--dmc-primary); }
+      .bg-primary-foreground { background-color: var(--dmc-primary-foreground); }
+      .text-primary-foreground { color: var(--dmc-primary-foreground); }
+      .border-primary-foreground { border-color: var(--dmc-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--dmc-primary-foreground); }
+      .bg-secondary { background-color: var(--dmc-secondary); }
+      .text-secondary { color: var(--dmc-secondary); }
+      .border-secondary { border-color: var(--dmc-secondary); }
+      .ring-secondary { --tw-ring-color: var(--dmc-secondary); }
+      .bg-secondary-foreground { background-color: var(--dmc-secondary-foreground); }
+      .text-secondary-foreground { color: var(--dmc-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--dmc-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--dmc-secondary-foreground); }
+      .bg-muted { background-color: var(--dmc-muted); }
+      .text-muted { color: var(--dmc-muted); }
+      .border-muted { border-color: var(--dmc-muted); }
+      .ring-muted { --tw-ring-color: var(--dmc-muted); }
+      .bg-muted-foreground { background-color: var(--dmc-muted-foreground); }
+      .text-muted-foreground { color: var(--dmc-muted-foreground); }
+      .border-muted-foreground { border-color: var(--dmc-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--dmc-muted-foreground); }
+      .bg-border { background-color: var(--dmc-border); }
+      .text-border { color: var(--dmc-border); }
+      .border-border { border-color: var(--dmc-border); }
+      .ring-border { --tw-ring-color: var(--dmc-border); }
+      .bg-input { background-color: var(--dmc-input); }
+      .text-input { color: var(--dmc-input); }
+      .border-input { border-color: var(--dmc-input); }
+      .ring-input { --tw-ring-color: var(--dmc-input); }
+      .bg-ring { background-color: var(--dmc-ring); }
+      .text-ring { color: var(--dmc-ring); }
+      .border-ring { border-color: var(--dmc-ring); }
+      .ring-ring { --tw-ring-color: var(--dmc-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="bg-background font-body text-foreground">
+
+<!-- TOPBAR START -->
+<header class="fixed top-0 left-0 right-0 h-16 bg-card/80 backdrop-blur border-b border-border z-40">
+  <div class="max-w-[1440px] mx-auto h-full flex items-center justify-between px-6">
+    <div class="flex items-center gap-3">
+      <span class="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-display text-lg">舍</span>
+      <span class="font-display text-xl text-foreground">305 纪念社区</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+      <button class="w-9 h-9 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium" aria-label="个人菜单">小</button>
+    </div>
+  </div>
+</header>
+<!-- TOPBAR END -->
+
+<!-- SIDEBAR START -->
+<aside class="fixed top-16 left-0 bottom-0 w-56 bg-card border-r border-border z-30 hidden lg:flex flex-col">
+  <nav class="flex-1 p-3 space-y-1" aria-label="主导航">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="home" class="w-5 h-5"></i><span>首页</span></a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="image" class="w-5 h-5"></i><span>照片墙</span></a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="messages-square" class="w-5 h-5"></i><span>论坛</span></a>
+    <a href="messages.html" data-nav-key="messages" data-dom-id="nav-messages" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="message-circle" class="w-5 h-5"></i><span>消息</span></a>
+    <a href="guestbook.html" data-nav-key="guestbook" data-dom-id="nav-guestbook" class="flex items-center gap-3 px-3 py-2.5 rounded-md bg-muted/60 text-primary font-medium hover:bg-muted transition-colors"><i data-lucide="book-heart" class="w-5 h-5"></i><span>个人留言</span></a>
+  </nav>
+  <div class="p-3 border-t border-border">
+    <a href="composer.html" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors" data-dom-id="global-create"><i data-lucide="plus" class="w-4 h-4"></i><span>发布回忆</span></a>
+  </div>
+</aside>
+<!-- SIDEBAR END -->
+
+<!-- RIGHTRAIL FRAME START -->
+<aside class="fixed top-16 right-0 bottom-0 w-[280px] bg-card border-l border-border z-30 hidden xl:block p-5 space-y-5" data-region="rightrail">
+  <!-- 舍友情谊 -->
+  <section class="bg-surface rounded-lg border border-border p-4" data-dom-id="widget-friendship">
+    <h3 class="font-display text-lg text-foreground mb-3 flex items-center gap-2">
+      <i data-lucide="users" class="w-4 h-4 text-secondary"></i>舍友情谊
+    </h3>
+    <div class="flex -space-x-2 mb-3">
+      <span class="w-9 h-9 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium ring-2 ring-surface">林</span>
+      <span class="w-9 h-9 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-xs font-medium ring-2 ring-surface">周</span>
+      <span class="w-9 h-9 rounded-full bg-highlight text-white flex items-center justify-center text-xs font-medium ring-2 ring-surface">张</span>
+      <span class="w-9 h-9 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-medium ring-2 ring-surface">陈</span>
+      <span class="w-9 h-9 rounded-full bg-primary/80 text-primary-foreground flex items-center justify-center text-xs font-medium ring-2 ring-surface">王</span>
+      <span class="w-9 h-9 rounded-full bg-secondary/80 text-secondary-foreground flex items-center justify-center text-xs font-medium ring-2 ring-surface">+1</span>
+    </div>
+    <p class="text-sm text-muted-foreground">6 位室友，4 年陪伴，128 条留言串起我们的回忆。</p>
+  </section>
+
+  <!-- 纪念日期 -->
+  <section class="bg-surface rounded-lg border border-border p-4" data-dom-id="widget-anniversaries">
+    <h3 class="font-display text-lg text-foreground mb-3 flex items-center gap-2">
+      <i data-lucide="calendar-heart" class="w-4 h-4 text-highlight"></i>纪念日期
+    </h3>
+    <ul class="space-y-3 text-sm">
+      <li class="flex items-start justify-between gap-2">
+        <span class="text-foreground">入学日</span>
+        <span class="text-muted-foreground whitespace-nowrap">2022-09-01</span>
+      </li>
+      <li class="flex items-start justify-between gap-2">
+        <span class="text-foreground">第一次聚餐</span>
+        <span class="text-muted-foreground whitespace-nowrap">2022-09-03</span>
+      </li>
+      <li class="flex items-start justify-between gap-2">
+        <span class="text-foreground">宿舍公约日</span>
+        <span class="text-muted-foreground whitespace-nowrap">2022-10-15</span>
+      </li>
+      <li class="flex items-start justify-between gap-2">
+        <span class="text-foreground">毕业倒计时</span>
+        <span class="text-muted-foreground whitespace-nowrap">2026-06-20</span>
+      </li>
+    </ul>
+  </section>
+</aside>
+<!-- RIGHTRAIL FRAME END -->
+
+<!-- MAIN CONTENT -->
+<main class="desktop-main pt-16 lg:pl-56 xl:pr-[280px] min-h-screen bg-background">
+  <div class="guestbook-feed mx-auto px-4 sm:px-6 py-6">
+
+    <!-- Profile header -->
+    <section class="profile-header bg-surface rounded-lg border border-border overflow-hidden mb-6" aria-label="留言册主页">
+      <div class="profile-cover relative h-48 sm:h-56">
+        <img src="../assets/dorm-memory-3.jpg" alt="305 宿舍纪念册封面" class="w-full h-full object-cover" loading="eager">
+        <div class="absolute inset-0 bg-gradient-to-t from-black/50 to-transparent"></div>
+      </div>
+      <div class="px-5 pb-5">
+        <div class="flex items-end gap-4 -mt-12 mb-3">
+          <span class="w-24 h-24 rounded-full bg-primary text-primary-foreground flex items-center justify-center font-display text-3xl border-4 border-surface shadow-sm">305</span>
+          <div class="pb-1">
+            <h1 class="font-display text-2xl text-foreground">305 宿舍</h1>
+            <p class="text-sm text-muted-foreground">建于 2022 年的小小纪念册，记录我们的四年。</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-6 text-sm">
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-foreground">128</span>
+            <span class="text-muted-foreground">留言</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-foreground">6</span>
+            <span class="text-muted-foreground">成员</span>
+          </div>
+          <button class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:bg-muted transition-colors" aria-label="分享留言册">
+            <i data-lucide="share-2" class="w-4 h-4"></i><span>分享</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Composer -->
+    <section class="composer-card bg-surface rounded-lg border border-border p-4 mb-6" aria-label="写留言">
+      <form class="flex items-start gap-3" onsubmit="event.preventDefault();">
+        <span class="w-10 h-10 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium shrink-0">小</span>
+        <div class="flex-1 min-w-0">
+          <textarea data-dom-id="guestbook-input" rows="3" placeholder="写下你的留言，留住这一刻…" aria-label="留言内容" class="w-full resize-none rounded-md border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"></textarea>
+          <div class="flex items-center justify-between mt-3">
+            <button type="button" class="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-primary transition-colors" aria-label="添加表情">
+              <i data-lucide="smile" class="w-4 h-4"></i><span>表情</span>
+            </button>
+            <button type="submit" class="inline-flex items-center gap-2 px-5 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors">
+              <i data-lucide="pen-line" class="w-4 h-4"></i><span>留言</span>
+            </button>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <!-- Message stream -->
+    <section class="guestbook-stream space-y-4" aria-label="留言列表">
+      <article class="message-card bg-surface rounded-lg border border-border p-4" data-dom-id="guestbook-message-1">
+        <div class="flex items-start gap-3">
+          <span class="w-10 h-10 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium shrink-0">林</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <span class="font-medium text-foreground">林晓东</span>
+              <span class="text-xs text-muted-foreground whitespace-nowrap">2 小时前</span>
+            </div>
+            <p class="text-sm text-foreground leading-relaxed">毕业照那天记得穿白衬衫，我们要拍一张最整齐的宿舍合影。</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="message-card bg-surface rounded-lg border border-border p-4" data-dom-id="guestbook-message-2">
+        <div class="flex items-start gap-3">
+          <span class="w-10 h-10 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-medium shrink-0">王</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <span class="font-medium text-foreground">王小雨</span>
+              <span class="text-xs text-muted-foreground whitespace-nowrap">昨天</span>
+            </div>
+            <p class="text-sm text-foreground leading-relaxed">整理衣柜时发现大一买的台灯还在，四年都没坏，就像我们的友谊一样。</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="message-card bg-surface rounded-lg border border-border p-4" data-dom-id="guestbook-message-3">
+        <div class="flex items-start gap-3">
+          <span class="w-10 h-10 rounded-full bg-highlight text-white flex items-center justify-center text-sm font-medium shrink-0">张</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <span class="font-medium text-foreground">张伟</span>
+              <span class="text-xs text-muted-foreground whitespace-nowrap">2 天前</span>
+            </div>
+            <p class="text-sm text-foreground leading-relaxed">感谢大家在考试周轮流给我带饭，这份恩情我会记一辈子的。</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="message-card bg-surface rounded-lg border border-border p-4" data-dom-id="guestbook-message-4">
+        <div class="flex items-start gap-3">
+          <span class="w-10 h-10 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-sm font-medium shrink-0">陈</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <span class="font-medium text-foreground">陈静</span>
+              <span class="text-xs text-muted-foreground whitespace-nowrap">3 天前</span>
+            </div>
+            <p class="text-sm text-foreground leading-relaxed">以后再也没有人陪我熬夜追剧了，但 305 的故事永远在我心里。</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="message-card bg-surface rounded-lg border border-border p-4" data-dom-id="guestbook-message-5">
+        <div class="flex items-start gap-3">
+          <span class="w-10 h-10 rounded-full bg-secondary/80 text-secondary-foreground flex items-center justify-center text-sm font-medium shrink-0">周</span>
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center justify-between gap-2 mb-1">
+              <span class="font-medium text-foreground">周子墨</span>
+              <span class="text-xs text-muted-foreground whitespace-nowrap">1 周前</span>
+            </div>
+            <p class="text-sm text-foreground leading-relaxed">希望在未来的日子里，我们还能像现在这样无话不谈。</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
+  </div>
+</main>
+
+<script>lucide.createIcons();</script>
+
+<style id="critical-layout">
+  .desktop-main {
+    padding-top: var(--dmc-topbar-height, 64px);
+  }
+  @media (min-width: 1024px) {
+    .desktop-main { padding-left: var(--dmc-sidebar-width, 224px); }
+  }
+  @media (min-width: 1280px) {
+    .desktop-main { padding-right: var(--dmc-right-rail-width, 280px); }
+  }
+  .guestbook-feed {
+    max-width: var(--dmc-feed-max, 760px);
+  }
+  .profile-cover img {
+    display: block;
+  }
+  .bg-surface {
+    background-color: var(--dmc-surface);
+  }
+  .ring-surface {
+    --tw-ring-color: var(--dmc-surface);
+  }
+  .border-surface {
+    border-color: var(--dmc-surface);
+  }
+</style>
+
+</body>
+</html>

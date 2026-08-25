@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>论坛</title>
+    <style id="theme-vars">
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--dmc-background);
+    --color-foreground: var(--dmc-foreground);
+    --color-card: var(--dmc-card);
+    --color-card-foreground: var(--dmc-card-foreground);
+    --color-popover: var(--dmc-popover);
+    --color-popover-foreground: var(--dmc-popover-foreground);
+    --color-primary: var(--dmc-primary);
+    --color-primary-foreground: var(--dmc-primary-foreground);
+    --color-secondary: var(--dmc-secondary);
+    --color-secondary-foreground: var(--dmc-secondary-foreground);
+    --color-muted: var(--dmc-muted);
+    --color-muted-foreground: var(--dmc-muted-foreground);
+    --color-border: var(--dmc-border);
+    --color-input: var(--dmc-input);
+    --color-ring: var(--dmc-ring);
+    --radius-sm: var(--dmc-radius-small);
+    --radius-md: var(--dmc-radius-medium);
+    --radius-lg: var(--dmc-radius-large);
+  }
+  @layer base {
+    body { background: var(--dmc-background); color: var(--dmc-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--dmc-background); }
+      .text-background { color: var(--dmc-background); }
+      .border-background { border-color: var(--dmc-background); }
+      .ring-background { --tw-ring-color: var(--dmc-background); }
+      .bg-foreground { background-color: var(--dmc-foreground); }
+      .text-foreground { color: var(--dmc-foreground); }
+      .border-foreground { border-color: var(--dmc-foreground); }
+      .ring-foreground { --tw-ring-color: var(--dmc-foreground); }
+      .bg-card { background-color: var(--dmc-card); }
+      .text-card { color: var(--dmc-card); }
+      .border-card { border-color: var(--dmc-card); }
+      .ring-card { --tw-ring-color: var(--dmc-card); }
+      .bg-card-foreground { background-color: var(--dmc-card-foreground); }
+      .text-card-foreground { color: var(--dmc-card-foreground); }
+      .border-card-foreground { border-color: var(--dmc-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--dmc-card-foreground); }
+      .bg-popover { background-color: var(--dmc-popover); }
+      .text-popover { color: var(--dmc-popover); }
+      .border-popover { border-color: var(--dmc-popover); }
+      .ring-popover { --tw-ring-color: var(--dmc-popover); }
+      .bg-popover-foreground { background-color: var(--dmc-popover-foreground); }
+      .text-popover-foreground { color: var(--dmc-popover-foreground); }
+      .border-popover-foreground { border-color: var(--dmc-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--dmc-popover-foreground); }
+      .bg-primary { background-color: var(--dmc-primary); }
+      .text-primary { color: var(--dmc-primary); }
+      .border-primary { border-color: var(--dmc-primary); }
+      .ring-primary { --tw-ring-color: var(--dmc-primary); }
+      .bg-primary-foreground { background-color: var(--dmc-primary-foreground); }
+      .text-primary-foreground { color: var(--dmc-primary-foreground); }
+      .border-primary-foreground { border-color: var(--dmc-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--dmc-primary-foreground); }
+      .bg-secondary { background-color: var(--dmc-secondary); }
+      .text-secondary { color: var(--dmc-secondary); }
+      .border-secondary { border-color: var(--dmc-secondary); }
+      .ring-secondary { --tw-ring-color: var(--dmc-secondary); }
+      .bg-secondary-foreground { background-color: var(--dmc-secondary-foreground); }
+      .text-secondary-foreground { color: var(--dmc-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--dmc-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--dmc-secondary-foreground); }
+      .bg-muted { background-color: var(--dmc-muted); }
+      .text-muted { color: var(--dmc-muted); }
+      .border-muted { border-color: var(--dmc-muted); }
+      .ring-muted { --tw-ring-color: var(--dmc-muted); }
+      .bg-muted-foreground { background-color: var(--dmc-muted-foreground); }
+      .text-muted-foreground { color: var(--dmc-muted-foreground); }
+      .border-muted-foreground { border-color: var(--dmc-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--dmc-muted-foreground); }
+      .bg-border { background-color: var(--dmc-border); }
+      .text-border { color: var(--dmc-border); }
+      .border-border { border-color: var(--dmc-border); }
+      .ring-border { --tw-ring-color: var(--dmc-border); }
+      .bg-input { background-color: var(--dmc-input); }
+      .text-input { color: var(--dmc-input); }
+      .border-input { border-color: var(--dmc-input); }
+      .ring-input { --tw-ring-color: var(--dmc-input); }
+      .bg-ring { background-color: var(--dmc-ring); }
+      .text-ring { color: var(--dmc-ring); }
+      .border-ring { border-color: var(--dmc-ring); }
+      .ring-ring { --tw-ring-color: var(--dmc-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="bg-background font-body text-foreground">
+
+  <!-- TOPBAR START -->
+  <header class="fixed top-0 left-0 right-0 h-16 bg-card/80 backdrop-blur border-b border-border z-40">
+    <div class="max-w-[1440px] mx-auto h-full flex items-center justify-between px-6">
+      <div class="flex items-center gap-3">
+        <span class="w-8 h-8 rounded-lg bg-primary text-primary-foreground flex items-center justify-center font-display text-lg">舍</span>
+        <span class="font-display text-xl text-foreground">305 纪念社区</span>
+      </div>
+      <div class="flex items-center gap-4">
+        <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+        <button class="w-10 h-10 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+        <button class="w-9 h-9 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-sm font-medium" aria-label="个人菜单">小</button>
+      </div>
+    </div>
+  </header>
+  <!-- TOPBAR END -->
+
+  <!-- SIDEBAR START -->
+  <aside class="fixed top-16 left-0 bottom-0 w-56 bg-card border-r border-border z-30 hidden lg:flex flex-col">
+    <nav class="flex-1 p-3 space-y-1" aria-label="主导航">
+      <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="home" class="w-5 h-5"></i><span>首页</span></a>
+      <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="image" class="w-5 h-5"></i><span>照片墙</span></a>
+      <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" class="flex items-center gap-3 px-3 py-2.5 rounded-md bg-muted/60 text-primary font-medium hover:bg-muted transition-colors"><i data-lucide="messages-square" class="w-5 h-5"></i><span>论坛</span></a>
+      <a href="messages.html" data-nav-key="messages" data-dom-id="nav-messages" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="message-circle" class="w-5 h-5"></i><span>消息</span></a>
+      <a href="guestbook.html" data-nav-key="guestbook" data-dom-id="nav-guestbook" class="flex items-center gap-3 px-3 py-2.5 rounded-md text-foreground hover:bg-muted transition-colors"><i data-lucide="book-heart" class="w-5 h-5"></i><span>个人留言</span></a>
+    </nav>
+    <div class="p-3 border-t border-border">
+      <a href="composer.html" class="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors" data-dom-id="global-create"><i data-lucide="plus" class="w-4 h-4"></i><span>发布回忆</span></a>
+    </div>
+  </aside>
+  <!-- SIDEBAR END -->
+
+  <!-- RIGHTRAIL FRAME START -->
+  <aside class="fixed top-16 right-0 bottom-0 w-[280px] bg-card border-l border-border z-30 hidden xl:block p-5 space-y-5" data-region="rightrail">
+    <!-- 热门话题 -->
+    <section class="bg-surface rounded-lg border border-border p-4" data-dom-id="widget-hot-topics">
+      <h3 class="font-display text-lg text-foreground mb-3 flex items-center gap-2">
+        <i data-lucide="flame" class="w-4 h-4 text-highlight"></i>热门话题
+      </h3>
+      <ol class="space-y-3 text-sm">
+        <li class="flex items-start gap-3">
+          <span class="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium shrink-0">1</span>
+          <a href="#" class="text-foreground hover:text-primary transition-colors line-clamp-2">毕业前最后一晚，你最难忘记的是什么？</a>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-5 h-5 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-xs font-medium shrink-0">2</span>
+          <a href="#" class="text-foreground hover:text-primary transition-colors line-clamp-2">宿舍夜聊：那些年我们聊过的奇怪话题</a>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-5 h-5 rounded-full bg-highlight text-white flex items-center justify-center text-xs font-medium shrink-0">3</span>
+          <a href="#" class="text-foreground hover:text-primary transition-colors line-clamp-2">305 公约——谁才是宿舍真正的厨神？</a>
+        </li>
+        <li class="flex items-start gap-3">
+          <span class="w-5 h-5 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-medium shrink-0">4</span>
+          <a href="#" class="text-foreground hover:text-primary transition-colors line-clamp-2">征集：大一开学第一张照片</a>
+        </li>
+      </ol>
+    </section>
+
+    <!-- 版规速览 -->
+    <section class="bg-surface rounded-lg border border-border p-4" data-dom-id="widget-board-rules">
+      <h3 class="font-display text-lg text-foreground mb-3 flex items-center gap-2">
+        <i data-lucide="shield-check" class="w-4 h-4 text-secondary"></i>版规速览
+      </h3>
+      <ul class="space-y-2 text-sm text-muted-foreground">
+        <li class="flex items-start gap-2"><i data-lucide="check" class="w-4 h-4 text-success shrink-0 mt-0.5"></i><span>友善交流，尊重每一位室友与校友。</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="check" class="w-4 h-4 text-success shrink-0 mt-0.5"></i><span>禁止发布个人隐私与联系方式。</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="check" class="w-4 h-4 text-success shrink-0 mt-0.5"></i><span>活动召集需注明时间、地点与联系方式。</span></li>
+        <li class="flex items-start gap-2"><i data-lucide="check" class="w-4 h-4 text-success shrink-0 mt-0.5"></i><span>树洞区匿名发言，请遵守基本礼仪。</span></li>
+      </ul>
+    </section>
+  </aside>
+  <!-- RIGHTRAIL FRAME END -->
+
+  <main class="desktop-main pt-16 lg:pl-56 xl:pr-[280px] min-h-screen bg-background">
+    <div class="max-w-[1440px] mx-auto px-4 sm:px-6 py-6">
+
+      <!-- Page header -->
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h1 class="font-display text-3xl text-foreground">论坛</h1>
+          <p class="text-sm text-muted-foreground mt-1">交流日常、回忆与心声</p>
+        </div>
+        <button class="flex items-center gap-2 px-4 py-2 rounded-md bg-primary text-primary-foreground font-medium hover:bg-primary-hover transition-colors" data-dom-id="btn-new-topic">
+          <i data-lucide="plus" class="w-4 h-4"></i><span>发布话题</span>
+        </button>
+      </div>
+
+      <!-- Board grid -->
+      <section class="board-grid mb-8" aria-label="版块列表">
+        <article class="bg-surface rounded-lg border border-border p-4 hover:shadow-md transition-shadow">
+          <div class="flex items-start justify-between mb-2">
+            <div class="w-10 h-10 rounded-md bg-primary/10 text-primary flex items-center justify-center">
+              <i data-lucide="bed-double" class="w-5 h-5"></i>
+            </div>
+            <span class="text-xs text-muted-foreground">1,248 话题</span>
+          </div>
+          <h2 class="font-display text-lg text-foreground">宿舍日常</h2>
+          <p class="text-sm text-muted-foreground mt-1 line-clamp-2">分享宿舍里的点滴趣事、生活技巧与室友互动。</p>
+        </article>
+
+        <article class="bg-surface rounded-lg border border-border p-4 hover:shadow-md transition-shadow">
+          <div class="flex items-start justify-between mb-2">
+            <div class="w-10 h-10 rounded-md bg-secondary/10 text-secondary flex items-center justify-center">
+              <i data-lucide="graduation-cap" class="w-5 h-5"></i>
+            </div>
+            <span class="text-xs text-muted-foreground">856 话题</span>
+          </div>
+          <h2 class="font-display text-lg text-foreground">毕业回忆</h2>
+          <p class="text-sm text-muted-foreground mt-1 line-clamp-2">记录毕业前后的感动瞬间、照片故事与未说完的话。</p>
+        </article>
+
+        <article class="bg-surface rounded-lg border border-border p-4 hover:shadow-md transition-shadow">
+          <div class="flex items-start justify-between mb-2">
+            <div class="w-10 h-10 rounded-md bg-highlight/10 text-highlight flex items-center justify-center">
+              <i data-lucide="calendar-heart" class="w-5 h-5"></i>
+            </div>
+            <span class="text-xs text-muted-foreground">342 话题</span>
+          </div>
+          <h2 class="font-display text-lg text-foreground">活动召集</h2>
+          <p class="text-sm text-muted-foreground mt-1 line-clamp-2">聚会、旅行、返校日——在这里发起和发现精彩活动。</p>
+        </article>
+
+        <article class="bg-surface rounded-lg border border-border p-4 hover:shadow-md transition-shadow">
+          <div class="flex items-start justify-between mb-2">
+            <div class="w-10 h-10 rounded-md bg-muted text-muted-foreground flex items-center justify-center">
+              <i data-lucide="tree-deciduous" class="w-5 h-5"></i>
+            </div>
+            <span class="text-xs text-muted-foreground">1,024 话题</span>
+          </div>
+          <h2 class="font-display text-lg text-foreground">树洞</h2>
+          <p class="text-sm text-muted-foreground mt-1 line-clamp-2">匿名倾诉那些不便言说的心情与秘密。</p>
+        </article>
+      </section>
+
+      <!-- Thread list -->
+      <section aria-label="话题列表">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="font-display text-xl text-foreground">最新话题</h2>
+          <div class="flex items-center gap-2 text-sm">
+            <button class="px-3 py-1 rounded-full bg-primary text-primary-foreground">最新</button>
+            <button class="px-3 py-1 rounded-full text-muted-foreground hover:bg-muted transition-colors">精华</button>
+            <button class="px-3 py-1 rounded-full text-muted-foreground hover:bg-muted transition-colors">热门</button>
+          </div>
+        </div>
+
+        <div class="thread-list space-y-3">
+          <a href="thread.html" data-dom-id="thread-1" class="block bg-surface rounded-lg border border-border p-4 hover:border-primary/40 hover:shadow-sm transition-all">
+            <div class="flex items-start gap-4">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-display text-lg text-foreground truncate">毕业旅行计划征集：一起去海边看日出吧</h3>
+                <p class="text-sm text-muted-foreground mt-1 line-clamp-2">想在离校前去一次短途旅行，目前意向是青岛或厦门，时间暂定六月中旬，有兴趣的同学可以留言。</p>
+                <div class="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-[10px]">李</span>
+                    <span>李晓明</span>
+                  </span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="message-square" class="w-3.5 h-3.5"></i>18 回复</span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5"></i>2 小时前</span>
+                </div>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded-full shrink-0">
+                <i data-lucide="flame" class="w-3 h-3 text-highlight"></i>热门
+              </span>
+            </div>
+          </a>
+
+          <a href="thread.html" data-dom-id="thread-2" class="block bg-surface rounded-lg border border-border p-4 hover:border-primary/40 hover:shadow-sm transition-all">
+            <div class="flex items-start gap-4">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-display text-lg text-foreground truncate">宿舍夜聊话题：你做过最离谱的梦是什么？</h3>
+                <p class="text-sm text-muted-foreground mt-1 line-clamp-2">昨晚梦见自己还在高考考场上，醒来发现已经大四了，瞬间清醒。</p>
+                <div class="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-[10px]">王</span>
+                    <span>王小雨</span>
+                  </span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="message-square" class="w-3.5 h-3.5"></i>32 回复</span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5"></i>5 小时前</span>
+                </div>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded-full shrink-0">
+                <i data-lucide="message-circle" class="w-3 h-3"></i>活跃
+              </span>
+            </div>
+          </a>
+
+          <a href="thread.html" data-dom-id="thread-3" class="block bg-surface rounded-lg border border-border p-4 hover:border-primary/40 hover:shadow-sm transition-all">
+            <div class="flex items-start gap-4">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-display text-lg text-foreground truncate">305 公约之厨神争霸赛结果公布</h3>
+                <p class="text-sm text-muted-foreground mt-1 line-clamp-2">经过一周的激烈角逐，最终由老张的红烧肉摘得桂冠，颁奖仪式将于本周五晚举行。</p>
+                <div class="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-highlight text-white flex items-center justify-center text-[10px]">张</span>
+                    <span>张伟</span>
+                  </span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="message-square" class="w-3.5 h-3.5"></i>24 回复</span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5"></i>昨天</span>
+                </div>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded-full shrink-0">
+                <i data-lucide="award" class="w-3 h-3 text-highlight"></i>精华
+              </span>
+            </div>
+          </a>
+
+          <a href="thread.html" data-dom-id="thread-4" class="block bg-surface rounded-lg border border-border p-4 hover:border-primary/40 hover:shadow-sm transition-all">
+            <div class="flex items-start gap-4">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-display text-lg text-foreground truncate">树洞：有些感谢一直没说出口</h3>
+                <p class="text-sm text-muted-foreground mt-1 line-clamp-2">匿名。感谢室友三年来的包容，尤其是那次我失恋后你们轮流陪我聊天到天亮。</p>
+                <div class="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-[10px]">匿</span>
+                    <span>匿名用户</span>
+                  </span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="message-square" class="w-3.5 h-3.5"></i>56 回复</span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5"></i>2 天前</span>
+                </div>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded-full shrink-0">
+                <i data-lucide="heart" class="w-3 h-3 text-danger"></i>感动
+              </span>
+            </div>
+          </a>
+
+          <a href="thread.html" data-dom-id="thread-5" class="block bg-surface rounded-lg border border-border p-4 hover:border-primary/40 hover:shadow-sm transition-all">
+            <div class="flex items-start gap-4">
+              <div class="flex-1 min-w-0">
+                <h3 class="font-display text-lg text-foreground truncate">征集大一开学时每个人的第一张照片</h3>
+                <p class="text-sm text-muted-foreground mt-1 line-clamp-2">想做一个 305 四年对比视频，欢迎大家私信我发照片，毕业晚会上播放。</p>
+                <div class="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                  <span class="inline-flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-[10px]">陈</span>
+                    <span>陈静</span>
+                  </span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="message-square" class="w-3.5 h-3.5"></i>12 回复</span>
+                  <span class="inline-flex items-center gap-1"><i data-lucide="clock" class="w-3.5 h-3.5"></i>3 天前</span>
+                </div>
+              </div>
+              <span class="hidden sm:inline-flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 px-2 py-1 rounded-full shrink-0">
+                <i data-lucide="camera" class="w-3 h-3"></i>征集
+              </span>
+            </div>
+          </a>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script>
+    lucide.createIcons();
+  </script>
+
+    <style id="critical-layout">
+    .desktop-main {
+      padding-top: var(--dmc-topbar-height, 64px);
+    }
+    @media (min-width: 1024px) {
+      .desktop-main { padding-left: var(--dmc-sidebar-width, 224px); }
+    }
+    @media (min-width: 1280px) {
+      .desktop-main { padding-right: var(--dmc-right-rail-width, 280px); }
+    }
+    .board-grid {
+      display: grid;
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+      gap: 1rem;
+    }
+    @media (min-width: 640px) {
+      .board-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1024px) {
+      .board-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1280px) {
+      .board-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    .thread-list {
+      max-width: var(--dmc-feed-max, 760px);
+    }
+  </style>
+</body>
+</html>

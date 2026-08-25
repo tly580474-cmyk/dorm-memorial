@@ -1,0 +1,339 @@
+{
+  "data": [
+    {
+      "id": "page-index",
+      "title": "首页",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/index.html",
+        "interactions": [
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-chat",
+            "hideEdge": true
+          },
+          {
+            "domId": "composer-trigger",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-wall",
+      "title": "照片墙",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/wall.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-chat",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-composer",
+      "title": "发布",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/composer.html",
+        "interactions": [
+          {
+            "domId": "composer-cancel",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "composer-submit",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-forum",
+      "title": "论坛",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/forum.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-chat",
+            "hideEdge": true
+          },
+          {
+            "domId": "thread-1",
+            "targetPageId": "page-thread",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-thread",
+      "title": "主题详情",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/thread.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-chat",
+            "hideEdge": true
+          },
+          {
+            "domId": "back-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "reply-composer",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-chat",
+      "title": "聊天",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/chat.html",
+        "interactions": [
+          {
+            "domId": "back-messages",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "page-guestbook",
+      "title": "个人留言",
+      "type": "page",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "htmlSrc": "pages/guestbook.html",
+        "interactions": [
+          {
+            "domId": "nav-home",
+            "targetPageId": "page-index",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-wall",
+            "targetPageId": "page-wall",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-create",
+            "targetPageId": "page-composer",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-forum",
+            "targetPageId": "page-forum",
+            "hideEdge": true
+          },
+          {
+            "domId": "nav-messages",
+            "targetPageId": "page-chat",
+            "hideEdge": true
+          }
+        ]
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0,
+        "group": 0
+      }
+    },
+    {
+      "id": "image-001",
+      "title": "宿舍主视觉",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "imageSrc": "assets/dorm-hero.jpg"
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "image-002",
+      "title": "宿舍回忆 1",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-1.jpg"
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "image-003",
+      "title": "宿舍回忆 2",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-2.jpg"
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "image-004",
+      "title": "宿舍回忆 3",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-3.jpg"
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "image-005",
+      "title": "宿舍回忆 4",
+      "type": "image",
+      "version": 1,
+      "createdAt": 1787652780000,
+      "devMetadata": {
+        "imageSrc": "assets/dorm-memory-4.jpg"
+      },
+      "canvasData": {
+        "x": 0,
+        "y": 0
+      }
+    }
+  ],
+  "config": {
+    "autoLayout": true,
+    "deviceType": "mobile",
+    "projectName": "宿舍纪念社区 - 移动端",
+    "designLibrary": null
+  }
+}

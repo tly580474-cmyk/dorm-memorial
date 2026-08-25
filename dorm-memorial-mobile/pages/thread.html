@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>主题详情</title>
+    <style id="theme-vars">
+/* Dorm Memorial Community — Design Tokens */
+/* Source: uploaded design system MASTER.md + FRONTEND_LAYOUT.md */
+
+:root {
+  /* Primitive palette — light mode (default) */
+  --dmc-bg: #F7F3EA;
+  --dmc-surface: #FFFCF6;
+  --dmc-surface-raised: #FFFFFF;
+  --dmc-text: #2F2A24;
+  --dmc-text-muted: #6F665C;
+  --dmc-primary: #9A452F;
+  --dmc-primary-hover: #7E3524;
+  --dmc-primary-ink: #FFFFFF;
+  --dmc-secondary: #3F6F6A;
+  --dmc-secondary-ink: #FFFFFF;
+  --dmc-highlight: #C3923E;
+  --dmc-border: #DED5C7;
+  --dmc-success: #39734F;
+  --dmc-danger: #A13D3D;
+
+  /* Semantic aliases required by apply-html-head-contract */
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-primary-foreground: var(--dmc-primary-ink);
+  --dmc-secondary-foreground: var(--dmc-secondary-ink);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+
+  /* Radius scale */
+  --dmc-radius-small: 6px;
+  --dmc-radius-medium: 10px;
+  --dmc-radius-large: 14px;
+  --dmc-radius-full: 9999px;
+
+  /* Shadows */
+  --dmc-shadow-sm: 0 1px 2px rgba(55, 45, 35, 0.06);
+  --dmc-shadow-md: 0 8px 24px rgba(55, 45, 35, 0.09);
+  --dmc-shadow-overlay: 0 20px 56px rgba(30, 25, 20, 0.18);
+
+  /* Typography */
+  --dmc-font-display: "Noto Serif SC", "Songti SC", STSong, serif;
+  --dmc-font-body: "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+
+  /* Spacing */
+  --dmc-space-1: 4px;
+  --dmc-space-2: 8px;
+  --dmc-space-3: 12px;
+  --dmc-space-4: 16px;
+  --dmc-space-5: 24px;
+  --dmc-space-6: 32px;
+  --dmc-space-7: 48px;
+
+  /* Layout */
+  --dmc-sidebar-width: 224px;
+  --dmc-sidebar-compact: 72px;
+  --dmc-right-rail-width: 280px;
+  --dmc-topbar-height: 64px;
+  --dmc-mobile-topbar-height: 56px;
+  --dmc-mobile-bottomnav-height: 64px;
+  --dmc-content-max: 1440px;
+  --dmc-feed-max: 760px;
+}
+
+html.dark {
+  --dmc-bg: #1E1B18;
+  --dmc-surface: #29241F;
+  --dmc-surface-raised: #342E28;
+  --dmc-text: #F6EFE5;
+  --dmc-text-muted: #C4B9AC;
+  --dmc-primary: #E58A70;
+  --dmc-primary-hover: #F1A087;
+  --dmc-primary-ink: #1E1B18;
+  --dmc-secondary: #78AAA4;
+  --dmc-secondary-ink: #1E1B18;
+  --dmc-highlight: #DDB566;
+  --dmc-border: #4A423A;
+  --dmc-success: #73B98C;
+  --dmc-danger: #E17C7C;
+
+  --dmc-background: var(--dmc-bg);
+  --dmc-foreground: var(--dmc-text);
+  --dmc-card: var(--dmc-surface);
+  --dmc-card-foreground: var(--dmc-text);
+  --dmc-popover: var(--dmc-surface-raised);
+  --dmc-popover-foreground: var(--dmc-text);
+  --dmc-muted: var(--dmc-border);
+  --dmc-muted-foreground: var(--dmc-text-muted);
+  --dmc-input: var(--dmc-border);
+  --dmc-ring: var(--dmc-primary);
+}
+
+/* Typography utilities */
+.font-display { font-family: var(--dmc-font-display); }
+.font-body { font-family: var(--dmc-font-body); }
+
+/* Static film grain — use sparingly on empty/login/hero states */
+.film-grain::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.04;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.3.1/dist/index.global.js"></script>
+    <script src="https://unpkg.com/lucide@1.8.0/dist/umd/lucide.min.js"></script>
+    <style type="text/tailwindcss">
+  @theme inline {
+    --color-background: var(--dmc-background);
+    --color-foreground: var(--dmc-foreground);
+    --color-card: var(--dmc-card);
+    --color-card-foreground: var(--dmc-card-foreground);
+    --color-popover: var(--dmc-popover);
+    --color-popover-foreground: var(--dmc-popover-foreground);
+    --color-primary: var(--dmc-primary);
+    --color-primary-foreground: var(--dmc-primary-foreground);
+    --color-secondary: var(--dmc-secondary);
+    --color-secondary-foreground: var(--dmc-secondary-foreground);
+    --color-muted: var(--dmc-muted);
+    --color-muted-foreground: var(--dmc-muted-foreground);
+    --color-border: var(--dmc-border);
+    --color-input: var(--dmc-input);
+    --color-ring: var(--dmc-ring);
+    --radius-sm: var(--dmc-radius-small);
+    --radius-md: var(--dmc-radius-medium);
+    --radius-lg: var(--dmc-radius-large);
+  }
+  @layer base {
+    body { background: var(--dmc-background); color: var(--dmc-foreground); }
+    td, th { @apply break-words; word-break: break-all; word-break: auto-phrase; }
+    th { @apply whitespace-nowrap; }
+  }
+    </style>
+    <style id="semantic-token-fallback">
+      .bg-background { background-color: var(--dmc-background); }
+      .text-background { color: var(--dmc-background); }
+      .border-background { border-color: var(--dmc-background); }
+      .ring-background { --tw-ring-color: var(--dmc-background); }
+      .bg-foreground { background-color: var(--dmc-foreground); }
+      .text-foreground { color: var(--dmc-foreground); }
+      .border-foreground { border-color: var(--dmc-foreground); }
+      .ring-foreground { --tw-ring-color: var(--dmc-foreground); }
+      .bg-card { background-color: var(--dmc-card); }
+      .text-card { color: var(--dmc-card); }
+      .border-card { border-color: var(--dmc-card); }
+      .ring-card { --tw-ring-color: var(--dmc-card); }
+      .bg-card-foreground { background-color: var(--dmc-card-foreground); }
+      .text-card-foreground { color: var(--dmc-card-foreground); }
+      .border-card-foreground { border-color: var(--dmc-card-foreground); }
+      .ring-card-foreground { --tw-ring-color: var(--dmc-card-foreground); }
+      .bg-popover { background-color: var(--dmc-popover); }
+      .text-popover { color: var(--dmc-popover); }
+      .border-popover { border-color: var(--dmc-popover); }
+      .ring-popover { --tw-ring-color: var(--dmc-popover); }
+      .bg-popover-foreground { background-color: var(--dmc-popover-foreground); }
+      .text-popover-foreground { color: var(--dmc-popover-foreground); }
+      .border-popover-foreground { border-color: var(--dmc-popover-foreground); }
+      .ring-popover-foreground { --tw-ring-color: var(--dmc-popover-foreground); }
+      .bg-primary { background-color: var(--dmc-primary); }
+      .text-primary { color: var(--dmc-primary); }
+      .border-primary { border-color: var(--dmc-primary); }
+      .ring-primary { --tw-ring-color: var(--dmc-primary); }
+      .bg-primary-foreground { background-color: var(--dmc-primary-foreground); }
+      .text-primary-foreground { color: var(--dmc-primary-foreground); }
+      .border-primary-foreground { border-color: var(--dmc-primary-foreground); }
+      .ring-primary-foreground { --tw-ring-color: var(--dmc-primary-foreground); }
+      .bg-secondary { background-color: var(--dmc-secondary); }
+      .text-secondary { color: var(--dmc-secondary); }
+      .border-secondary { border-color: var(--dmc-secondary); }
+      .ring-secondary { --tw-ring-color: var(--dmc-secondary); }
+      .bg-secondary-foreground { background-color: var(--dmc-secondary-foreground); }
+      .text-secondary-foreground { color: var(--dmc-secondary-foreground); }
+      .border-secondary-foreground { border-color: var(--dmc-secondary-foreground); }
+      .ring-secondary-foreground { --tw-ring-color: var(--dmc-secondary-foreground); }
+      .bg-muted { background-color: var(--dmc-muted); }
+      .text-muted { color: var(--dmc-muted); }
+      .border-muted { border-color: var(--dmc-muted); }
+      .ring-muted { --tw-ring-color: var(--dmc-muted); }
+      .bg-muted-foreground { background-color: var(--dmc-muted-foreground); }
+      .text-muted-foreground { color: var(--dmc-muted-foreground); }
+      .border-muted-foreground { border-color: var(--dmc-muted-foreground); }
+      .ring-muted-foreground { --tw-ring-color: var(--dmc-muted-foreground); }
+      .bg-border { background-color: var(--dmc-border); }
+      .text-border { color: var(--dmc-border); }
+      .border-border { border-color: var(--dmc-border); }
+      .ring-border { --tw-ring-color: var(--dmc-border); }
+      .bg-input { background-color: var(--dmc-input); }
+      .text-input { color: var(--dmc-input); }
+      .border-input { border-color: var(--dmc-input); }
+      .ring-input { --tw-ring-color: var(--dmc-input); }
+      .bg-ring { background-color: var(--dmc-ring); }
+      .text-ring { color: var(--dmc-ring); }
+      .border-ring { border-color: var(--dmc-ring); }
+      .ring-ring { --tw-ring-color: var(--dmc-ring); }
+    </style>
+    <style>
+      .no-scrollbar::-webkit-scrollbar { display: none; }
+      .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      [data-icon] {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-mask-size: contain;
+        mask-size: contain;
+        -webkit-mask-repeat: no-repeat;
+        mask-repeat: no-repeat;
+        -webkit-mask-position: center;
+        mask-position: center;
+        background-color: currentColor;
+      }
+    </style>
+</head>
+<body class="min-h-screen font-sans antialiased">
+  <style id="critical-layout">
+    .mobile-main { min-height: calc(100vh - 3.5rem - 4rem); }
+    .reply-composer {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 64px;
+      z-index: 40;
+    }
+    .reply-composer-inner {
+      max-width: 28rem;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    @supports (padding-bottom: env(safe-area-inset-bottom)) {
+      [data-mobile-nav="global"] { padding-bottom: env(safe-area-inset-bottom); }
+      .mobile-main { padding-bottom: calc(8rem + env(safe-area-inset-bottom)); }
+      .reply-composer { bottom: calc(64px + env(safe-area-inset-bottom)); }
+    }
+  </style>
+
+  <!-- MOBILE TOPBAR START -->
+  <header class="sticky top-0 left-0 right-0 h-14 bg-card/95 border-b border-border z-40">
+    <div class="max-w-md mx-auto h-full flex items-center justify-between px-4">
+      <span class="font-display text-lg text-foreground">305 纪念社区</span>
+      <div class="flex items-center gap-2">
+        <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="搜索" data-dom-id="global-search"><i data-lucide="search" class="w-5 h-5 text-muted-foreground"></i></button>
+        <button class="w-11 h-11 rounded-full hover:bg-muted flex items-center justify-center" aria-label="通知" data-dom-id="global-notifications"><i data-lucide="bell" class="w-5 h-5 text-muted-foreground"></i></button>
+      </div>
+    </div>
+  </header>
+  <!-- MOBILE TOPBAR END -->
+
+  <main class="mobile-main pb-32 bg-background">
+    <div class="max-w-md mx-auto px-4 py-4 space-y-4">
+
+      <!-- Page top bar -->
+      <div class="flex items-center gap-2 py-2">
+        <a href="forum.html" data-dom-id="back-forum" class="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-primary transition-colors">
+          <i data-lucide="chevron-left" class="w-5 h-5"></i>
+          <span class="font-medium text-foreground">主题详情</span>
+        </a>
+      </div>
+
+      <!-- Thread header -->
+      <article class="rounded-[14px] border border-border bg-card p-4 shadow-sm">
+        <h1 class="font-display text-lg text-foreground leading-snug">毕业前最后一晚，大家都在收拾行李</h1>
+        <div class="mt-3 flex items-center gap-3">
+          <div class="w-9 h-9 rounded-full bg-primary/10 text-primary flex items-center justify-center text-sm font-medium">林</div>
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-medium text-foreground truncate">林小北</p>
+            <p class="text-xs text-muted-foreground">2024-06-18 21:30</p>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-foreground leading-relaxed space-y-3">
+          <p>那天宿舍灯开到很晚，箱子摊了一地。我们一边收拾一边翻旧照片，发现大一刚入学时每个人都好青涩。</p>
+          <p>阳台的风吹进来，带着一点樟树的味道。没人说舍不得，但也没人说要睡。</p>
+        </div>
+      </article>
+
+      <!-- Replies -->
+      <section class="space-y-3" aria-label="回复楼层">
+        <article data-dom-id="reply-1" class="rounded-[14px] border border-border bg-card p-4 shadow-sm">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-secondary text-secondary-foreground flex items-center justify-center text-xs font-medium">周</div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-foreground truncate">周阿宁</p>
+              <p class="text-xs text-muted-foreground">2 楼 · 10 分钟前</p>
+            </div>
+          </div>
+          <p class="mt-2 text-sm text-foreground leading-relaxed">我收拾到一半就坐在箱子上哭了，真的忍不住。</p>
+        </article>
+
+        <article class="rounded-[14px] border border-border bg-card p-4 shadow-sm">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-highlight text-white flex items-center justify-center text-xs font-medium">默</div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-foreground truncate">默默</p>
+              <p class="text-xs text-muted-foreground">3 楼 · 35 分钟前</p>
+            </div>
+          </div>
+          <p class="mt-2 text-sm text-foreground leading-relaxed">我记得你一边哭一边还在叠衣服，叠得比军训还整齐。</p>
+        </article>
+
+        <article class="rounded-[14px] border border-border bg-card p-4 shadow-sm">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium">雅</div>
+            <div class="flex-1 min-w-0">
+              <p class="text-sm font-medium text-foreground truncate">小雅</p>
+              <p class="text-xs text-muted-foreground">4 楼 · 1 小时前</p>
+            </div>
+          </div>
+          <p class="mt-2 text-sm text-foreground leading-relaxed">下次聚齐不知道什么时候了，但 305 的群永远置顶。</p>
+        </article>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Fixed reply composer -->
+  <div data-dom-id="reply-composer" class="reply-composer bg-card border-t border-border">
+    <div class="reply-composer-inner px-4 py-3 flex items-end gap-3">
+      <textarea rows="1" placeholder="写下你的回复…" aria-label="回复内容" class="flex-1 min-h-[44px] max-h-24 rounded-[10px] border border-border bg-background px-3 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary resize-none"></textarea>
+      <button class="shrink-0 h-11 px-4 rounded-[10px] bg-primary text-primary-foreground text-sm font-medium hover:bg-primary-hover transition-colors">回复</button>
+    </div>
+  </div>
+
+  <!-- MOBILE BOTTOM NAV START -->
+  <nav data-mobile-nav="global" class="fixed bottom-0 left-0 right-0 bg-card border-t border-border z-50 pb-[env(safe-area-inset-bottom)]">
+  <div class="w-full max-w-md mx-auto grid grid-cols-5 h-16">
+    <a href="index.html" data-nav-key="home" data-dom-id="nav-home" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="home" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">首页</span></a>
+    <a href="wall.html" data-nav-key="wall" data-dom-id="nav-wall" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="image" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">照片</span></a>
+    <a href="composer.html" data-nav-key="create" data-dom-id="nav-create" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><span class="w-11 h-11 rounded-full bg-primary text-primary-foreground flex items-center justify-center"><i data-lucide="plus" class="w-5 h-5 shrink-0"></i></span><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">发布</span></a>
+    <a href="forum.html" data-nav-key="forum" data-dom-id="nav-forum" data-active="true" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="messages-square" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">论坛</span></a>
+    <a href="chat.html" data-nav-key="messages" data-dom-id="nav-messages" class="min-w-0 flex flex-col items-center justify-center gap-0.5 px-1 h-full text-foreground hover:text-primary transition-colors"><i data-lucide="message-circle" class="w-5 h-5 shrink-0"></i><span class="text-[11px] leading-none whitespace-nowrap max-w-full truncate">消息</span></a>
+  </div>
+</nav>
+  <!-- MOBILE BOTTOM NAV END -->
+
+  <script>lucide.createIcons();</script>
+</body>
+</html>
