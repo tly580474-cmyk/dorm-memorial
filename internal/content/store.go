@@ -369,12 +369,21 @@ func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, i
 	return s.getGuestbookEntry(ctx, id)
 }
 
-func (s *Store) ListGuestbook(ctx context.Context, recipientID, cursorValue string, limit int) (GuestbookPage, error) {
+func (s *Store) ListGuestbook(ctx context.Context, actor identity.User, recipientID, status, cursorValue string, limit int) (GuestbookPage, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-	args := []any{}
-	where := "WHERE g.status = 'visible' AND g.recipient_id IS NULL"
+	if status == "" {
+		status = "visible"
+	}
+	if status != "visible" && status != "hidden" {
+		return GuestbookPage{}, errors.New("invalid guestbook status")
+	}
+	if status == "hidden" && actor.Role != "admin" && recipientID != actor.ID {
+		return GuestbookPage{}, ErrForbidden
+	}
+	args := []any{status}
+	where := "WHERE g.status = ? AND g.recipient_id IS NULL"
 	if recipientID != "" {
 		var active int
 		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND status = 'active')`, recipientID).Scan(&active); err != nil {
@@ -383,7 +392,7 @@ func (s *Store) ListGuestbook(ctx context.Context, recipientID, cursorValue stri
 		if active == 0 {
 			return GuestbookPage{}, ErrNotFound
 		}
-		where = "WHERE g.status = 'visible' AND g.recipient_id = ?"
+		where = "WHERE g.status = ? AND g.recipient_id = ?"
 		args = append(args, recipientID)
 	}
 	if cursorValue != "" {
@@ -435,6 +444,19 @@ func (s *Store) HideGuestbookEntry(ctx context.Context, actor identity.User, id,
 		return ErrForbidden
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.hide', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, nowText())
+	return nil
+}
+
+func (s *Store) RestoreGuestbookEntry(ctx context.Context, actor identity.User, id, ip string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE guestbook_entries SET status = 'visible', updated_at = ?
+		WHERE id = ? AND status = 'hidden' AND (? = 'admin' OR recipient_id = ?)`, nowText(), id, actor.Role, actor.ID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrForbidden
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.restore', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, nowText())
 	return nil
 }
 

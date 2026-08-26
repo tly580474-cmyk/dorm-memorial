@@ -200,12 +200,48 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("admin hide guestbook status=%d body=%s", adminHide.StatusCode, readBody(adminHide))
 	}
 	adminHide.Body.Close()
+	hiddenGuestbookList := doJSON(t, server.URL+"/api/guestbook?status=hidden", http.MethodGet, nil, adminCookie)
+	if hiddenGuestbookList.StatusCode != http.StatusOK {
+		t.Fatalf("hidden guestbook list status=%d body=%s", hiddenGuestbookList.StatusCode, readBody(hiddenGuestbookList))
+	}
+	var hiddenGuestbookBody struct {
+		Entries []struct {
+			ID string `json:"id"`
+		} `json:"entries"`
+	}
+	decodeResponse(t, hiddenGuestbookList, &hiddenGuestbookBody)
+	if len(hiddenGuestbookBody.Entries) != 1 || hiddenGuestbookBody.Entries[0].ID != guestbookBody.Entry.ID {
+		t.Fatalf("hidden guestbook entries=%+v", hiddenGuestbookBody.Entries)
+	}
+	restoreGuestbook := doJSON(t, server.URL+"/api/guestbook/"+guestbookBody.Entry.ID+"/restore", http.MethodPost, map[string]any{}, adminCookie)
+	if restoreGuestbook.StatusCode != http.StatusNoContent {
+		t.Fatalf("restore guestbook status=%d body=%s", restoreGuestbook.StatusCode, readBody(restoreGuestbook))
+	}
+	restoreGuestbook.Body.Close()
 
 	forbidden := doJSON(t, server.URL+"/api/admin/invites", http.MethodPost, map[string]any{"max_uses": 1, "expires_in_hours": 24}, memberCookie)
 	if forbidden.StatusCode != http.StatusForbidden {
 		t.Fatalf("member create invite status=%d", forbidden.StatusCode)
 	}
 	forbidden.Body.Close()
+	secondRegister := doJSON(t, server.URL+"/api/auth/register", http.MethodPost, map[string]any{
+		"invite_code": inviteBody.Invites[1].Code, "username": "observer", "email": "observer@example.com", "password": "a-secure-password", "nickname": "旁观室友",
+	}, nil)
+	if secondRegister.StatusCode != http.StatusCreated {
+		t.Fatalf("second register status=%d body=%s", secondRegister.StatusCode, readBody(secondRegister))
+	}
+	observerCookie := findSessionCookie(secondRegister)
+	secondRegister.Body.Close()
+	observerDelete := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID, http.MethodDelete, nil, observerCookie)
+	if observerDelete.StatusCode != http.StatusNotFound {
+		t.Fatalf("non-author delete published post status=%d body=%s", observerDelete.StatusCode, readBody(observerDelete))
+	}
+	observerDelete.Body.Close()
+	adminDeletePost := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID, http.MethodDelete, nil, adminCookie)
+	if adminDeletePost.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin delete published post status=%d body=%s", adminDeletePost.StatusCode, readBody(adminDeletePost))
+	}
+	adminDeletePost.Body.Close()
 
 	reuse := doJSON(t, server.URL+"/api/auth/register", http.MethodPost, map[string]any{
 		"invite_code": inviteBody.Invites[0].Code, "username": "another", "email": "another@example.com", "password": "a-secure-password", "nickname": "另一位",

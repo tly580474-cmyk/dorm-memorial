@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, UserRound, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, UserRound, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { Comment, GuestbookEntry, Media, MediaUsage, Member, Post, Session, User } from './types'
 
@@ -60,6 +60,7 @@ const inviteCount = ref(5)
 const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
 const inviteCopyStatus = ref<'idle' | 'copied' | 'error'>('idle')
 const inviteBusy = ref(false)
+const managementMessage = ref('')
 const profile = reactive({ nickname: '', bio: '', bed_no: '', memorial_note: '' })
 const feedPosts = ref<Post[]>([])
 const myPosts = ref<Post[]>([])
@@ -99,10 +100,12 @@ const guestbookLoading = ref(false)
 const guestbookBusy = ref(false)
 const guestbookError = ref('')
 const guestbookNextCursor = ref('')
+const guestbookStatus = ref<'visible' | 'hidden'>('visible')
 let guestbookRequest = 0
 const guestbookMediaUploading = computed(() => guestbookMedia.value.some((item) => item.status === 'uploading'))
 const selectedGuestbookMember = computed(() => guestbookMembers.value.find((member) => member.id === guestbookRecipientID.value) ?? null)
-const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook'>('home')
+const canViewHiddenGuestbook = computed(() => user.value?.role === 'admin' || Boolean(user.value && guestbookRecipientID.value === user.value.id))
+const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'management'>('home')
 const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
 const timelineGroups = computed(() => {
   const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime())
@@ -131,7 +134,8 @@ const nav = [
   { label: '消息', icon: MessageCircle, available: false },
 ]
 
-function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook') {
+function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook' | 'management') {
+  if (view === 'management' && user.value?.role !== 'admin') return
   activeView.value = view
   mobileMenuOpen.value = false
   if (view === 'guestbook') void loadGuestbook(true)
@@ -433,10 +437,11 @@ async function loadGuestbook(reset = false) {
   guestbookLoading.value = true
   guestbookError.value = ''
   const recipientID = guestbookRecipientID.value
+  const status = guestbookStatus.value
   try {
     if (guestbookMembers.value.length === 0) guestbookMembers.value = (await api.members()).members
-    const response = await api.guestbook({ recipient_id: recipientID || undefined, cursor: reset ? undefined : guestbookNextCursor.value || undefined, limit: 20 })
-    if (requestID !== guestbookRequest || recipientID !== guestbookRecipientID.value) return
+    const response = await api.guestbook({ recipient_id: recipientID || undefined, status, cursor: reset ? undefined : guestbookNextCursor.value || undefined, limit: 20 })
+    if (requestID !== guestbookRequest || recipientID !== guestbookRecipientID.value || status !== guestbookStatus.value) return
     guestbookEntries.value = reset ? response.entries : [...guestbookEntries.value, ...response.entries]
     guestbookNextCursor.value = response.next_cursor ?? ''
   } catch (error) {
@@ -449,6 +454,15 @@ async function loadGuestbook(reset = false) {
 function selectGuestbookRecipient(id: string) {
   if (guestbookRecipientID.value === id) return
   guestbookRecipientID.value = id
+  guestbookStatus.value = 'visible'
+  guestbookEntries.value = []
+  guestbookNextCursor.value = ''
+  void loadGuestbook(true)
+}
+
+function toggleHiddenGuestbook() {
+  if (!canViewHiddenGuestbook.value) return
+  guestbookStatus.value = guestbookStatus.value === 'visible' ? 'hidden' : 'visible'
   guestbookEntries.value = []
   guestbookNextCursor.value = ''
   void loadGuestbook(true)
@@ -515,11 +529,21 @@ async function hideGuestbookEntry(entry: GuestbookEntry) {
 }
 
 async function deleteGuestbookEntry(entry: GuestbookEntry) {
+  if (!window.confirm('确定删除这条留言吗？删除后无法在界面中恢复。')) return
   try {
     await api.deleteGuestbookEntry(entry.id)
     guestbookEntries.value = guestbookEntries.value.filter((item) => item.id !== entry.id)
   } catch (error) {
     guestbookError.value = error instanceof Error ? error.message : '删除留言失败'
+  }
+}
+
+async function restoreGuestbookEntry(entry: GuestbookEntry) {
+  try {
+    await api.restoreGuestbookEntry(entry.id)
+    guestbookEntries.value = guestbookEntries.value.filter((item) => item.id !== entry.id)
+  } catch (error) {
+    guestbookError.value = error instanceof Error ? error.message : '恢复留言失败'
   }
 }
 
@@ -536,9 +560,13 @@ async function revoke(session: Session) {
 async function createInvite() {
   inviteBusy.value = true
   inviteCopyStatus.value = 'idle'
+  managementMessage.value = ''
   try {
     const response = await api.createInvites({ max_uses: 1, expires_in_hours: 168, count: inviteCount.value })
     inviteCodes.value = response.invites.map((item) => item.code)
+    managementMessage.value = `已生成 ${response.count} 个邀请码`
+  } catch (error) {
+    managementMessage.value = error instanceof Error ? error.message : '邀请码生成失败'
   } finally {
     inviteBusy.value = false
   }
@@ -772,6 +800,19 @@ async function moderate(post: Post, action: 'approve' | 'hide') {
   }
 }
 
+async function deletePost(post: Post) {
+  if (!window.confirm(`确定删除${post.author.id === user.value?.id ? '这条回忆' : `${post.author.nickname}的这条回忆`}吗？删除后不会再出现在首页。`)) return
+  try {
+    await api.deletePost(post.id)
+    feedPosts.value = feedPosts.value.filter((item) => item.id !== post.id)
+    myPosts.value = myPosts.value.filter((item) => item.id !== post.id)
+    pendingPosts.value = pendingPosts.value.filter((item) => item.id !== post.id)
+    if (detailPost.value?.id === post.id) closeDetail()
+  } catch (error) {
+    contentError.value = error instanceof Error ? error.message : '删除回忆失败'
+  }
+}
+
 function displayDate(value: string | null | undefined) {
   if (!value) return ''
   return new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -843,7 +884,7 @@ async function copyInvites() {
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
       <div class="mobile-menu-head"><span>浏览纪念册</span><button class="icon-button" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"><X /></button></div>
       <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.id === activeView }" :disabled="!item.available" :aria-current="item.id === activeView ? 'page' : undefined" :title="item.available ? item.label : `${item.label}正在开发`" @click="item.id && setView(item.id)"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small></button></nav>
-      <div class="sidebar-bottom"><button v-if="user.role === 'admin'" type="button"><ShieldCheck :size="20" />管理</button><button type="button" @click="openProfile"><Settings :size="20" />设置</button></div>
+      <div class="sidebar-bottom"><button v-if="user.role === 'admin'" type="button" :class="{ active: activeView === 'management' }" :aria-current="activeView === 'management' ? 'page' : undefined" @click="setView('management')"><ShieldCheck :size="20" />管理</button><button type="button" @click="openProfile"><Settings :size="20" />设置</button></div>
     </aside>
     <button v-if="mobileMenuOpen" class="scrim" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"></button>
 
@@ -869,7 +910,7 @@ async function copyInvites() {
               </figure>
             </div>
             <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
-            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
+            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button v-if="post.author.id === user.id || user.role === 'admin'" class="post-delete-link" type="button" :aria-label="`删除${post.author.nickname}的回忆`" @click="deletePost(post)"><Trash2 :size="17" />删除</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
           </article>
         </div>
 
@@ -877,15 +918,6 @@ async function copyInvites() {
           <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与投稿</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有草稿</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft'" @click="post.status === 'draft' && openComposer(post)"><span>{{ post.body || '无标题草稿' }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
           <section v-if="user.role === 'admin'" class="rail-card review-card"><header><div><p class="eyebrow">管理员审核</p><h2>待审核</h2></div><span>{{ pendingPosts.length }}</span></header><div v-if="pendingPosts.length === 0" class="rail-empty">当前没有待审核内容</div><article v-for="post in pendingPosts" :key="post.id" class="review-row"><strong>{{ post.author.nickname }}</strong><p>{{ post.body }}</p><div><button type="button" @click="moderate(post, 'hide')">退回隐藏</button><button type="button" @click="moderate(post, 'approve')">通过发布</button></div></article></section>
         </aside>
-      </section>
-      <section v-if="user.role === 'admin'" class="admin-card">
-        <div><p class="eyebrow">管理员工具</p><h2>批量邀请室友</h2><p class="muted">每个邀请码 7 天内有效，只能使用一次；一次最多生成 20 个。</p></div>
-        <div class="invite-actions">
-          <div class="invite-count"><label for="invite-count">生成数量</label><select id="invite-count" v-model.number="inviteCount"><option v-for="count in inviteCountOptions" :key="count" :value="count">{{ count }} 个</option></select></div>
-          <textarea v-if="inviteCodes.length" class="invite-codes" :value="inviteCodes.join('\n')" readonly rows="5" aria-label="生成的邀请码" @focus="($event.target as HTMLTextAreaElement).select()"></textarea>
-          <div class="invite-buttons"><button class="secondary-button" type="button" :disabled="inviteBusy" @click="createInvite">{{ inviteBusy ? '生成中…' : `生成 ${inviteCount} 个邀请码` }}</button><button v-if="inviteCodes.length" class="secondary-button" type="button" @click="copyInvites"><Check v-if="inviteCopyStatus === 'copied'" :size="18" /><Copy v-else :size="18" />{{ inviteCopyStatus === 'copied' ? '已复制' : inviteCopyStatus === 'error' ? '复制失败，请手动选择' : '复制全部' }}</button></div>
-          <p class="copy-status" aria-live="polite">{{ inviteCopyStatus === 'copied' ? `已复制 ${inviteCodes.length} 个邀请码` : '' }}</p>
-        </div>
       </section>
       </template>
 
@@ -912,8 +944,21 @@ async function copyInvites() {
         </div>
       </template>
 
+      <template v-else-if="activeView === 'management'">
+        <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>集中处理成员邀请与内容管理操作。</p></div></header>
+        <section class="admin-card management-card" aria-labelledby="invite-manager-title">
+          <div><p class="eyebrow">成员邀请</p><h2 id="invite-manager-title">批量邀请室友</h2><p class="muted">每个邀请码 7 天内有效，只能使用一次；一次最多生成 20 个。</p></div>
+          <div class="invite-actions">
+            <div class="invite-count"><label for="invite-count">生成数量</label><select id="invite-count" v-model.number="inviteCount"><option v-for="count in inviteCountOptions" :key="count" :value="count">{{ count }} 个</option></select></div>
+            <textarea v-if="inviteCodes.length" class="invite-codes" :value="inviteCodes.join('\n')" readonly rows="5" aria-label="生成的邀请码" @focus="($event.target as HTMLTextAreaElement).select()"></textarea>
+            <div class="invite-buttons"><button class="secondary-button" type="button" :disabled="inviteBusy" @click="createInvite">{{ inviteBusy ? '生成中…' : `生成 ${inviteCount} 个邀请码` }}</button><button v-if="inviteCodes.length" class="secondary-button" type="button" @click="copyInvites"><Check v-if="inviteCopyStatus === 'copied'" :size="18" /><Copy v-else :size="18" />{{ inviteCopyStatus === 'copied' ? '已复制' : inviteCopyStatus === 'error' ? '复制失败，请手动选择' : '复制全部' }}</button></div>
+            <p class="copy-status" aria-live="polite">{{ inviteCopyStatus === 'copied' ? `已复制 ${inviteCodes.length} 个邀请码` : managementMessage }}</p>
+          </div>
+        </section>
+      </template>
+
       <template v-else>
-        <header class="page-heading"><div><p class="eyebrow">写给我们，也写给某个人</p><h1 tabindex="-1">宿舍留言册</h1><p>每句话都只在室友之间可见，接收者可以隐藏不合适的留言。</p></div></header>
+        <header class="page-heading"><div><p class="eyebrow">写给我们，也写给某个人</p><h1 tabindex="-1">宿舍留言册</h1><p>每句话都只在室友之间可见，接收者可以隐藏并随时恢复留言。</p></div><button v-if="canViewHiddenGuestbook" class="secondary-button" type="button" :aria-pressed="guestbookStatus === 'hidden'" @click="toggleHiddenGuestbook"><ArchiveRestore :size="18" />{{ guestbookStatus === 'hidden' ? '返回公开留言' : '查看已隐藏' }}</button></header>
         <div class="guestbook-layout">
           <aside class="guestbook-people" aria-label="选择留言页">
             <button type="button" :class="{ active: guestbookRecipientID === '' }" :aria-pressed="guestbookRecipientID === ''" @click="selectGuestbookRecipient('')"><span class="guestbook-dorm-icon"><BookHeart :size="21" /></span><span><strong>写给整个宿舍</strong><small>大家共同的留言页</small></span></button>
@@ -927,7 +972,7 @@ async function copyInvites() {
               <div><p class="eyebrow">{{ selectedGuestbookMember ? '个人留言页' : '公共留言页' }}</p><h2>{{ selectedGuestbookMember ? `写给${selectedGuestbookMember.nickname}` : '写给 3048 的我们' }}</h2><p>{{ selectedGuestbookMember?.memorial_note || selectedGuestbookMember?.bio || '把没来得及说的话、祝福和照片留在这里。' }}</p></div>
             </section>
 
-            <form class="guestbook-composer" @submit.prevent="submitGuestbookEntry">
+            <form v-if="guestbookStatus === 'visible'" class="guestbook-composer" @submit.prevent="submitGuestbookEntry">
               <label for="guestbook-body">{{ selectedGuestbookMember ? `给${selectedGuestbookMember.nickname}留言` : '给宿舍留言' }}</label>
               <textarea id="guestbook-body" v-model="guestbookBody" rows="4" maxlength="2000" placeholder="写一句以后再看到还会想起今天的话…"></textarea>
               <div class="guestbook-composer-meta"><small>{{ guestbookBody.length }} / 2000</small><span>最多 6 个附件</span></div>
@@ -940,13 +985,13 @@ async function copyInvites() {
             </form>
 
             <div v-if="guestbookLoading && guestbookEntries.length === 0" class="content-empty" role="status"><span class="loader"></span><span>正在翻开留言册…</span></div>
-            <div v-else-if="guestbookEntries.length === 0" class="content-empty guestbook-empty"><BookHeart :size="34" aria-hidden="true" /><h2>这一页还没有留言</h2><p>成为第一个在这里留下字迹的人吧。</p></div>
+            <div v-else-if="guestbookEntries.length === 0" class="content-empty guestbook-empty"><component :is="guestbookStatus === 'hidden' ? ArchiveRestore : BookHeart" :size="34" aria-hidden="true" /><h2>{{ guestbookStatus === 'hidden' ? '没有已隐藏留言' : '这一页还没有留言' }}</h2><p>{{ guestbookStatus === 'hidden' ? '隐藏的留言会集中出现在这里，并可随时恢复。' : '成为第一个在这里留下字迹的人吧。' }}</p></div>
             <section v-else class="guestbook-entries" aria-label="留言列表">
               <article v-for="entry in guestbookEntries" :key="entry.id" class="guestbook-entry">
                 <header><span class="mini-avatar"><img v-if="avatarVisible(entry.author.avatar_path)" :src="avatarURL(entry.author.avatar_path)" alt="" @error="markAvatarBroken(entry.author.avatar_path)" /><span v-else>{{ entry.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ entry.author.nickname }}</strong><span>{{ entry.recipient ? `写给 ${entry.recipient.nickname}` : '写给整个宿舍' }}</span></div></header>
                 <p v-if="entry.body">{{ entry.body }}</p>
                 <div v-if="entry.media.length" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename" @error="markMediaLoadError(item.id)"></video></template></div>
-                <footer><time :datetime="entry.created_at">{{ new Date(entry.created_at).toLocaleString('zh-CN') }}</time><div><button v-if="user.role === 'admin' || entry.recipient?.id === user.id" type="button" @click="hideGuestbookEntry(entry)">隐藏</button><button v-if="entry.author.id === user.id || user.role === 'admin'" class="danger-link" type="button" @click="deleteGuestbookEntry(entry)">删除</button></div></footer>
+                <footer><time :datetime="entry.created_at">{{ new Date(entry.created_at).toLocaleString('zh-CN') }}</time><div><button v-if="guestbookStatus === 'hidden'" type="button" @click="restoreGuestbookEntry(entry)"><ArchiveRestore :size="17" />恢复显示</button><button v-else-if="user.role === 'admin' || entry.recipient?.id === user.id" type="button" @click="hideGuestbookEntry(entry)">隐藏</button><button v-if="entry.author.id === user.id || user.role === 'admin'" class="danger-link" type="button" @click="deleteGuestbookEntry(entry)">删除</button></div></footer>
               </article>
             </section>
             <button v-if="guestbookNextCursor" class="secondary-button guestbook-more" type="button" :disabled="guestbookLoading" @click="loadGuestbook(false)">{{ guestbookLoading ? '读取中…' : '翻看更早的留言' }}</button>

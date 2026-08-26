@@ -52,13 +52,14 @@ export const api = {
   addComment: (postID: string, body: string) => request<{ comment: Comment }>(`/api/posts/${encodeURIComponent(postID)}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
   deleteComment: (id: string) => request<void>(`/api/comments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   toggleLike: (postID: string) => request<{ liked: boolean; like_count: number }>(`/api/posts/${encodeURIComponent(postID)}/like`, { method: 'POST', body: '{}' }),
-  guestbook: (query: { recipient_id?: string; cursor?: string; limit?: number } = {}) => {
+  guestbook: (query: { recipient_id?: string; status?: 'visible' | 'hidden'; cursor?: string; limit?: number } = {}) => {
     const params = new URLSearchParams()
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<GuestbookPage>(`/api/guestbook${params.size ? `?${params}` : ''}`)
   },
   createGuestbookEntry: (body: { recipient_id: string; body: string; media_ids: string[] }) => request<{ entry: GuestbookEntry }>('/api/guestbook', { method: 'POST', body: JSON.stringify(body) }),
   hideGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}/hide`, { method: 'POST', body: '{}' }),
+  restoreGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}/restore`, { method: 'POST', body: '{}' }),
   deleteGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setAvatar: (mediaID: string) => request<{ user: User }>('/api/profile/avatar', { method: 'POST', body: JSON.stringify({ media_id: mediaID }) }),
   clearAvatar: () => request<{ user: User }>('/api/profile/avatar', { method: 'DELETE' }),

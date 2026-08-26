@@ -78,6 +78,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/guestbook", s.requireAuth(http.HandlerFunc(s.listGuestbook)))
 	mux.Handle("POST /api/guestbook", s.requireAuth(http.HandlerFunc(s.createGuestbookEntry)))
 	mux.Handle("POST /api/guestbook/{id}/hide", s.requireAuth(http.HandlerFunc(s.hideGuestbookEntry)))
+	mux.Handle("POST /api/guestbook/{id}/restore", s.requireAuth(http.HandlerFunc(s.restoreGuestbookEntry)))
 	mux.Handle("DELETE /api/guestbook/{id}", s.requireAuth(http.HandlerFunc(s.deleteGuestbookEntry)))
 	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
@@ -434,7 +435,7 @@ func (s *Server) toggleLike(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listGuestbook(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	page, err := s.content.ListGuestbook(r.Context(), strings.TrimSpace(r.URL.Query().Get("recipient_id")), r.URL.Query().Get("cursor"), limit)
+	page, err := s.content.ListGuestbook(r.Context(), mustPrincipal(r).User, strings.TrimSpace(r.URL.Query().Get("recipient_id")), strings.TrimSpace(r.URL.Query().Get("status")), r.URL.Query().Get("cursor"), limit)
 	if err != nil {
 		writeContentError(w, err)
 		return
@@ -457,6 +458,14 @@ func (s *Server) createGuestbookEntry(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) hideGuestbookEntry(w http.ResponseWriter, r *http.Request) {
 	if err := s.content.HideGuestbookEntry(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) restoreGuestbookEntry(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.RestoreGuestbookEntry(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
 		writeContentError(w, err)
 		return
 	}

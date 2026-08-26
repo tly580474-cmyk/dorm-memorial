@@ -103,7 +103,7 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	if err != nil || dormEntry.Recipient != nil || len(dormEntry.Media) != 1 {
 		t.Fatalf("create dorm guestbook entry=%+v err=%v", dormEntry, err)
 	}
-	dormPage, err := store.ListGuestbook(ctx, "", "", 20)
+	dormPage, err := store.ListGuestbook(ctx, other, "", "visible", "", 20)
 	if err != nil || len(dormPage.Entries) != 1 || dormPage.Entries[0].ID != dormEntry.ID {
 		t.Fatalf("dorm guestbook page=%+v err=%v", dormPage, err)
 	}
@@ -122,6 +122,23 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	}
 	if err := store.HideGuestbookEntry(ctx, other, personalEntry.ID, "127.0.0.1"); err != nil {
 		t.Fatalf("recipient hide personal entry: %v", err)
+	}
+	hiddenPage, err := store.ListGuestbook(ctx, other, other.ID, "hidden", "", 20)
+	if err != nil || len(hiddenPage.Entries) != 1 || hiddenPage.Entries[0].ID != personalEntry.ID {
+		t.Fatalf("hidden personal guestbook page=%+v err=%v", hiddenPage, err)
+	}
+	if _, err := store.ListGuestbook(ctx, member, other.ID, "hidden", "", 20); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-recipient hidden guestbook list err=%v", err)
+	}
+	if err := store.RestoreGuestbookEntry(ctx, member, personalEntry.ID, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-recipient restore guestbook entry err=%v", err)
+	}
+	if err := store.RestoreGuestbookEntry(ctx, other, personalEntry.ID, "127.0.0.1"); err != nil {
+		t.Fatalf("recipient restore guestbook entry: %v", err)
+	}
+	restoredPage, err := store.ListGuestbook(ctx, member, other.ID, "visible", "", 20)
+	if err != nil || len(restoredPage.Entries) != 1 || restoredPage.Entries[0].ID != personalEntry.ID {
+		t.Fatalf("restored guestbook page=%+v err=%v", restoredPage, err)
 	}
 	deletableEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{Body: "稍后由作者删除"}, "127.0.0.1")
 	if err != nil {

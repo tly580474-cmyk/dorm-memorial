@@ -268,8 +268,9 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'visible')
+		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'hidden' AND g.recipient_id = ?)
 		OR EXISTS(SELECT 1 FROM profiles profile WHERE profile.avatar_path = m.id)
-		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &publiclyReadable)
+		FROM media m WHERE m.id = ?`, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &publiclyReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return Content{}, ErrNotFound
 	}

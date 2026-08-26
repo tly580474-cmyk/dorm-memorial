@@ -74,6 +74,7 @@ a { color: inherit; text-decoration: none; }
 .sidebar nav button, .sidebar-bottom button { min-height: 46px; display: flex; align-items: center; gap: 13px; padding: 0 14px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font-weight: 600; text-align: left; }
 .sidebar nav button:hover:not(:disabled), .sidebar-bottom button:hover { color: var(--text); background: #f2ebe0; }
 .sidebar nav button.active { color: var(--primary); background: #f3e4dc; }
+.sidebar-bottom button.active { color: var(--primary); background: #f3e4dc; }
 .sidebar nav button:disabled { cursor: not-allowed; opacity: .62; }
 .sidebar nav button small { margin-left: auto; font-size: 11px; font-weight: 500; }
 .sidebar-bottom { display: grid; gap: 6px; border-top: 1px solid var(--border); padding-top: 14px; }
@@ -129,10 +130,11 @@ a { color: inherit; text-decoration: none; }
 .tag-row { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
 .tag-row span { padding: 3px 9px; border-radius: 999px; color: var(--secondary); background: #e8f0ed; font-size: 13px; }
 .post-card > footer { display: flex; flex-wrap: wrap; gap: 16px; padding-top: 15px; border-top: 1px solid #eee6da; color: var(--muted); font-size: 13px; }
-.post-card > footer span, .post-card > footer button { min-height: 40px; display: inline-flex; align-items: center; gap: 5px; }
+.post-card > footer span, .post-card > footer button { min-height: 44px; display: inline-flex; align-items: center; gap: 5px; }
 .post-card > footer button { padding: 0 8px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; }
 .post-card > footer button:hover { color: var(--primary); background: #f5eae3; }
 .post-card > footer button.liked { color: var(--primary); }
+.post-card > footer button.post-delete-link:hover { color: var(--danger); background: #f6e8e4; }
 .post-card > footer .detail-link { margin-left: auto; color: var(--secondary); }
 .rail-card { overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
 .rail-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px; border-bottom: 1px solid #eee6da; }
@@ -160,6 +162,7 @@ a { color: inherit; text-decoration: none; }
 .dashboard-card > svg { color: var(--secondary); }
 .dashboard-card h2 { margin: 14px 0 5px; font-size: 19px; } .dashboard-card p { margin: 0; color: var(--muted); }
 .admin-card { align-items: flex-start; margin-top: 24px; padding: 28px 32px; } .admin-card h2 { font-size: 25px; }
+.management-card { margin-top: 0; }
 .invite-actions { width: min(560px, 100%); display: grid; grid-template-columns: 120px 1fr; align-items: end; gap: 12px 14px; }
 .invite-count { display: grid; gap: 6px; }
 .invite-count label { font-size: 14px; font-weight: 700; }
@@ -328,6 +331,7 @@ a { color: inherit; text-decoration: none; }
   .main-content { padding: 80px 16px 96px; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .page-heading .primary-button { width: 100%; }
+  .page-heading .secondary-button { width: 100%; }
   .content-rail { grid-template-columns: 1fr; }
   .timeline-entry { grid-template-columns: 1fr; gap: 5px; }
   .timeline-media { grid-template-columns: repeat(2, minmax(0, 1fr)); }

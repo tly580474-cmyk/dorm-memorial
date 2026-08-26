@@ -154,6 +154,44 @@ func TestPreviewFailureFallsBackToOriginal(t *testing.T) {
 	}
 }
 
+func TestHiddenGuestbookMediaIsReadableByRecipient(t *testing.T) {
+	db, owner := mediaTestUser(t)
+	objects := newMemoryObjects()
+	store := NewStore(db, objects)
+	store.verifyDelays = []time.Duration{0}
+	payload := []byte("hidden guestbook video")
+	record, err := store.Upload(context.Background(), owner, UploadInput{ClientRequestID: "hidden-guestbook-media", Filename: "memory.mp4", MimeType: "video/mp4", Size: int64(len(payload)), Body: bytes.NewReader(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identities := identity.NewStore(db)
+	code, _, err := identities.CreateInvite(context.Background(), owner, 1, time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := identities.Register(context.Background(), identity.RegisterInput{InviteCode: code, Username: "recipient", Email: "recipient@example.test", Password: "recipient-password", Nickname: "接收者"}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	entryID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if _, err := db.Exec(`INSERT INTO guestbook_entries(id, author_id, recipient_id, body, status, created_at, updated_at) VALUES(?, ?, ?, '隐藏留言', 'hidden', ?, ?)`, entryID, owner.ID, recipient.ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO guestbook_media(entry_id, media_id, position) VALUES(?, ?, 0)`, entryID, record.ID); err != nil {
+		t.Fatal(err)
+	}
+	content, err := store.OpenContent(context.Background(), recipient, record.ID, "", false)
+	if err != nil {
+		t.Fatalf("recipient read hidden guestbook media: %v", err)
+	}
+	defer content.Body.Close()
+	got, _ := io.ReadAll(content.Body)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("hidden guestbook media bytes=%q", got)
+	}
+}
+
 func TestUploadRejectsQuotaBeforeWriting(t *testing.T) {
 	db, user := mediaTestUser(t)
 	if _, err := db.Exec("UPDATE users SET media_quota_bytes = 3 WHERE id = ?", user.ID); err != nil {
