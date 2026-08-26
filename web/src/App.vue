@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 
@@ -61,12 +61,13 @@ const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
 const inviteCopyStatus = ref<'idle' | 'copied' | 'error'>('idle')
 const inviteBusy = ref(false)
 const managementMessage = ref('')
-const managementTab = ref<'invites' | 'users' | 'messages' | 'media'>('users')
+const managementTab = ref<'invites' | 'users' | 'messages' | 'media' | 'backup'>('users')
 const adminUsers = ref<AdminUser[]>([])
 const adminMessages = ref<AdminMessage[]>([])
 const adminMedia = ref<AdminMedia[]>([])
 const adminLoading = ref(false)
 const adminActionID = ref('')
+const backupBusy = ref(false)
 const adminFeedback = ref('')
 const adminUserFilters = reactive({ search: '', role: '', status: '' })
 const adminMessageFilters = reactive({ search: '', status: 'sent' })
@@ -632,7 +633,7 @@ async function selectManagementTab(tab: typeof managementTab.value) {
 }
 
 async function loadManagementSection() {
-  if (user.value?.role !== 'admin' || managementTab.value === 'invites') return
+  if (user.value?.role !== 'admin' || managementTab.value === 'invites' || managementTab.value === 'backup') return
   adminLoading.value = true
   adminFeedback.value = ''
   try {
@@ -647,6 +648,27 @@ async function loadManagementSection() {
     adminFeedback.value = error instanceof Error ? error.message : '管理数据读取失败'
   } finally {
     adminLoading.value = false
+  }
+}
+
+async function exportAdminBackup() {
+  backupBusy.value = true
+  adminFeedback.value = ''
+  try {
+    const { blob, filename } = await api.exportBackup()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    adminFeedback.value = `备份 ${filename} 已通过完整性校验并开始下载`
+  } catch (error) {
+    adminFeedback.value = error instanceof Error ? error.message : '备份导出失败'
+  } finally {
+    backupBusy.value = false
   }
 }
 
@@ -1438,6 +1460,7 @@ async function copyInvites() {
           <button type="button" :class="{ active: managementTab === 'messages' }" :aria-current="managementTab === 'messages' ? 'page' : undefined" @click="selectManagementTab('messages')"><MessageCircle :size="19" />群聊消息 <span>{{ adminMessages.length || '' }}</span></button>
           <button type="button" :class="{ active: managementTab === 'media' }" :aria-current="managementTab === 'media' ? 'page' : undefined" @click="selectManagementTab('media')"><Image :size="19" />媒体 <span>{{ adminMedia.length || '' }}</span></button>
           <button type="button" :class="{ active: managementTab === 'invites' }" :aria-current="managementTab === 'invites' ? 'page' : undefined" @click="selectManagementTab('invites')"><MailPlus :size="19" />邀请码</button>
+          <button type="button" :class="{ active: managementTab === 'backup' }" :aria-current="managementTab === 'backup' ? 'page' : undefined" @click="selectManagementTab('backup')"><DatabaseBackup :size="19" />备份</button>
         </nav>
 
         <p v-if="adminFeedback" class="management-feedback" :class="{ error: adminFeedback.includes('失败') || adminFeedback.includes('无法') || adminFeedback.includes('必须') || adminFeedback.includes('不能') }" role="status" aria-live="polite">{{ adminFeedback }}</p>
@@ -1454,8 +1477,8 @@ async function copyInvites() {
 
         <section v-else class="management-panel" :aria-labelledby="`management-${managementTab}-title`">
           <header class="management-panel-head">
-            <div><p class="eyebrow">{{ managementTab === 'users' ? '账号与权限' : managementTab === 'messages' ? '仅公共群聊' : '存储与引用' }}</p><h2 :id="`management-${managementTab}-title`">{{ managementTab === 'users' ? '用户管理' : managementTab === 'messages' ? '消息管理' : '媒体管理' }}</h2><p>{{ managementTab === 'users' ? '调整角色与账号状态；停用账号会撤销其全部登录会话。' : managementTab === 'messages' ? '只显示 3048 宿舍群聊，管理员无法读取任何私信。' : '显示媒体元数据与引用状态；只有未被引用的文件可以永久删除。' }}</p></div>
-            <button class="icon-button" type="button" :disabled="adminLoading" aria-label="刷新当前管理数据" @click="loadManagementSection"><RefreshCw :size="20" /></button>
+            <div><p class="eyebrow">{{ managementTab === 'users' ? '账号与权限' : managementTab === 'messages' ? '仅公共群聊' : managementTab === 'media' ? '存储与引用' : '数据安全' }}</p><h2 :id="`management-${managementTab}-title`">{{ managementTab === 'users' ? '用户管理' : managementTab === 'messages' ? '消息管理' : managementTab === 'media' ? '媒体管理' : '导出备份' }}</h2><p>{{ managementTab === 'users' ? '调整角色与账号状态；停用账号会撤销其全部登录会话。' : managementTab === 'messages' ? '只显示 3048 宿舍群聊，管理员无法读取任何私信。' : managementTab === 'media' ? '显示媒体元数据与引用状态；只有未被引用的文件可以永久删除。' : '生成经过 SQLite 完整性校验的业务数据快照，并下载到管理员设备。' }}</p></div>
+            <button v-if="managementTab !== 'backup'" class="icon-button" type="button" :disabled="adminLoading" aria-label="刷新当前管理数据" @click="loadManagementSection"><RefreshCw :size="20" /></button>
           </header>
 
           <form v-if="managementTab === 'users'" class="management-filters" role="search" @submit.prevent="loadManagementSection">
@@ -1469,7 +1492,7 @@ async function copyInvites() {
             <label><span>状态</span><select v-model="adminMessageFilters.status"><option value="">全部状态</option><option value="sent">正常</option><option value="recalled">已撤回</option></select></label>
             <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
           </form>
-          <form v-else class="management-filters" role="search" @submit.prevent="loadManagementSection">
+          <form v-else-if="managementTab === 'media'" class="management-filters" role="search" @submit.prevent="loadManagementSection">
             <label><span>搜索媒体</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminMediaFilters.search" type="search" placeholder="文件名或上传者" /></span></label>
             <label><span>类型</span><select v-model="adminMediaFilters.type"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select></label>
             <label><span>状态</span><select v-model="adminMediaFilters.status"><option value="">全部状态</option><option value="ready">可用</option><option value="uploading">上传中</option><option value="unavailable">不可用</option></select></label>
@@ -1496,7 +1519,7 @@ async function copyInvites() {
               <button class="danger-action" type="button" :disabled="item.status !== 'sent' || adminActionID === item.id" @click="removeAdminMessage(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '移除中…' : '移除' }}</button>
             </article>
           </div>
-          <div v-else class="management-list">
+          <div v-else-if="managementTab === 'media'" class="management-list">
             <p v-if="adminMedia.length === 0" class="management-empty">没有符合条件的媒体。</p>
             <article v-for="item in adminMedia" v-else :key="item.id" class="management-row media-management-row">
               <span class="media-admin-icon"><Image v-if="item.media_type === 'image'" :size="21" /><Film v-else-if="item.media_type === 'video'" :size="21" /><Music v-else :size="21" /></span>
@@ -1504,6 +1527,22 @@ async function copyInvites() {
               <span class="status-badge" :data-status="item.status">{{ item.status === 'ready' ? '可用' : item.status === 'uploading' ? '上传中' : '不可用' }}</span>
               <button class="danger-action" type="button" :disabled="item.reference_count > 0 || adminActionID === item.id" :title="item.reference_count > 0 ? '请先移除引用该文件的内容' : '永久删除未被引用的媒体'" @click="removeAdminMedia(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '删除中…' : '删除' }}</button>
             </article>
+          </div>
+          <div v-else class="backup-section">
+            <article class="backup-export-card">
+              <span class="backup-export-icon"><DatabaseBackup :size="30" /></span>
+              <div>
+                <h3>下载业务数据备份</h3>
+                <p>包含账号、个人资料、帖子、留言、评论、群聊与私信、通知、媒体索引和审计记录。</p>
+                <p class="backup-warning"><AlertCircle :size="18" />不包含 AList / 夸克网盘中的原始图片、视频和音频；这些文件仍需通过网盘侧单独保障。</p>
+              </div>
+              <button class="primary-button backup-download-button" type="button" :disabled="backupBusy" @click="exportAdminBackup"><Download :size="18" />{{ backupBusy ? '正在生成并校验…' : '生成并下载备份' }}</button>
+            </article>
+            <div class="backup-guidance" aria-label="备份操作说明">
+              <article><strong>1. 下载并保存</strong><p>浏览器会下载一个 SQLite 数据库文件。请确认文件已落盘，不要只保留在下载临时目录。</p></article>
+              <article><strong>2. 妥善保管</strong><p>备份含邮箱、密码哈希、会话及私信等敏感信息。请勿分享，建议放入加密磁盘或加密压缩包。</p></article>
+              <article><strong>3. 维护前执行</strong><p>每次部署、升级或批量管理数据前先导出一份；恢复操作需在维护窗口内停止服务后进行。</p></article>
+            </div>
           </div>
         </section>
       </template>

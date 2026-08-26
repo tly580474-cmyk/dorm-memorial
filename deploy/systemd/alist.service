@@ -1,18 +1,17 @@
 [Unit]
-Description=Dorm Memorial Community
-After=network-online.target alist.service
+Description=AList storage gateway
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=dorm-memorial
-Group=dorm-memorial
-WorkingDirectory=/opt/dorm-memorial/current
-EnvironmentFile=/etc/dorm-memorial/app.env
-ExecStart=/opt/dorm-memorial/current/bin/dorm-memorial
+User=alist
+Group=alist
+WorkingDirectory=/var/lib/alist
+ExecStart=/opt/alist/alist server --data /var/lib/alist
 Restart=on-failure
 RestartSec=5s
-TimeoutStopSec=20s
+TimeoutStopSec=30s
 MemoryHigh=384M
 MemoryMax=640M
 LimitNOFILE=65536
@@ -20,7 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/dorm-memorial /var/cache/dorm-memorial
+ReadWritePaths=/var/lib/alist
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
 MemoryDenyWriteExecute=true

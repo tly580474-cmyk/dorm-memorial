@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
 	"path/filepath"
 	"testing"
@@ -68,6 +69,36 @@ func TestAdminManagementEndpoints(t *testing.T) {
 			t.Fatalf("member GET %s status=%d body=%s", path, forbidden.StatusCode, readBody(forbidden))
 		}
 		forbidden.Body.Close()
+	}
+	forbiddenBackup := doJSON(t, server.URL+"/api/admin/backup", http.MethodPost, nil, memberCookie)
+	if forbiddenBackup.StatusCode != http.StatusForbidden {
+		t.Fatalf("member backup status=%d body=%s", forbiddenBackup.StatusCode, readBody(forbiddenBackup))
+	}
+	forbiddenBackup.Body.Close()
+	backup := doJSON(t, server.URL+"/api/admin/backup", http.MethodPost, nil, adminCookie)
+	if backup.StatusCode != http.StatusOK || backup.Header.Get("Content-Type") != "application/vnd.sqlite3" || backup.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("backup status=%d type=%q cache=%q body=%s", backup.StatusCode, backup.Header.Get("Content-Type"), backup.Header.Get("Cache-Control"), readBody(backup))
+	}
+	backupBytes, err := io.ReadAll(backup.Body)
+	backup.Body.Close()
+	if err != nil || len(backupBytes) < 16 || string(backupBytes[:16]) != "SQLite format 3\x00" {
+		t.Fatalf("invalid sqlite backup size=%d err=%v", len(backupBytes), err)
+	}
+	backupPath := filepath.Join(t.TempDir(), "downloaded-backup.db")
+	if err := os.WriteFile(backupPath, backupBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupDB, err := database.Open(ctx, backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backupDB.Close()
+	if err := database.IntegrityCheck(ctx, backupDB); err != nil {
+		t.Fatal(err)
+	}
+	var auditCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE action = 'admin.backup.export' AND actor_id = ?`, admin.ID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("backup audit count=%d err=%v", auditCount, err)
 	}
 	remove := doJSON(t, server.URL+"/api/admin/messages/"+groupMessage.ID, http.MethodDelete, nil, adminCookie)
 	if remove.StatusCode != http.StatusNoContent {

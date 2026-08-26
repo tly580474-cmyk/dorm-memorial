@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"dorm-memorial/internal/config"
 	"dorm-memorial/internal/content"
+	appdatabase "dorm-memorial/internal/database"
 	"dorm-memorial/internal/identity"
 	mediastore "dorm-memorial/internal/media"
 	"dorm-memorial/internal/messaging"
@@ -44,6 +46,7 @@ type Server struct {
 	messaging *messaging.Store
 	logger    *slog.Logger
 	handler   http.Handler
+	backupMu  sync.Mutex
 }
 
 func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog.Logger, objects ...storage.ObjectStorage) *Server {
@@ -83,6 +86,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/admin/messages", s.requireAuth(http.HandlerFunc(s.listAdminMessages)))
 	mux.Handle("DELETE /api/admin/messages/{id}", s.requireAuth(http.HandlerFunc(s.deleteAdminMessage)))
 	mux.Handle("GET /api/admin/media", s.requireAuth(http.HandlerFunc(s.listAdminMedia)))
+	mux.Handle("POST /api/admin/backup", s.requireAuth(http.HandlerFunc(s.exportAdminBackup)))
 	mux.Handle("GET /api/posts", s.requireAuth(http.HandlerFunc(s.listPosts)))
 	mux.Handle("POST /api/posts", s.requireAuth(http.HandlerFunc(s.createPost)))
 	mux.Handle("GET /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.getPost)))
@@ -487,6 +491,62 @@ func (s *Server) listAdminMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"media": items, "count": len(items)})
+}
+
+func (s *Server) exportAdminBackup(w http.ResponseWriter, r *http.Request) {
+	p := mustPrincipal(r)
+	if p.User.Role != "admin" {
+		writeError(w, http.StatusForbidden, "administrator required")
+		return
+	}
+	if !s.backupMu.TryLock() {
+		writeError(w, http.StatusConflict, "已有备份正在生成，请稍后重试")
+		return
+	}
+	defer s.backupMu.Unlock()
+
+	tempDir, err := os.MkdirTemp("", "dorm-memorial-export-")
+	if err != nil {
+		s.logger.Error("admin_backup_temp_failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "无法创建备份临时目录")
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	createdAt := time.Now().UTC()
+	filename := "dorm-memorial-backup-" + createdAt.Format("20060102-150405") + ".db"
+	destination := filepath.Join(tempDir, filename)
+	if err := appdatabase.Backup(r.Context(), s.db, destination); err != nil {
+		s.logger.Error("admin_backup_failed", "user_id", p.User.ID, "error", err)
+		writeError(w, http.StatusInternalServerError, "备份生成或完整性校验失败")
+		return
+	}
+	if _, err := s.db.ExecContext(r.Context(), `INSERT INTO audit_logs(actor_id, action, target_type, metadata_json, ip_address, created_at)
+		VALUES(?, 'admin.backup.export', 'database', '{"format":"sqlite"}', ?, ?)`, p.User.ID, remoteIP(r), createdAt.Format(time.RFC3339Nano)); err != nil {
+		s.logger.Error("admin_backup_audit_failed", "user_id", p.User.ID, "error", err)
+		writeError(w, http.StatusInternalServerError, "无法记录备份审计")
+		return
+	}
+	file, err := os.Open(destination)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法读取已生成的备份")
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法读取备份信息")
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.sqlite3")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, file); err != nil {
+		s.logger.Warn("admin_backup_download_interrupted", "user_id", p.User.ID, "error", err)
+	}
 }
 
 func (s *Server) listPosts(w http.ResponseWriter, r *http.Request) {

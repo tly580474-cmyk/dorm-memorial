@@ -20,6 +20,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function download(path: string, options: RequestInit = {}) {
+  const response = await fetch(path, { ...options, credentials: 'same-origin' })
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as ApiErrorBody
+    throw new ApiError(body.error?.message ?? `下载失败（${response.status}）`, response.status)
+  }
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'dorm-memorial-backup.db'
+  return { blob: await response.blob(), filename }
+}
+
 export const api = {
   me: () => request<{ user: User }>('/api/auth/me'),
   login: (body: { identifier: string; password: string }) =>
@@ -71,6 +82,7 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<{ media: AdminMedia[]; count: number }>(`/api/admin/media${params.size ? `?${params}` : ''}`)
   },
+  exportBackup: () => download('/api/admin/backup', { method: 'POST' }),
   posts: (query: { scope?: 'feed' | 'mine' | 'pending'; status?: string; cursor?: string; limit?: number } = {}) => {
     const params = new URLSearchParams()
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
