@@ -49,6 +49,13 @@ type Record struct {
 	CreatedAt        time.Time `json:"created_at"`
 }
 
+type AdminRecord struct {
+	Record
+	OwnerUsername  string `json:"owner_username"`
+	OwnerNickname  string `json:"owner_nickname"`
+	ReferenceCount int    `json:"reference_count"`
+}
+
 type UploadInput struct {
 	ClientRequestID string
 	Filename        string
@@ -140,6 +147,9 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	if mediaType == "video" && input.DurationMS > 0 && input.DurationMS <= int64((48*time.Hour)/time.Millisecond) {
 		record.DurationMS = &input.DurationMS
 	}
+	if mediaType == "audio" && input.DurationMS > 0 && input.DurationMS <= int64((48*time.Hour)/time.Millisecond) {
+		record.DurationMS = &input.DurationMS
+	}
 	if imageInfo.width > 0 {
 		record.Width = &imageInfo.width
 		record.Height = &imageInfo.height
@@ -218,12 +228,74 @@ func (s *Store) Usage(ctx context.Context, userID string) (Usage, error) {
 	return result, err
 }
 
+func (s *Store) ListAdmin(ctx context.Context, actor identity.User, search, mediaType, status string, limit int) ([]AdminRecord, error) {
+	if actor.Role != "admin" {
+		return nil, ErrForbidden
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	query := `SELECT m.id, m.owner_id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.sha256, m.status,
+		m.width, m.height, m.duration_ms, m.preview_path <> '', m.created_at, u.username, p.nickname,
+		(SELECT COUNT(*) FROM post_media pm WHERE pm.media_id = m.id)
+		+ (SELECT COUNT(*) FROM guestbook_media gm WHERE gm.media_id = m.id)
+		+ (SELECT COUNT(*) FROM message_media mm WHERE mm.media_id = m.id)
+		+ (SELECT COUNT(*) FROM profiles profile WHERE profile.avatar_path = m.id)
+		FROM media m JOIN users u ON u.id = m.owner_id JOIN profiles p ON p.user_id = u.id WHERE m.status <> 'deleted'`
+	args := []any{}
+	if search = strings.TrimSpace(search); search != "" {
+		needle := "%" + search + "%"
+		query += ` AND (m.original_filename LIKE ? COLLATE NOCASE OR u.username LIKE ? COLLATE NOCASE OR p.nickname LIKE ? COLLATE NOCASE)`
+		args = append(args, needle, needle, needle)
+	}
+	if mediaType == "image" || mediaType == "video" || mediaType == "audio" {
+		query += ` AND m.media_type = ?`
+		args = append(args, mediaType)
+	}
+	if status == "uploading" || status == "ready" || status == "unavailable" {
+		query += ` AND m.status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY m.created_at DESC, m.id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminRecord{}
+	for rows.Next() {
+		var item AdminRecord
+		var width, height, duration sql.NullInt64
+		var created string
+		if err := rows.Scan(&item.ID, &item.OwnerID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.SHA256, &item.Status, &width, &height, &duration, &item.HasPreview, &created, &item.OwnerUsername, &item.OwnerNickname, &item.ReferenceCount); err != nil {
+			return nil, err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			item.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			item.Height = &value
+		}
+		if duration.Valid {
+			value := duration.Int64
+			item.DurationMS = &value
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) error {
 	var ownerID, objectPath, previewPath, status string
 	var attached int
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.status,
 		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM guestbook_media gm WHERE gm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM profiles p WHERE p.avatar_path = m.id)
 		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &status, &attached)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
@@ -264,20 +336,27 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {
 	var ownerID, objectPath, previewPath, filename, mimeType, status string
 	var size int64
-	var publiclyReadable int
+	var generallyReadable, messageAttached, messageReadable int
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'visible')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'hidden' AND g.recipient_id = ?)
-		OR EXISTS(SELECT 1 FROM profiles profile WHERE profile.avatar_path = m.id)
-		FROM media m WHERE m.id = ?`, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &publiclyReadable)
+		OR EXISTS(SELECT 1 FROM profiles profile WHERE profile.avatar_path = m.id),
+		EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id),
+		EXISTS(SELECT 1 FROM message_media mm JOIN messages msg ON msg.id = mm.message_id
+			JOIN conversation_members cm ON cm.conversation_id = msg.conversation_id
+			WHERE mm.media_id = m.id AND cm.user_id = ?)
+		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &generallyReadable, &messageAttached, &messageReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return Content{}, ErrNotFound
 	}
 	if err != nil {
 		return Content{}, err
 	}
-	if actor.Role != "admin" && actor.ID != ownerID && publiclyReadable == 0 {
+	if messageAttached != 0 && generallyReadable == 0 && messageReadable == 0 {
+		return Content{}, ErrForbidden
+	}
+	if actor.Role != "admin" && actor.ID != ownerID && generallyReadable == 0 && messageReadable == 0 {
 		return Content{}, ErrForbidden
 	}
 	if status != "ready" || s.objects == nil {
@@ -327,10 +406,10 @@ func (s *Store) existingRequest(ctx context.Context, userID, requestID string) (
 func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Record, error) {
 	var record Record
 	var created string
-	var width, height sql.NullInt64
+	var width, height, duration sql.NullInt64
 	var previewPath string
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, width, height, preview_path FROM media WHERE object_path = ?`, objectPath).
-		Scan(&record.ID, &record.OwnerID, &record.OriginalFilename, &record.MediaType, &record.MimeType, &record.SizeBytes, &record.SHA256, &record.Status, &created, &width, &height, &previewPath)
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, width, height, duration_ms, preview_path FROM media WHERE object_path = ?`, objectPath).
+		Scan(&record.ID, &record.OwnerID, &record.OriginalFilename, &record.MediaType, &record.MimeType, &record.SizeBytes, &record.SHA256, &record.Status, &created, &width, &height, &duration, &previewPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, ErrNotFound
 	}
@@ -345,6 +424,10 @@ func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Reco
 	if height.Valid {
 		value := int(height.Int64)
 		record.Height = &value
+	}
+	if duration.Valid {
+		value := duration.Int64
+		record.DurationMS = &value
 	}
 	record.HasPreview = previewPath != ""
 	return record, nil
@@ -404,6 +487,8 @@ func validateUpload(input UploadInput) (string, string, error) {
 		mediaType = "image"
 	case strings.HasPrefix(input.MimeType, "video/"):
 		mediaType = "video"
+	case strings.HasPrefix(input.MimeType, "audio/"):
+		mediaType = "audio"
 	default:
 		return "", "", ErrInvalid
 	}

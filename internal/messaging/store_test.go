@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 		t.Fatalf("admin direct access err=%v", err)
 	}
 
-	first, err := store.SendMessage(ctx, alice, direct.ID, "毕业后也要常联系。", "127.0.0.1")
+	first, err := store.SendMessage(ctx, alice, direct.ID, "毕业后也要常联系。", nil, "127.0.0.1")
 	if err != nil || first.Body == "" {
 		t.Fatalf("first message=%+v err=%v", first, err)
 	}
@@ -78,7 +79,7 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 		}
 	}
 
-	reply, err := store.SendMessage(ctx, bob, direct.ID, "一定。", "127.0.0.1")
+	reply, err := store.SendMessage(ctx, bob, direct.ID, "一定。", nil, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +95,15 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 	}
 
 	notifications, err := store.ListNotifications(ctx, bob, "", 20)
-	if err != nil || notifications.UnreadCount != 1 || len(notifications.Notifications) != 1 || notifications.Notifications[0].Kind != "direct_message" {
+	if err != nil || notifications.UnreadCount != 1 || len(notifications.Notifications) != 1 || notifications.Notifications[0].Kind != "direct_message" || notifications.Notifications[0].TargetType != "message" || notifications.Notifications[0].TargetID != first.ID {
 		t.Fatalf("notifications=%+v err=%v", notifications, err)
+	}
+	located, err := store.GetMessage(ctx, bob, first.ID)
+	if err != nil || located.ID != first.ID || located.ConversationID != direct.ID {
+		t.Fatalf("located message=%+v err=%v", located, err)
+	}
+	if _, err := store.GetMessage(ctx, admin, first.ID); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("admin message lookup err=%v", err)
 	}
 	if err := store.MarkNotificationRead(ctx, bob, notifications.Notifications[0].ID); err != nil {
 		t.Fatal(err)
@@ -103,6 +111,75 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 	notifications, _ = store.ListNotifications(ctx, bob, "", 20)
 	if notifications.UnreadCount != 0 {
 		t.Fatalf("notification unread=%d", notifications.UnreadCount)
+	}
+	if err := store.ClearNotifications(ctx, bob); err != nil {
+		t.Fatal(err)
+	}
+	notifications, _ = store.ListNotifications(ctx, bob, "", 20)
+	if len(notifications.Notifications) != 0 || notifications.UnreadCount != 0 {
+		t.Fatalf("notifications after clear=%+v", notifications)
+	}
+
+	audioID := "cccccccccccccccccccccccccccccccc"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, duration_ms, status, created_at, updated_at)
+		VALUES(?, ?, '/test/voice.ogg', '宿舍语音.ogg', 'audio', 'audio/ogg', 128, ?, 3200, 'ready', ?, ?)`, audioID, alice.ID, audioID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	attachmentMessage, err := store.SendMessage(ctx, alice, direct.ID, "", []string{audioID}, "127.0.0.1")
+	if err != nil || attachmentMessage.Body != "" || len(attachmentMessage.Attachments) != 1 || attachmentMessage.Attachments[0].MediaType != "audio" {
+		t.Fatalf("attachment message=%+v err=%v", attachmentMessage, err)
+	}
+	if _, err := store.SendMessage(ctx, bob, direct.ID, "不能盗用", []string{audioID}, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("cross-owner attachment err=%v", err)
+	}
+}
+
+func TestAdminMessageManagementOnlyIncludesGroupChat(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "admin-messages.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	alice := registerMessagingUser(t, identities, admin, "alice2", "alice2@example.test", "小爱")
+	bob := registerMessagingUser(t, identities, admin, "bob2", "bob2@example.test", "小博")
+	store := NewStore(db)
+	groupConversations, err := store.ListConversations(ctx, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupMessage, err := store.SendMessage(ctx, alice, groupConversations[0].ID, "公共消息", nil, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	direct, err := store.StartDirect(ctx, alice, bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SendMessage(ctx, alice, direct.ID, "私密内容", nil, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := store.ListAdminGroupMessages(ctx, admin, "", "", 100)
+	if err != nil || len(items) != 1 || items[0].ID != groupMessage.ID || strings.Contains(items[0].Body, "私密") {
+		t.Fatalf("admin group messages=%+v err=%v", items, err)
+	}
+	if err := store.RemoveAdminGroupMessage(ctx, admin, groupMessage.ID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	recalled, err := store.ListAdminGroupMessages(ctx, admin, "", "recalled", 100)
+	if err != nil || len(recalled) != 1 || recalled[0].Body != "" {
+		t.Fatalf("recalled admin messages=%+v err=%v", recalled, err)
+	}
+	page, err := store.ListMessages(ctx, alice, groupConversations[0].ID, "", 20)
+	if err != nil || len(page.Messages) != 1 || page.Messages[0].Status != "recalled" || page.Messages[0].Body != "" {
+		t.Fatalf("moderated page=%+v err=%v", page, err)
 	}
 }
 

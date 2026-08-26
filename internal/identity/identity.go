@@ -50,6 +50,17 @@ type Member struct {
 	MemorialNote string `json:"memorial_note"`
 }
 
+type AdminUser struct {
+	User
+	CreatedAt          time.Time `json:"created_at"`
+	ActiveSessionCount int       `json:"active_session_count"`
+}
+
+type AdminUserUpdate struct {
+	Role   string `json:"role"`
+	Status string `json:"status"`
+}
+
 type Session struct {
 	ID         string    `json:"id"`
 	UserAgent  string    `json:"user_agent"`
@@ -97,6 +108,106 @@ func (s *Store) ListMembers(ctx context.Context) ([]Member, error) {
 		members = append(members, member)
 	}
 	return members, rows.Err()
+}
+
+func (s *Store) ListAdminUsers(ctx context.Context, actor User, search, role, status string) ([]AdminUser, error) {
+	if actor.Role != "admin" {
+		return nil, ErrForbidden
+	}
+	search, role, status = strings.TrimSpace(search), strings.TrimSpace(role), strings.TrimSpace(status)
+	query := `SELECT u.id, u.username, u.email, u.role, u.status, p.nickname, p.bio, p.bed_no, p.memorial_note, p.avatar_path,
+		u.created_at, (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at > ?)
+		FROM users u JOIN profiles p ON p.user_id = u.id WHERE 1 = 1`
+	args := []any{nowText()}
+	if search != "" {
+		query += ` AND (u.username LIKE ? COLLATE NOCASE OR u.email LIKE ? COLLATE NOCASE OR p.nickname LIKE ? COLLATE NOCASE)`
+		needle := "%" + search + "%"
+		args = append(args, needle, needle, needle)
+	}
+	if role == "admin" || role == "member" {
+		query += ` AND u.role = ?`
+		args = append(args, role)
+	}
+	if status == "active" || status == "disabled" {
+		query += ` AND u.status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY CASE u.role WHEN 'admin' THEN 0 ELSE 1 END, p.nickname COLLATE NOCASE, u.username COLLATE NOCASE`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminUser{}
+	for rows.Next() {
+		var item AdminUser
+		var created string
+		if err := rows.Scan(&item.ID, &item.Username, &item.Email, &item.Role, &item.Status, &item.Nickname, &item.Bio, &item.BedNo, &item.MemorialNote, &item.AvatarPath, &created, &item.ActiveSessionCount); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) UpdateAdminUser(ctx context.Context, actor User, targetID string, input AdminUserUpdate, ip string) (AdminUser, error) {
+	if actor.Role != "admin" {
+		return AdminUser{}, ErrForbidden
+	}
+	input.Role, input.Status = strings.TrimSpace(input.Role), strings.TrimSpace(input.Status)
+	if (input.Role != "admin" && input.Role != "member") || (input.Status != "active" && input.Status != "disabled") {
+		return AdminUser{}, errors.New("invalid user role or status")
+	}
+	if targetID == actor.ID && (input.Role != actor.Role || input.Status != actor.Status) {
+		return AdminUser{}, errors.New("不能修改当前登录管理员的角色或状态")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	defer tx.Rollback()
+	var currentRole, currentStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT role, status FROM users WHERE id = ?`, targetID).Scan(&currentRole, &currentStatus); errors.Is(err, sql.ErrNoRows) {
+		return AdminUser{}, ErrNotFound
+	} else if err != nil {
+		return AdminUser{}, err
+	}
+	if currentRole == "admin" && currentStatus == "active" && (input.Role != "admin" || input.Status != "active") {
+		var admins int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin' AND status = 'active'`).Scan(&admins); err != nil {
+			return AdminUser{}, err
+		}
+		if admins <= 1 {
+			return AdminUser{}, errors.New("必须保留至少一个启用中的管理员")
+		}
+	}
+	now := nowText()
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET role = ?, status = ?, updated_at = ? WHERE id = ?`, input.Role, input.Status, now, targetID); err != nil {
+		return AdminUser{}, err
+	}
+	if input.Status == "disabled" {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, now, targetID); err != nil {
+			return AdminUser{}, err
+		}
+	}
+	metadata := fmt.Sprintf(`{"role":"%s","status":"%s"}`, input.Role, input.Status)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, metadata_json, ip_address, created_at) VALUES(?, 'admin.user.update', 'user', ?, ?, ?, ?)`, actor.ID, targetID, metadata, ip, now); err != nil {
+		return AdminUser{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AdminUser{}, err
+	}
+	items, err := s.ListAdminUsers(ctx, actor, "", "", "")
+	if err != nil {
+		return AdminUser{}, err
+	}
+	for _, item := range items {
+		if item.ID == targetID {
+			return item, nil
+		}
+	}
+	return AdminUser{}, ErrNotFound
 }
 
 func (s *Store) BootstrapAdmin(ctx context.Context, username, email, password, nickname string) (bool, error) {

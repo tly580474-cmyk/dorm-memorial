@@ -16,6 +16,7 @@ import (
 
 	"dorm-memorial/internal/database"
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/messaging"
 	"dorm-memorial/internal/storage"
 )
 
@@ -192,6 +193,38 @@ func TestHiddenGuestbookMediaIsReadableByRecipient(t *testing.T) {
 	}
 }
 
+func TestMessageAudioIsReadableOnlyByConversationMembers(t *testing.T) {
+	db, owner := mediaTestUser(t)
+	objects := newMemoryObjects()
+	mediaStore := NewStore(db, objects)
+	mediaStore.verifyDelays = []time.Duration{0}
+	payload := []byte("voice note")
+	record, err := mediaStore.Upload(context.Background(), owner, UploadInput{ClientRequestID: "message-audio-file", Filename: "晚安.m4a", MimeType: "audio/mp4", Size: int64(len(payload)), Body: bytes.NewReader(payload), DurationMS: 2400})
+	if err != nil || record.MediaType != "audio" || record.DurationMS == nil || *record.DurationMS != 2400 {
+		t.Fatalf("audio upload=%+v err=%v", record, err)
+	}
+	identities := identity.NewStore(db)
+	recipient := registerMediaUser(t, identities, owner, "listener", "listener@example.test")
+	outsider := registerMediaUser(t, identities, owner, "outsider", "outsider@example.test")
+	outsider.Role = "admin"
+	messageStore := messaging.NewStore(db)
+	conversation, err := messageStore.StartDirect(context.Background(), owner, recipient.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := messageStore.SendMessage(context.Background(), owner, conversation.ID, "", []string{record.ID}, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := mediaStore.OpenContent(context.Background(), recipient, record.ID, "", false)
+	if err != nil {
+		t.Fatalf("recipient open audio: %v", err)
+	}
+	content.Body.Close()
+	if _, err := mediaStore.OpenContent(context.Background(), outsider, record.ID, "", false); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("outsider admin attachment access err=%v", err)
+	}
+}
+
 func TestUploadRejectsQuotaBeforeWriting(t *testing.T) {
 	db, user := mediaTestUser(t)
 	if _, err := db.Exec("UPDATE users SET media_quota_bytes = 3 WHERE id = ?", user.ID); err != nil {
@@ -250,6 +283,37 @@ func mediaTestUser(t *testing.T) (*sql.DB, identity.User) {
 		t.Fatal(err)
 	}
 	return db, user
+}
+
+func TestAdminMediaListReportsReferences(t *testing.T) {
+	db, admin := mediaTestUser(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mediaID := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES(?, ?, '/test/admin.jpg', '纪念照.jpg', 'image', 'image/jpeg', 256, ?, 'ready', ?, ?)`, mediaID, admin.ID, mediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE profiles SET avatar_path = ? WHERE user_id = ?`, mediaID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := NewStore(db, nil).ListAdmin(ctx, admin, "纪念", "image", "ready", 20)
+	if err != nil || len(items) != 1 || items[0].ReferenceCount != 1 || items[0].OwnerNickname != admin.Nickname {
+		t.Fatalf("admin media=%+v err=%v", items, err)
+	}
+}
+
+func registerMediaUser(t *testing.T, identities *identity.Store, admin identity.User, username, email string) identity.User {
+	t.Helper()
+	code, _, err := identities.CreateInvite(context.Background(), admin, 1, time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := identities.Register(context.Background(), identity.RegisterInput{InviteCode: code, Username: username, Email: email, Password: "member-password", Nickname: username}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user
 }
 
 var _ storage.ObjectStorage = (*memoryObjects)(nil)

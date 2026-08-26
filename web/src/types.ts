@@ -11,6 +11,30 @@ export interface User {
   avatar_path: string
 }
 
+export interface AdminUser extends User {
+  created_at: string
+  active_session_count: number
+}
+
+export interface AdminMessage {
+  id: string
+  conversation_id: string
+  conversation_title: string
+  sender: MessagePerson
+  body: string
+  status: 'sent' | 'recalled'
+  attachment_count: number
+  created_at: string
+}
+
+export interface AdminMedia extends Media {
+  owner_id: string
+  owner_username: string
+  owner_nickname: string
+  reference_count: number
+  created_at: string
+}
+
 export interface Session {
   id: string
   user_agent: string
@@ -27,7 +51,7 @@ export interface Media {
   id: string
   owner_id?: string
   original_filename: string
-  media_type: 'image' | 'video'
+  media_type: 'image' | 'video' | 'audio'
   mime_type: string
   size_bytes: number
   sha256?: string
@@ -97,6 +121,18 @@ export interface GuestbookPage {
 
 export type MessagePerson = Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
 
+export interface MessageAttachment {
+  id: string
+  original_filename: string
+  media_type: 'image' | 'video' | 'audio'
+  mime_type: string
+  size_bytes: number
+  width: number | null
+  height: number | null
+  duration_ms: number | null
+  has_preview: boolean
+}
+
 export interface ChatMessage {
   id: string
   conversation_id: string
@@ -105,6 +141,7 @@ export interface ChatMessage {
   status: 'sent' | 'recalled'
   created_at: string
   recalled_at: string | null
+  attachments: MessageAttachment[]
 }
 
 export interface Conversation {

@@ -66,8 +66,10 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/messages/conversations/{id}", s.requireAuth(http.HandlerFunc(s.listMessages)))
 	mux.Handle("POST /api/messages/conversations/{id}", s.requireAuth(http.HandlerFunc(s.sendMessage)))
 	mux.Handle("POST /api/messages/conversations/{id}/read", s.requireAuth(http.HandlerFunc(s.markConversationRead)))
+	mux.Handle("GET /api/messages/items/{id}", s.requireAuth(http.HandlerFunc(s.getMessage)))
 	mux.Handle("POST /api/messages/items/{id}/recall", s.requireAuth(http.HandlerFunc(s.recallMessage)))
 	mux.Handle("GET /api/notifications", s.requireAuth(http.HandlerFunc(s.listNotifications)))
+	mux.Handle("DELETE /api/notifications", s.requireAuth(http.HandlerFunc(s.clearNotifications)))
 	mux.Handle("POST /api/notifications/read-all", s.requireAuth(http.HandlerFunc(s.markAllNotificationsRead)))
 	mux.Handle("POST /api/notifications/{id}/read", s.requireAuth(http.HandlerFunc(s.markNotificationRead)))
 	mux.Handle("DELETE /api/auth/sessions/{id}", s.requireAuth(http.HandlerFunc(s.revokeSession)))
@@ -76,6 +78,11 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("DELETE /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.clearAvatar)))
 	mux.Handle("POST /api/admin/invites", s.requireAuth(http.HandlerFunc(s.createInvite)))
 	mux.Handle("GET /api/admin/health", s.requireAuth(http.HandlerFunc(s.adminHealth)))
+	mux.Handle("GET /api/admin/users", s.requireAuth(http.HandlerFunc(s.listAdminUsers)))
+	mux.Handle("PATCH /api/admin/users/{id}", s.requireAuth(http.HandlerFunc(s.updateAdminUser)))
+	mux.Handle("GET /api/admin/messages", s.requireAuth(http.HandlerFunc(s.listAdminMessages)))
+	mux.Handle("DELETE /api/admin/messages/{id}", s.requireAuth(http.HandlerFunc(s.deleteAdminMessage)))
+	mux.Handle("GET /api/admin/media", s.requireAuth(http.HandlerFunc(s.listAdminMedia)))
 	mux.Handle("GET /api/posts", s.requireAuth(http.HandlerFunc(s.listPosts)))
 	mux.Handle("POST /api/posts", s.requireAuth(http.HandlerFunc(s.createPost)))
 	mux.Handle("GET /api/posts/{id}", s.requireAuth(http.HandlerFunc(s.getPost)))
@@ -148,12 +155,13 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Body string `json:"body"`
+		Body     string   `json:"body"`
+		MediaIDs []string `json:"media_ids"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	item, err := s.messaging.SendMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body.Body, remoteIP(r))
+	item, err := s.messaging.SendMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body.Body, body.MediaIDs, remoteIP(r))
 	if err != nil {
 		writeMessagingError(w, err)
 		return
@@ -177,6 +185,15 @@ func (s *Server) recallMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) getMessage(w http.ResponseWriter, r *http.Request) {
+	item, err := s.messaging.GetMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"))
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": item})
+}
+
 func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	page, err := s.messaging.ListNotifications(r.Context(), mustPrincipal(r).User, r.URL.Query().Get("cursor"), limit)
@@ -197,6 +214,14 @@ func (s *Server) markNotificationRead(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) markAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
 	if err := s.messaging.MarkAllNotificationsRead(r.Context(), mustPrincipal(r).User); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) clearNotifications(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.ClearNotifications(r.Context(), mustPrincipal(r).User); err != nil {
 		writeMessagingError(w, err)
 		return
 	}
@@ -411,6 +436,57 @@ func (s *Server) adminHealth(w http.ResponseWriter, r *http.Request) {
 	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM users WHERE status = 'active'").Scan(&users)
 	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > ?", time.Now().UTC().Format(time.RFC3339Nano)).Scan(&sessions)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "active_users": users, "active_sessions": sessions})
+}
+
+func (s *Server) listAdminUsers(w http.ResponseWriter, r *http.Request) {
+	p := mustPrincipal(r)
+	items, err := s.identity.ListAdminUsers(r.Context(), p.User, r.URL.Query().Get("search"), r.URL.Query().Get("role"), r.URL.Query().Get("status"))
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": items, "count": len(items)})
+}
+
+func (s *Server) updateAdminUser(w http.ResponseWriter, r *http.Request) {
+	var body identity.AdminUserUpdate
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	item, err := s.identity.UpdateAdminUser(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body, remoteIP(r))
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": item})
+}
+
+func (s *Server) listAdminMessages(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.messaging.ListAdminGroupMessages(r.Context(), mustPrincipal(r).User, r.URL.Query().Get("search"), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"messages": items, "count": len(items)})
+}
+
+func (s *Server) deleteAdminMessage(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.RemoveAdminGroupMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listAdminMedia(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	items, err := s.media.ListAdmin(r.Context(), mustPrincipal(r).User, r.URL.Query().Get("search"), r.URL.Query().Get("type"), r.URL.Query().Get("status"), limit)
+	if err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"media": items, "count": len(items)})
 }
 
 func (s *Server) listPosts(w http.ResponseWriter, r *http.Request) {
@@ -803,7 +879,7 @@ func writeMediaError(w http.ResponseWriter, err error) {
 	case errors.Is(err, mediastore.ErrStorageUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "远端存储暂时不可用，请稍后重试")
 	case errors.Is(err, mediastore.ErrInvalid):
-		writeError(w, http.StatusBadRequest, "仅支持有效的图片或视频文件")
+		writeError(w, http.StatusBadRequest, "仅支持有效的图片、视频或音频文件")
 	default:
 		writeError(w, http.StatusInternalServerError, "媒体操作失败")
 	}

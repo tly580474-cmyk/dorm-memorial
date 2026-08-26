@@ -1,4 +1,4 @@
-import type { ChatMessage, Comment, Conversation, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, MessagePage, NotificationPage, Post, PostPage, Session, User } from './types'
+import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, MessagePage, NotificationPage, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -38,7 +38,8 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<MessagePage>(`/api/messages/conversations/${encodeURIComponent(conversationID)}${params.size ? `?${params}` : ''}`)
   },
-  sendMessage: (conversationID: string, body: string) => request<{ message: ChatMessage }>(`/api/messages/conversations/${encodeURIComponent(conversationID)}`, { method: 'POST', body: JSON.stringify({ body }) }),
+  sendMessage: (conversationID: string, body: string, mediaIDs: string[] = []) => request<{ message: ChatMessage }>(`/api/messages/conversations/${encodeURIComponent(conversationID)}`, { method: 'POST', body: JSON.stringify({ body, media_ids: mediaIDs }) }),
+  message: (id: string) => request<{ message: ChatMessage }>(`/api/messages/items/${encodeURIComponent(id)}`),
   markConversationRead: (conversationID: string) => request<void>(`/api/messages/conversations/${encodeURIComponent(conversationID)}/read`, { method: 'POST', body: '{}' }),
   recallMessage: (id: string) => request<void>(`/api/messages/items/${encodeURIComponent(id)}/recall`, { method: 'POST', body: '{}' }),
   notifications: (query: { cursor?: string; limit?: number } = {}) => {
@@ -48,9 +49,28 @@ export const api = {
   },
   markNotificationRead: (id: string) => request<void>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }),
   markAllNotificationsRead: () => request<void>('/api/notifications/read-all', { method: 'POST', body: '{}' }),
+  clearNotifications: () => request<void>('/api/notifications', { method: 'DELETE', body: '{}' }),
   revokeSession: (id: string) => request<void>(`/api/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   createInvites: (body: { max_uses: number; expires_in_hours: number; count: number }) =>
     request<{ invites: Array<{ code: string; expires_at: string; max_uses: number }>; count: number }>('/api/admin/invites', { method: 'POST', body: JSON.stringify(body) }),
+  adminUsers: (query: { search?: string; role?: string; status?: string } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value) params.set(key, value) })
+    return request<{ users: AdminUser[]; count: number }>(`/api/admin/users${params.size ? `?${params}` : ''}`)
+  },
+  updateAdminUser: (id: string, body: { role: 'admin' | 'member'; status: 'active' | 'disabled' }) =>
+    request<{ user: AdminUser }>(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  adminMessages: (query: { search?: string; status?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<{ messages: AdminMessage[]; count: number }>(`/api/admin/messages${params.size ? `?${params}` : ''}`)
+  },
+  removeAdminMessage: (id: string) => request<void>(`/api/admin/messages/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  adminMedia: (query: { search?: string; type?: string; status?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<{ media: AdminMedia[]; count: number }>(`/api/admin/media${params.size ? `?${params}` : ''}`)
+  },
   posts: (query: { scope?: 'feed' | 'mine' | 'pending'; status?: string; cursor?: string; limit?: number } = {}) => {
     const params = new URLSearchParams()
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })

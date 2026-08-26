@@ -16,8 +16,65 @@ import (
 	"dorm-memorial/internal/config"
 	"dorm-memorial/internal/database"
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/messaging"
 	"dorm-memorial/internal/storage"
 )
+
+func TestAdminManagementEndpoints(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "admin-management.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	code, _, _ := identities.CreateInvite(ctx, admin, 1, time.Hour, "127.0.0.1")
+	member, err := identities.Register(ctx, identity.RegisterInput{InviteCode: code, Username: "managed", Email: "managed@example.test", Password: "member-password", Nickname: "受管成员"}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := messaging.NewStore(db)
+	conversations, err := messages.ListConversations(ctx, member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupMessage, err := messages.SendMessage(ctx, member, conversations[0].ID, "需要管理的群聊", nil, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES('ffffffffffffffffffffffffffffffff', ?, '/test/admin.png', '管理图片.png', 'image', 'image/png', 64, 'hash', 'ready', ?, ?)`, member.ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	server := httptest.NewServer(New(cfg, db, identities, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer server.Close()
+	adminCookie := loginTestUser(t, server.URL, "admin", "correct-horse-battery")
+	memberCookie := loginTestUser(t, server.URL, "managed", "member-password")
+
+	for _, path := range []string{"/api/admin/users", "/api/admin/messages", "/api/admin/media"} {
+		response := doJSON(t, server.URL+path, http.MethodGet, nil, adminCookie)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, response.StatusCode, readBody(response))
+		}
+		response.Body.Close()
+		forbidden := doJSON(t, server.URL+path, http.MethodGet, nil, memberCookie)
+		if forbidden.StatusCode != http.StatusForbidden {
+			t.Fatalf("member GET %s status=%d body=%s", path, forbidden.StatusCode, readBody(forbidden))
+		}
+		forbidden.Body.Close()
+	}
+	remove := doJSON(t, server.URL+"/api/admin/messages/"+groupMessage.ID, http.MethodDelete, nil, adminCookie)
+	if remove.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove group message status=%d body=%s", remove.StatusCode, readBody(remove))
+	}
+	remove.Body.Close()
+}
 
 func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	ctx := context.Background()
@@ -249,7 +306,12 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	if sendDirect.StatusCode != http.StatusCreated {
 		t.Fatalf("send direct status=%d body=%s", sendDirect.StatusCode, readBody(sendDirect))
 	}
-	sendDirect.Body.Close()
+	var sendDirectBody struct {
+		Message struct {
+			ID string `json:"id"`
+		} `json:"message"`
+	}
+	decodeResponse(t, sendDirect, &sendDirectBody)
 	observerMessages := doJSON(t, server.URL+"/api/messages/conversations/"+directBody.Conversation.ID, http.MethodGet, nil, observerCookie)
 	if observerMessages.StatusCode != http.StatusOK {
 		t.Fatalf("observer messages status=%d body=%s", observerMessages.StatusCode, readBody(observerMessages))
@@ -273,17 +335,48 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("observer notifications status=%d body=%s", observerNotifications.StatusCode, readBody(observerNotifications))
 	}
 	var observerNotificationsBody struct {
-		UnreadCount int `json:"unread_count"`
+		UnreadCount   int `json:"unread_count"`
+		Notifications []struct {
+			TargetType string `json:"target_type"`
+			TargetID   string `json:"target_id"`
+		} `json:"notifications"`
 	}
 	decodeResponse(t, observerNotifications, &observerNotificationsBody)
 	if observerNotificationsBody.UnreadCount == 0 {
 		t.Fatal("observer direct notification was not unread")
 	}
+	if len(observerNotificationsBody.Notifications) == 0 || observerNotificationsBody.Notifications[0].TargetType != "message" || observerNotificationsBody.Notifications[0].TargetID != sendDirectBody.Message.ID {
+		t.Fatalf("observer notification target=%+v", observerNotificationsBody.Notifications)
+	}
+	locatedMessage := doJSON(t, server.URL+"/api/messages/items/"+sendDirectBody.Message.ID, http.MethodGet, nil, observerCookie)
+	if locatedMessage.StatusCode != http.StatusOK {
+		t.Fatalf("locate message status=%d body=%s", locatedMessage.StatusCode, readBody(locatedMessage))
+	}
+	locatedMessage.Body.Close()
+	adminLocateMessage := doJSON(t, server.URL+"/api/messages/items/"+sendDirectBody.Message.ID, http.MethodGet, nil, adminCookie)
+	if adminLocateMessage.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin locate private message status=%d body=%s", adminLocateMessage.StatusCode, readBody(adminLocateMessage))
+	}
+	adminLocateMessage.Body.Close()
 	readNotifications := doJSON(t, server.URL+"/api/notifications/read-all", http.MethodPost, map[string]any{}, observerCookie)
 	if readNotifications.StatusCode != http.StatusNoContent {
 		t.Fatalf("read notifications status=%d body=%s", readNotifications.StatusCode, readBody(readNotifications))
 	}
 	readNotifications.Body.Close()
+	clearNotifications := doJSON(t, server.URL+"/api/notifications", http.MethodDelete, nil, observerCookie)
+	if clearNotifications.StatusCode != http.StatusNoContent {
+		t.Fatalf("clear notifications status=%d body=%s", clearNotifications.StatusCode, readBody(clearNotifications))
+	}
+	clearNotifications.Body.Close()
+	afterClearNotifications := doJSON(t, server.URL+"/api/notifications", http.MethodGet, nil, observerCookie)
+	var afterClearBody struct {
+		Notifications []json.RawMessage `json:"notifications"`
+		UnreadCount   int               `json:"unread_count"`
+	}
+	decodeResponse(t, afterClearNotifications, &afterClearBody)
+	if len(afterClearBody.Notifications) != 0 || afterClearBody.UnreadCount != 0 {
+		t.Fatalf("notifications after clear=%+v", afterClearBody)
+	}
 	observerDelete := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID, http.MethodDelete, nil, observerCookie)
 	if observerDelete.StatusCode != http.StatusNotFound {
 		t.Fatalf("non-author delete published post status=%d body=%s", observerDelete.StatusCode, readBody(observerDelete))

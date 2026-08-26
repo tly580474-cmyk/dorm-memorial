@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
+import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 
 type EditorMedia = {
   key: string
@@ -10,7 +10,7 @@ type EditorMedia = {
   media?: Media
   name: string
   size: number
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   status: 'pending' | 'uploading' | 'ready' | 'error'
   progress: number
   error: string
@@ -61,6 +61,16 @@ const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
 const inviteCopyStatus = ref<'idle' | 'copied' | 'error'>('idle')
 const inviteBusy = ref(false)
 const managementMessage = ref('')
+const managementTab = ref<'invites' | 'users' | 'messages' | 'media'>('users')
+const adminUsers = ref<AdminUser[]>([])
+const adminMessages = ref<AdminMessage[]>([])
+const adminMedia = ref<AdminMedia[]>([])
+const adminLoading = ref(false)
+const adminActionID = ref('')
+const adminFeedback = ref('')
+const adminUserFilters = reactive({ search: '', role: '', status: '' })
+const adminMessageFilters = reactive({ search: '', status: 'sent' })
+const adminMediaFilters = reactive({ search: '', type: '', status: '' })
 const profile = reactive({ nickname: '', bio: '', bed_no: '', memorial_note: '' })
 const feedPosts = ref<Post[]>([])
 const myPosts = ref<Post[]>([])
@@ -109,20 +119,28 @@ const notificationsOpen = ref(false)
 const notifications = ref<NotificationItem[]>([])
 const notificationUnread = ref(0)
 const notificationLoading = ref(false)
+const notificationClearing = ref(false)
+const notificationFeedback = ref('')
+const notificationPanel = ref<HTMLElement | null>(null)
+const notificationTrigger = ref<HTMLElement | null>(null)
 const conversations = ref<Conversation[]>([])
 const selectedConversationID = ref('')
 const chatMessages = ref<ChatMessage[]>([])
 const messageMembers = ref<Member[]>([])
 const messageBody = ref('')
+const messageMedia = ref<EditorMedia[]>([])
+const messageMediaInput = ref<HTMLInputElement | null>(null)
 const messageLoading = ref(false)
 const messageBusy = ref(false)
 const messageError = ref('')
 const messageNextCursor = ref('')
 const messageThreadOpen = ref(false)
 const messageScroll = ref<HTMLElement | null>(null)
+const messageMediaUploading = computed(() => messageMedia.value.some((item) => item.status === 'uploading'))
 let activityTimer = 0
 let messageRequest = 0
 let messageLoadingRequest = 0
+let messageHighlightTimer = 0
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
 const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
 const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management'>('home')
@@ -159,6 +177,7 @@ async function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook' | 'messa
   mobileMenuOpen.value = false
   if (view === 'guestbook') await loadGuestbook(true)
   if (view === 'messages') await loadMessageCenter()
+  if (view === 'management') await loadManagementSection()
   await nextTick(() => document.querySelector<HTMLElement>('#main-content h1')?.focus())
 }
 
@@ -167,6 +186,8 @@ function timelineDate(post: Post) {
 }
 
 onMounted(async () => {
+  document.addEventListener('pointerdown', handleNotificationOutsidePointer)
+  document.addEventListener('keydown', handleNotificationKeydown)
   try {
     applyUser((await api.me()).user)
     await loadContent()
@@ -178,7 +199,12 @@ onMounted(async () => {
   }
 })
 
-onBeforeUnmount(() => stopActivityPolling())
+onBeforeUnmount(() => {
+  stopActivityPolling()
+  document.removeEventListener('pointerdown', handleNotificationOutsidePointer)
+  document.removeEventListener('keydown', handleNotificationKeydown)
+  if (messageHighlightTimer) window.clearTimeout(messageHighlightTimer)
+})
 
 function applyUser(next: User) {
   user.value = next
@@ -599,6 +625,88 @@ async function createInvite() {
   }
 }
 
+async function selectManagementTab(tab: typeof managementTab.value) {
+  managementTab.value = tab
+  adminFeedback.value = ''
+  await loadManagementSection()
+}
+
+async function loadManagementSection() {
+  if (user.value?.role !== 'admin' || managementTab.value === 'invites') return
+  adminLoading.value = true
+  adminFeedback.value = ''
+  try {
+    if (managementTab.value === 'users') {
+      adminUsers.value = (await api.adminUsers(adminUserFilters)).users
+    } else if (managementTab.value === 'messages') {
+      adminMessages.value = (await api.adminMessages({ ...adminMessageFilters, limit: 100 })).messages
+    } else {
+      adminMedia.value = (await api.adminMedia({ ...adminMediaFilters, limit: 100 })).media
+    }
+  } catch (error) {
+    adminFeedback.value = error instanceof Error ? error.message : '管理数据读取失败'
+  } finally {
+    adminLoading.value = false
+  }
+}
+
+async function saveAdminUser(item: AdminUser) {
+  if (item.id === user.value?.id) return
+  const action = item.status === 'disabled' ? '停用后该成员会立即退出所有设备。' : ''
+  if (!window.confirm(`确定将 ${item.nickname} 设置为“${item.role === 'admin' ? '管理员' : '成员'} / ${item.status === 'active' ? '启用' : '停用'}”吗？${action}`)) {
+    await loadManagementSection()
+    return
+  }
+  adminActionID.value = item.id
+  adminFeedback.value = ''
+  try {
+    const updated = (await api.updateAdminUser(item.id, { role: item.role, status: item.status })).user
+    adminUsers.value = adminUsers.value.map((candidate) => candidate.id === updated.id ? updated : candidate)
+    adminFeedback.value = `已更新 ${updated.nickname} 的账号权限`
+  } catch (error) {
+    adminFeedback.value = error instanceof Error ? error.message : '用户更新失败'
+    await loadManagementSection()
+  } finally {
+    adminActionID.value = ''
+  }
+}
+
+async function removeAdminMessage(item: AdminMessage) {
+  if (!window.confirm(`确定从宿舍群聊中移除 ${item.sender.nickname} 的这条消息吗？成员界面将显示为已撤回。`)) return
+  adminActionID.value = item.id
+  adminFeedback.value = ''
+  try {
+    await api.removeAdminMessage(item.id)
+    item.status = 'recalled'
+    item.body = ''
+    adminFeedback.value = '群聊消息已移除'
+  } catch (error) {
+    adminFeedback.value = error instanceof Error ? error.message : '消息移除失败'
+  } finally {
+    adminActionID.value = ''
+  }
+}
+
+async function removeAdminMedia(item: AdminMedia) {
+  if (item.reference_count > 0) return
+  if (!window.confirm(`确定永久删除“${item.original_filename}”吗？远端存储中的文件也会被删除，且无法恢复。`)) return
+  adminActionID.value = item.id
+  adminFeedback.value = ''
+  try {
+    await api.deleteMedia(item.id)
+    adminMedia.value = adminMedia.value.filter((candidate) => candidate.id !== item.id)
+    adminFeedback.value = '未被引用的媒体已删除'
+  } catch (error) {
+    adminFeedback.value = error instanceof Error ? error.message : '媒体删除失败'
+  } finally {
+    adminActionID.value = ''
+  }
+}
+
+function adminMediaTypeLabel(type: AdminMedia['media_type']) {
+  return { image: '图片', video: '视频', audio: '音频' }[type]
+}
+
 async function loadContent() {
   if (!user.value) return
   contentLoading.value = true
@@ -767,6 +875,28 @@ async function readVideoMetadata(item: EditorMedia) {
   }
 }
 
+async function readAudioMetadata(item: EditorMedia) {
+  if (!item.file) return
+  const objectURL = URL.createObjectURL(item.file)
+  try {
+    await new Promise<void>((resolve) => {
+      const audio = document.createElement('audio')
+      const finish = () => resolve()
+      const timeout = window.setTimeout(finish, 5000)
+      audio.preload = 'metadata'
+      audio.onloadedmetadata = () => {
+        window.clearTimeout(timeout)
+        if (Number.isFinite(audio.duration)) item.duration_ms = Math.round(audio.duration * 1000)
+        finish()
+      }
+      audio.onerror = () => { window.clearTimeout(timeout); finish() }
+      audio.src = objectURL
+    })
+  } finally {
+    URL.revokeObjectURL(objectURL)
+  }
+}
+
 async function removeEditorMedia(item: EditorMedia) {
   if (item.status === 'uploading') return
   editorMedia.value = editorMedia.value.filter((candidate) => candidate.key !== item.key)
@@ -816,6 +946,17 @@ function markMediaLoadError(id: string) {
 
 function retryMediaLoad(id: string) {
   mediaLoadErrors.value.delete(id)
+}
+
+function messagePreview(item: ChatMessage | null) {
+  if (!item) return '还没有消息'
+  if (item.status === 'recalled') return '一条消息已撤回'
+  if (item.body) return item.body
+  const attachments = item.attachments ?? []
+  if (attachments.some((attachment) => attachment.media_type === 'image')) return '[图片]'
+  if (attachments.some((attachment) => attachment.media_type === 'video')) return '[视频]'
+  if (attachments.some((attachment) => attachment.media_type === 'audio')) return '[音频]'
+  return '还没有消息'
 }
 
 async function moderate(post: Post, action: 'approve' | 'hide') {
@@ -872,7 +1013,24 @@ async function loadNotifications(quiet = false) {
 
 async function toggleNotifications() {
   notificationsOpen.value = !notificationsOpen.value
+  notificationFeedback.value = ''
   if (notificationsOpen.value) await loadNotifications()
+}
+
+function closeNotifications(restoreFocus = false) {
+  if (!notificationsOpen.value) return
+  notificationsOpen.value = false
+  if (restoreFocus) nextTick(() => notificationTrigger.value?.focus())
+}
+
+function handleNotificationOutsidePointer(event: PointerEvent) {
+  if (!notificationsOpen.value || !(event.target instanceof Node)) return
+  if (notificationPanel.value?.contains(event.target) || notificationTrigger.value?.contains(event.target)) return
+  closeNotifications()
+}
+
+function handleNotificationKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape' && notificationsOpen.value) closeNotifications(true)
 }
 
 async function markAllNotificationsRead() {
@@ -881,14 +1039,60 @@ async function markAllNotificationsRead() {
   notificationUnread.value = 0
 }
 
+async function clearAllNotifications() {
+  if (notifications.value.length === 0 || notificationClearing.value) return
+  if (!window.confirm('确定清空全部通知吗？清空后无法恢复。')) return
+  notificationClearing.value = true
+  notificationFeedback.value = ''
+  try {
+    await api.clearNotifications()
+    notifications.value = []
+    notificationUnread.value = 0
+    notificationFeedback.value = '通知已清空'
+  } catch (error) {
+    notificationFeedback.value = error instanceof Error ? error.message : '清空通知失败'
+  } finally {
+    notificationClearing.value = false
+  }
+}
+
+async function revealMessage(message: ChatMessage) {
+  await setView('messages')
+  if (selectedConversationID.value !== message.conversation_id) await openConversation(message.conversation_id)
+  else messageThreadOpen.value = true
+  if (!chatMessages.value.some((candidate) => candidate.id === message.id)) {
+    chatMessages.value = [...chatMessages.value, message].sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
+  }
+  await nextTick()
+  const messageIndex = chatMessages.value.findIndex((candidate) => candidate.id === message.id)
+  const element = messageScroll.value?.querySelectorAll<HTMLElement>('.chat-message').item(messageIndex)
+  element?.classList.add('notification-target')
+  element?.setAttribute('tabindex', '-1')
+  element?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  element?.focus({ preventScroll: true })
+  if (messageHighlightTimer) window.clearTimeout(messageHighlightTimer)
+  messageHighlightTimer = window.setTimeout(() => {
+    element?.classList.remove('notification-target')
+    element?.removeAttribute('tabindex')
+  }, 2600)
+}
+
 async function openNotification(item: NotificationItem) {
   if (!item.read_at) {
     await api.markNotificationRead(item.id).catch(() => undefined)
     item.read_at = new Date().toISOString()
     notificationUnread.value = Math.max(0, notificationUnread.value - 1)
   }
-  notificationsOpen.value = false
-  if (item.target_type === 'conversation') {
+  closeNotifications()
+  if (item.target_type === 'message') {
+    try {
+      const response = await api.message(item.target_id)
+      await revealMessage(response.message)
+    } catch (error) {
+      await setView('messages')
+      messageError.value = error instanceof Error ? error.message : '无法定位这条消息'
+    }
+  } else if (item.target_type === 'conversation') {
     await setView('messages')
     await openConversation(item.target_id)
   } else if (item.target_type === 'post') {
@@ -936,7 +1140,58 @@ async function startDirectConversation(member: Member) {
   }
 }
 
+function chooseMessageMedia() {
+  messageMediaInput.value?.click()
+}
+
+function handleMessageMediaInput(event: Event) {
+  const input = event.target as HTMLInputElement
+  addMessageMediaFiles(input.files ? [...input.files] : [])
+  input.value = ''
+}
+
+function addMessageMediaFiles(files: File[]) {
+  messageError.value = ''
+  const available = 6 - messageMedia.value.length
+  if (files.length > available) messageError.value = `每条消息最多添加 6 个附件，本次只加入前 ${Math.max(available, 0)} 个。`
+  for (const file of files.slice(0, Math.max(available, 0))) {
+    const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : file.type.startsWith('audio/') ? 'audio' : null
+    if (!kind) {
+      messageError.value = `${file.name} 不是支持的图片、视频或音频格式。`
+      continue
+    }
+    if (file.size <= 0 || file.size > 8 * 1024 ** 3) {
+      messageError.value = `${file.name} 为空或超过 8 GiB。`
+      continue
+    }
+    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    messageMedia.value.push(item)
+    if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
+    if (kind === 'audio') item.metadataPromise = readAudioMetadata(item)
+  }
+}
+
+async function removeMessageMedia(item: EditorMedia) {
+  if (item.status === 'uploading') return
+  messageMedia.value = messageMedia.value.filter((candidate) => candidate.key !== item.key)
+  if (!item.media) return
+  try {
+    await api.deleteMedia(item.media.id)
+    mediaUsage.value = (await api.mediaUsage()).usage
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '附件已移除，但远端清理失败'
+  }
+}
+
+async function discardMessageMedia() {
+  const uploaded = messageMedia.value.flatMap((item) => item.media ? [item.media.id] : [])
+  messageMedia.value = []
+  if (uploaded.length) await Promise.allSettled(uploaded.map((id) => api.deleteMedia(id)))
+}
+
 async function openConversation(id: string) {
+  if (messageBusy.value && selectedConversationID.value !== id) return
+  if (selectedConversationID.value && selectedConversationID.value !== id) await discardMessageMedia()
   selectedConversationID.value = id
   messageThreadOpen.value = true
   messageBody.value = ''
@@ -972,13 +1227,18 @@ async function loadMessages(reset = true, quiet = false) {
 }
 
 async function sendChatMessage() {
-  if (!selectedConversationID.value || !messageBody.value.trim() || messageBusy.value) return
+  if (!selectedConversationID.value || (!messageBody.value.trim() && messageMedia.value.length === 0) || messageBusy.value) return
+  const conversationID = selectedConversationID.value
   messageBusy.value = true
   messageError.value = ''
   try {
-    const response = await api.sendMessage(selectedConversationID.value, messageBody.value)
+    for (const item of messageMedia.value) {
+      if (item.status !== 'ready') await uploadEditorMedia(item)
+    }
+    const response = await api.sendMessage(conversationID, messageBody.value, messageMedia.value.flatMap((item) => item.media ? [item.media.id] : []))
     chatMessages.value.push(response.message)
     messageBody.value = ''
+    messageMedia.value = []
     await loadConversations(true)
     await nextTick(() => { if (messageScroll.value) messageScroll.value.scrollTop = messageScroll.value.scrollHeight })
   } catch (error) {
@@ -996,7 +1256,7 @@ async function recallChatMessage(item: ChatMessage) {
   if (!window.confirm('确定撤回这条消息吗？')) return
   try {
     await api.recallMessage(item.id)
-    chatMessages.value = chatMessages.value.map((candidate) => candidate.id === item.id ? { ...candidate, body: '', status: 'recalled', recalled_at: new Date().toISOString() } : candidate)
+    chatMessages.value = chatMessages.value.map((candidate) => candidate.id === item.id ? { ...candidate, body: '', attachments: [], status: 'recalled', recalled_at: new Date().toISOString() } : candidate)
   } catch (error) {
     messageError.value = error instanceof Error ? error.message : '消息撤回失败'
   }
@@ -1079,7 +1339,15 @@ async function copyInvites() {
     <header class="topbar">
       <button class="icon-button mobile-only" type="button" aria-label="打开菜单" @click="mobileMenuOpen = true"><Menu /></button>
       <a class="brand" href="#"><BookHeart :size="25" aria-hidden="true" /><span>妙妙小屋</span></a>
-      <div class="top-actions"><button class="icon-button notification-trigger" type="button" aria-label="查看通知" :aria-expanded="notificationsOpen" aria-controls="notification-panel" @click="toggleNotifications"><Bell /><span v-if="notificationUnread" class="notification-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span></button><section v-if="notificationsOpen" id="notification-panel" class="notification-panel" aria-label="站内通知"><header><div><strong>通知</strong><span>{{ notificationUnread }} 条未读</span></div><button v-if="notificationUnread" type="button" @click="markAllNotificationsRead"><CheckCheck :size="17" />全部已读</button></header><div v-if="notificationLoading" class="notification-empty" role="status">正在读取通知…</div><div v-else-if="notifications.length === 0" class="notification-empty">暂时没有新通知</div><button v-for="item in notifications" v-else :key="item.id" class="notification-row" :class="{ unread: !item.read_at }" type="button" @click="openNotification(item)"><span class="mini-avatar"><img v-if="item.actor && avatarVisible(item.actor.avatar_path)" :src="avatarURL(item.actor.avatar_path)" alt="" @error="item.actor && markAvatarBroken(item.actor.avatar_path)" /><span v-else>{{ item.actor?.nickname.slice(0, 1) || '妙' }}</span></span><span><strong>{{ item.title }}</strong><small v-if="item.body">{{ item.body }}</small><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></span></button></section><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
+      <div class="top-actions">
+        <button ref="notificationTrigger" class="icon-button notification-trigger" type="button" aria-label="查看通知" :aria-expanded="notificationsOpen" aria-controls="notification-panel" @click="toggleNotifications"><Bell /><span v-if="notificationUnread" class="notification-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span></button>
+        <section v-if="notificationsOpen" id="notification-panel" ref="notificationPanel" class="notification-panel" aria-label="站内通知">
+          <header><div><strong>通知</strong><span>{{ notificationUnread }} 条未读</span></div><div class="notification-actions"><button v-if="notificationUnread" type="button" @click="markAllNotificationsRead"><CheckCheck :size="17" />全部已读</button><button v-if="notifications.length" class="clear-notifications" type="button" :disabled="notificationClearing" @click="clearAllNotifications"><Trash2 :size="17" />{{ notificationClearing ? '清空中…' : '清空' }}</button></div></header>
+          <p v-if="notificationFeedback" class="notification-feedback" role="status">{{ notificationFeedback }}</p>
+          <div v-if="notificationLoading" class="notification-empty" role="status">正在读取通知…</div><div v-else-if="notifications.length === 0" class="notification-empty">暂时没有新通知</div><button v-for="item in notifications" v-else :key="item.id" class="notification-row" :class="{ unread: !item.read_at }" type="button" @click="openNotification(item)"><span class="mini-avatar"><img v-if="item.actor && avatarVisible(item.actor.avatar_path)" :src="avatarURL(item.actor.avatar_path)" alt="" @error="item.actor && markAvatarBroken(item.actor.avatar_path)" /><span v-else>{{ item.actor?.nickname.slice(0, 1) || '妙' }}</span></span><span><strong>{{ item.title }}</strong><small v-if="item.body">{{ item.body }}</small><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></span></button>
+        </section>
+        <button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button>
+      </div>
     </header>
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
@@ -1089,7 +1357,7 @@ async function copyInvites() {
     </aside>
     <button v-if="mobileMenuOpen" class="scrim" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"></button>
 
-    <main id="main-content" class="main-content">
+    <main id="main-content" class="main-content" :class="{ 'messages-active': activeView === 'messages', 'message-thread-active': activeView === 'messages' && messageThreadOpen }">
       <template v-if="activeView === 'home'">
       <header class="page-heading"><div><p class="eyebrow">{{ greeting }}，{{ user.nickname }}</p><h1 tabindex="-1">最近的回忆</h1><p>记录一句话，也可以先存进草稿箱慢慢写。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />分享回忆</button></header>
 
@@ -1151,27 +1419,91 @@ async function copyInvites() {
         <div class="message-layout" :class="{ 'thread-open': messageThreadOpen }">
           <aside class="conversation-panel" aria-label="会话列表">
             <section class="direct-starters" aria-labelledby="direct-starters-title"><header><strong id="direct-starters-title">发起私信</strong><MailPlus :size="18" /></header><div><button v-for="member in messageMembers" :key="member.id" type="button" :title="`给${member.nickname}发私信`" @click="startDirectConversation(member)"><span class="mini-avatar"><img v-if="avatarVisible(member.avatar_path)" :src="avatarURL(member.avatar_path)" alt="" @error="markAvatarBroken(member.avatar_path)" /><span v-else>{{ member.nickname.slice(0, 1) }}</span></span><span>{{ member.nickname }}</span></button></div></section>
-            <nav class="conversation-list" aria-label="已有会话"><button v-for="conversation in conversations" :key="conversation.id" type="button" :class="{ active: selectedConversationID === conversation.id }" :aria-current="selectedConversationID === conversation.id ? 'true' : undefined" @click="openConversation(conversation.id)"><span class="conversation-avatar"><span v-if="conversation.type === 'group'"><Users :size="21" /></span><template v-else><img v-if="conversation.peer && avatarVisible(conversation.peer.avatar_path)" :src="avatarURL(conversation.peer.avatar_path)" alt="" @error="conversation.peer && markAvatarBroken(conversation.peer.avatar_path)" /><span v-else>{{ conversation.peer?.nickname.slice(0, 1) }}</span></template></span><span class="conversation-copy"><strong>{{ conversation.title }}</strong><small>{{ conversation.last_message?.status === 'recalled' ? '一条消息已撤回' : conversation.last_message?.body || '还没有消息' }}</small></span><span v-if="conversation.unread_count" class="conversation-unread">{{ conversation.unread_count > 99 ? '99+' : conversation.unread_count }}</span></button></nav>
+            <nav class="conversation-list" aria-label="已有会话"><button v-for="conversation in conversations" :key="conversation.id" type="button" :disabled="messageBusy && selectedConversationID !== conversation.id" :class="{ active: selectedConversationID === conversation.id }" :aria-current="selectedConversationID === conversation.id ? 'true' : undefined" @click="openConversation(conversation.id)"><span class="conversation-avatar"><span v-if="conversation.type === 'group'"><Users :size="21" /></span><template v-else><img v-if="conversation.peer && avatarVisible(conversation.peer.avatar_path)" :src="avatarURL(conversation.peer.avatar_path)" alt="" @error="conversation.peer && markAvatarBroken(conversation.peer.avatar_path)" /><span v-else>{{ conversation.peer?.nickname.slice(0, 1) }}</span></template></span><span class="conversation-copy"><strong>{{ conversation.title }}</strong><small>{{ messagePreview(conversation.last_message) }}</small></span><span v-if="conversation.unread_count" class="conversation-unread">{{ conversation.unread_count > 99 ? '99+' : conversation.unread_count }}</span></button></nav>
           </aside>
 
           <section v-if="selectedConversation" class="message-thread" :aria-labelledby="`conversation-${selectedConversation.id}`">
             <header><button class="icon-button thread-back" type="button" aria-label="返回会话列表" @click="closeMobileThread"><ChevronLeft /></button><span class="conversation-avatar"><Users v-if="selectedConversation.type === 'group'" :size="21" /><template v-else><img v-if="selectedConversation.peer && avatarVisible(selectedConversation.peer.avatar_path)" :src="avatarURL(selectedConversation.peer.avatar_path)" alt="" @error="selectedConversation.peer && markAvatarBroken(selectedConversation.peer.avatar_path)" /><span v-else>{{ selectedConversation.peer?.nickname.slice(0, 1) }}</span></template></span><div><strong :id="`conversation-${selectedConversation.id}`">{{ selectedConversation.title }}</strong><small>{{ selectedConversation.type === 'group' ? '所有室友可见' : '仅会话双方可见' }}</small></div></header>
-            <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><span v-if="item.sender.id !== user.id" class="mini-avatar"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></span><div><header><strong v-if="item.sender.id !== user.id">{{ item.sender.nickname }}</strong><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><p>{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
-            <form class="message-composer" @submit.prevent="sendChatMessage"><label class="visually-hidden" for="message-body">输入消息</label><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div><small>{{ messageBody.length }} / 4000</small><button class="primary-button compact" type="submit" :disabled="messageBusy || !messageBody.trim()"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
+            <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><span v-if="item.sender.id !== user.id" class="mini-avatar"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></span><div><header><strong v-if="item.sender.id !== user.id">{{ item.sender.nickname }}</strong><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><div v-if="item.status === 'sent' && (item.attachments ?? []).length" class="chat-attachments"><figure v-for="attachment in (item.attachments ?? [])" :key="attachment.id" class="chat-attachment" :class="attachment.media_type"><div v-if="mediaLoadErrors.has(attachment.id)" class="message-media-unavailable"><AlertCircle :size="21" /><span>附件暂时无法读取</span><button type="button" @click="retryMediaLoad(attachment.id)"><RotateCcw :size="15" />重试</button></div><a v-else-if="attachment.media_type === 'image'" :href="mediaContentURL(attachment.id)" target="_blank" rel="noopener"><img :src="mediaContentURL(attachment.id, attachment.has_preview)" :alt="attachment.original_filename" loading="lazy" @error="markMediaLoadError(attachment.id)" /></a><video v-else-if="attachment.media_type === 'video'" :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></video><audio v-else :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></audio><figcaption><span :title="attachment.original_filename">{{ attachment.original_filename }}</span><small>{{ formatBytes(attachment.size_bytes) }}</small></figcaption></figure></div><p v-if="item.status === 'recalled' || item.body">{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
+            <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" accept="image/*,video/*,audio/*" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">上传中 {{ item.progress }}%</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
           </section>
           <section v-else class="message-welcome"><MessageCircle :size="38" /><h2>选择一个会话</h2><p>可以进入宿舍群聊，或从左侧选择一位室友开始私信。</p></section>
         </div>
       </template>
 
       <template v-else-if="activeView === 'management'">
-        <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>集中处理成员邀请与内容管理操作。</p></div></header>
-        <section class="admin-card management-card" aria-labelledby="invite-manager-title">
+        <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>管理室友账号、公共群聊与远端媒体；私信始终只对会话双方可见。</p></div></header>
+        <nav class="management-tabs" aria-label="管理功能">
+          <button type="button" :class="{ active: managementTab === 'users' }" :aria-current="managementTab === 'users' ? 'page' : undefined" @click="selectManagementTab('users')"><Users :size="19" />用户 <span>{{ adminUsers.length || '' }}</span></button>
+          <button type="button" :class="{ active: managementTab === 'messages' }" :aria-current="managementTab === 'messages' ? 'page' : undefined" @click="selectManagementTab('messages')"><MessageCircle :size="19" />群聊消息 <span>{{ adminMessages.length || '' }}</span></button>
+          <button type="button" :class="{ active: managementTab === 'media' }" :aria-current="managementTab === 'media' ? 'page' : undefined" @click="selectManagementTab('media')"><Image :size="19" />媒体 <span>{{ adminMedia.length || '' }}</span></button>
+          <button type="button" :class="{ active: managementTab === 'invites' }" :aria-current="managementTab === 'invites' ? 'page' : undefined" @click="selectManagementTab('invites')"><MailPlus :size="19" />邀请码</button>
+        </nav>
+
+        <p v-if="adminFeedback" class="management-feedback" :class="{ error: adminFeedback.includes('失败') || adminFeedback.includes('无法') || adminFeedback.includes('必须') || adminFeedback.includes('不能') }" role="status" aria-live="polite">{{ adminFeedback }}</p>
+
+        <section v-if="managementTab === 'invites'" class="admin-card management-card" aria-labelledby="invite-manager-title">
           <div><p class="eyebrow">成员邀请</p><h2 id="invite-manager-title">批量邀请室友</h2><p class="muted">每个邀请码 7 天内有效，只能使用一次；一次最多生成 20 个。</p></div>
           <div class="invite-actions">
             <div class="invite-count"><label for="invite-count">生成数量</label><select id="invite-count" v-model.number="inviteCount"><option v-for="count in inviteCountOptions" :key="count" :value="count">{{ count }} 个</option></select></div>
             <textarea v-if="inviteCodes.length" class="invite-codes" :value="inviteCodes.join('\n')" readonly rows="5" aria-label="生成的邀请码" @focus="($event.target as HTMLTextAreaElement).select()"></textarea>
             <div class="invite-buttons"><button class="secondary-button" type="button" :disabled="inviteBusy" @click="createInvite">{{ inviteBusy ? '生成中…' : `生成 ${inviteCount} 个邀请码` }}</button><button v-if="inviteCodes.length" class="secondary-button" type="button" @click="copyInvites"><Check v-if="inviteCopyStatus === 'copied'" :size="18" /><Copy v-else :size="18" />{{ inviteCopyStatus === 'copied' ? '已复制' : inviteCopyStatus === 'error' ? '复制失败，请手动选择' : '复制全部' }}</button></div>
             <p class="copy-status" aria-live="polite">{{ inviteCopyStatus === 'copied' ? `已复制 ${inviteCodes.length} 个邀请码` : managementMessage }}</p>
+          </div>
+        </section>
+
+        <section v-else class="management-panel" :aria-labelledby="`management-${managementTab}-title`">
+          <header class="management-panel-head">
+            <div><p class="eyebrow">{{ managementTab === 'users' ? '账号与权限' : managementTab === 'messages' ? '仅公共群聊' : '存储与引用' }}</p><h2 :id="`management-${managementTab}-title`">{{ managementTab === 'users' ? '用户管理' : managementTab === 'messages' ? '消息管理' : '媒体管理' }}</h2><p>{{ managementTab === 'users' ? '调整角色与账号状态；停用账号会撤销其全部登录会话。' : managementTab === 'messages' ? '只显示 3048 宿舍群聊，管理员无法读取任何私信。' : '显示媒体元数据与引用状态；只有未被引用的文件可以永久删除。' }}</p></div>
+            <button class="icon-button" type="button" :disabled="adminLoading" aria-label="刷新当前管理数据" @click="loadManagementSection"><RefreshCw :size="20" /></button>
+          </header>
+
+          <form v-if="managementTab === 'users'" class="management-filters" role="search" @submit.prevent="loadManagementSection">
+            <label><span>搜索用户</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminUserFilters.search" type="search" placeholder="昵称、用户名或邮箱" /></span></label>
+            <label><span>角色</span><select v-model="adminUserFilters.role"><option value="">全部角色</option><option value="admin">管理员</option><option value="member">成员</option></select></label>
+            <label><span>状态</span><select v-model="adminUserFilters.status"><option value="">全部状态</option><option value="active">启用</option><option value="disabled">已停用</option></select></label>
+            <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
+          </form>
+          <form v-else-if="managementTab === 'messages'" class="management-filters compact-filters" role="search" @submit.prevent="loadManagementSection">
+            <label><span>搜索群聊</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminMessageFilters.search" type="search" placeholder="消息内容或发送者" /></span></label>
+            <label><span>状态</span><select v-model="adminMessageFilters.status"><option value="">全部状态</option><option value="sent">正常</option><option value="recalled">已撤回</option></select></label>
+            <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
+          </form>
+          <form v-else class="management-filters" role="search" @submit.prevent="loadManagementSection">
+            <label><span>搜索媒体</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminMediaFilters.search" type="search" placeholder="文件名或上传者" /></span></label>
+            <label><span>类型</span><select v-model="adminMediaFilters.type"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select></label>
+            <label><span>状态</span><select v-model="adminMediaFilters.status"><option value="">全部状态</option><option value="ready">可用</option><option value="uploading">上传中</option><option value="unavailable">不可用</option></select></label>
+            <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
+          </form>
+
+          <div v-if="adminLoading" class="management-empty" role="status"><span class="loader"></span><span>正在读取管理数据…</span></div>
+          <div v-else-if="managementTab === 'users'" class="management-list">
+            <p v-if="adminUsers.length === 0" class="management-empty">没有符合条件的用户。</p>
+            <article v-for="item in adminUsers" v-else :key="item.id" class="management-row user-management-row">
+              <span class="mini-avatar"><img v-if="avatarVisible(item.avatar_path)" :src="avatarURL(item.avatar_path)" alt="" @error="markAvatarBroken(item.avatar_path)" /><span v-else>{{ item.nickname.slice(0, 1) }}</span></span>
+              <div class="management-row-copy"><strong>{{ item.nickname }} <span v-if="item.id === user.id" class="self-badge">当前账号</span></strong><small>@{{ item.username }} · {{ item.email }}</small><small>加入于 {{ displayDate(item.created_at) }} · {{ item.active_session_count }} 个活跃会话</small></div>
+              <label><span>角色</span><select v-model="item.role" :disabled="item.id === user.id || adminActionID === item.id"><option value="admin">管理员</option><option value="member">成员</option></select></label>
+              <label><span>状态</span><select v-model="item.status" :disabled="item.id === user.id || adminActionID === item.id"><option value="active">启用</option><option value="disabled">停用</option></select></label>
+              <button class="secondary-button row-action" type="button" :disabled="item.id === user.id || adminActionID === item.id" @click="saveAdminUser(item)">{{ adminActionID === item.id ? '保存中…' : '保存' }}</button>
+            </article>
+          </div>
+          <div v-else-if="managementTab === 'messages'" class="management-list">
+            <p v-if="adminMessages.length === 0" class="management-empty">没有符合条件的群聊消息。</p>
+            <article v-for="item in adminMessages" v-else :key="item.id" class="management-row message-management-row">
+              <span class="mini-avatar"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></span>
+              <div class="management-row-copy"><strong>{{ item.sender.nickname }} <small>@{{ item.sender.username }}</small></strong><p>{{ item.status === 'recalled' ? '这条消息已撤回' : (item.body || `包含 ${item.attachment_count} 个附件`) }}</p><small>{{ item.conversation_title }} · {{ new Date(item.created_at).toLocaleString('zh-CN') }}<template v-if="item.attachment_count"> · {{ item.attachment_count }} 个附件</template></small></div>
+              <span class="status-badge" :data-status="item.status">{{ item.status === 'sent' ? '正常' : '已撤回' }}</span>
+              <button class="danger-action" type="button" :disabled="item.status !== 'sent' || adminActionID === item.id" @click="removeAdminMessage(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '移除中…' : '移除' }}</button>
+            </article>
+          </div>
+          <div v-else class="management-list">
+            <p v-if="adminMedia.length === 0" class="management-empty">没有符合条件的媒体。</p>
+            <article v-for="item in adminMedia" v-else :key="item.id" class="management-row media-management-row">
+              <span class="media-admin-icon"><Image v-if="item.media_type === 'image'" :size="21" /><Film v-else-if="item.media_type === 'video'" :size="21" /><Music v-else :size="21" /></span>
+              <div class="management-row-copy"><strong :title="item.original_filename">{{ item.original_filename }}</strong><small>{{ adminMediaTypeLabel(item.media_type) }} · {{ formatBytes(item.size_bytes) }} · {{ item.owner_nickname }} (@{{ item.owner_username }})</small><small>上传于 {{ new Date(item.created_at).toLocaleString('zh-CN') }} · {{ item.reference_count ? `被 ${item.reference_count} 处内容引用` : '未被引用' }}</small></div>
+              <span class="status-badge" :data-status="item.status">{{ item.status === 'ready' ? '可用' : item.status === 'uploading' ? '上传中' : '不可用' }}</span>
+              <button class="danger-action" type="button" :disabled="item.reference_count > 0 || adminActionID === item.id" :title="item.reference_count > 0 ? '请先移除引用该文件的内容' : '永久删除未被引用的媒体'" @click="removeAdminMedia(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '删除中…' : '删除' }}</button>
+            </article>
           </div>
         </section>
       </template>

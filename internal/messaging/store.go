@@ -28,14 +28,27 @@ type Person struct {
 	AvatarPath string `json:"avatar_path"`
 }
 
+type Attachment struct {
+	ID               string `json:"id"`
+	OriginalFilename string `json:"original_filename"`
+	MediaType        string `json:"media_type"`
+	MimeType         string `json:"mime_type"`
+	SizeBytes        int64  `json:"size_bytes"`
+	Width            *int   `json:"width"`
+	Height           *int   `json:"height"`
+	DurationMS       *int64 `json:"duration_ms"`
+	HasPreview       bool   `json:"has_preview"`
+}
+
 type Message struct {
-	ID             string     `json:"id"`
-	ConversationID string     `json:"conversation_id"`
-	Sender         Person     `json:"sender"`
-	Body           string     `json:"body"`
-	Status         string     `json:"status"`
-	CreatedAt      time.Time  `json:"created_at"`
-	RecalledAt     *time.Time `json:"recalled_at"`
+	ID             string       `json:"id"`
+	ConversationID string       `json:"conversation_id"`
+	Sender         Person       `json:"sender"`
+	Body           string       `json:"body"`
+	Status         string       `json:"status"`
+	CreatedAt      time.Time    `json:"created_at"`
+	RecalledAt     *time.Time   `json:"recalled_at"`
+	Attachments    []Attachment `json:"attachments"`
 }
 
 type Conversation struct {
@@ -50,6 +63,17 @@ type Conversation struct {
 type MessagePage struct {
 	Messages   []Message `json:"messages"`
 	NextCursor string    `json:"next_cursor,omitempty"`
+}
+
+type AdminMessage struct {
+	ID                string    `json:"id"`
+	ConversationID    string    `json:"conversation_id"`
+	ConversationTitle string    `json:"conversation_title"`
+	Sender            Person    `json:"sender"`
+	Body              string    `json:"body"`
+	Status            string    `json:"status"`
+	AttachmentCount   int       `json:"attachment_count"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type Notification struct {
@@ -95,16 +119,20 @@ func (s *Store) ListConversations(ctx context.Context, actor identity.User) ([]C
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	items := []Conversation{}
 	for rows.Next() {
 		var item Conversation
 		if err := rows.Scan(&item.ID, &item.Type, &item.Title); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	for index := range items {
@@ -191,17 +219,26 @@ func (s *Store) ListMessages(ctx context.Context, actor identity.User, conversat
 	if err != nil {
 		return MessagePage{}, err
 	}
-	defer rows.Close()
 	desc := []Message{}
 	for rows.Next() {
 		item, err := scanMessage(rows)
 		if err != nil {
+			rows.Close()
 			return MessagePage{}, err
 		}
 		desc = append(desc, item)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return MessagePage{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return MessagePage{}, err
+	}
+	for index := range desc {
+		if err := s.loadAttachments(ctx, &desc[index]); err != nil {
+			return MessagePage{}, err
+		}
 	}
 	page := MessagePage{Messages: []Message{}}
 	if len(desc) > limit {
@@ -215,10 +252,14 @@ func (s *Store) ListMessages(ctx context.Context, actor identity.User, conversat
 	return page, nil
 }
 
-func (s *Store) SendMessage(ctx context.Context, actor identity.User, conversationID, body, ip string) (Message, error) {
+func (s *Store) SendMessage(ctx context.Context, actor identity.User, conversationID, body string, mediaIDs []string, ip string) (Message, error) {
 	body = strings.TrimSpace(body)
-	if body == "" || len([]rune(body)) > 4000 {
-		return Message{}, errors.New("message must be 1-4000 characters")
+	mediaIDs = uniqueIDs(mediaIDs)
+	if (body == "" && len(mediaIDs) == 0) || len([]rune(body)) > 4000 {
+		return Message{}, errors.New("message requires text or attachments")
+	}
+	if len(mediaIDs) > 6 {
+		return Message{}, errors.New("message supports at most 6 attachments")
 	}
 	if err := s.requireMember(ctx, conversationID, actor.ID); err != nil {
 		return Message{}, err
@@ -231,6 +272,16 @@ func (s *Store) SendMessage(ctx context.Context, actor identity.User, conversati
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO messages(id, conversation_id, sender_id, body, status, created_at) VALUES(?, ?, ?, ?, 'sent', ?)`, id, conversationID, actor.ID, body, nowText(now)); err != nil {
 		return Message{}, err
+	}
+	for position, mediaID := range mediaIDs {
+		result, err := tx.ExecContext(ctx, `INSERT INTO message_media(message_id, media_id, position)
+			SELECT ?, id, ? FROM media WHERE id = ? AND owner_id = ? AND status = 'ready' AND media_type IN ('image', 'video', 'audio')`, id, position, mediaID, actor.ID)
+		if err != nil {
+			return Message{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return Message{}, ErrForbidden
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, nowText(now), conversationID); err != nil {
 		return Message{}, err
@@ -262,12 +313,25 @@ func (s *Store) SendMessage(ctx context.Context, actor identity.User, conversati
 			title = actor.Nickname + "在宿舍群聊中发了消息"
 			kind = "group_message"
 		}
-		if err := CreateNotification(ctx, tx, NotificationInput{UserID: userID, ActorID: actor.ID, Kind: kind, TargetType: "conversation", TargetID: conversationID, Title: title, EventKey: "message:" + id + ":" + userID}); err != nil {
+		if err := CreateNotification(ctx, tx, NotificationInput{UserID: userID, ActorID: actor.ID, Kind: kind, TargetType: "message", TargetID: id, Title: title, EventKey: "message:" + id + ":" + userID}); err != nil {
 			return Message{}, err
 		}
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'message.send', 'message', ?, ?, ?)`, actor.ID, id, ip, nowText(now))
 	if err := tx.Commit(); err != nil {
+		return Message{}, err
+	}
+	return s.messageByID(ctx, id)
+}
+
+func (s *Store) GetMessage(ctx context.Context, actor identity.User, id string) (Message, error) {
+	var conversationID string
+	if err := s.db.QueryRowContext(ctx, `SELECT conversation_id FROM messages WHERE id = ?`, id).Scan(&conversationID); errors.Is(err, sql.ErrNoRows) {
+		return Message{}, ErrNotFound
+	} else if err != nil {
+		return Message{}, err
+	}
+	if err := s.requireMember(ctx, conversationID, actor.ID); err != nil {
 		return Message{}, err
 	}
 	return s.messageByID(ctx, id)
@@ -295,6 +359,65 @@ func (s *Store) RecallMessage(ctx context.Context, actor identity.User, id, ip s
 		return ErrConflict
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'message.recall', 'message', ?, ?, ?)`, actor.ID, id, ip, nowText(now))
+	return nil
+}
+
+func (s *Store) ListAdminGroupMessages(ctx context.Context, actor identity.User, search, status string, limit int) ([]AdminMessage, error) {
+	if actor.Role != "admin" {
+		return nil, ErrForbidden
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	query := `SELECT m.id, m.conversation_id, c.title, u.id, u.username, p.nickname, p.avatar_path,
+		CASE WHEN m.status = 'recalled' THEN '' ELSE m.body END, m.status, m.created_at, (SELECT COUNT(*) FROM message_media mm WHERE mm.message_id = m.id)
+		FROM messages m JOIN conversations c ON c.id = m.conversation_id
+		JOIN users u ON u.id = m.sender_id JOIN profiles p ON p.user_id = u.id
+		WHERE c.type = 'group'`
+	args := []any{}
+	if search = strings.TrimSpace(search); search != "" {
+		needle := "%" + search + "%"
+		query += ` AND (m.body LIKE ? COLLATE NOCASE OR u.username LIKE ? COLLATE NOCASE OR p.nickname LIKE ? COLLATE NOCASE)`
+		args = append(args, needle, needle, needle)
+	}
+	if status == "sent" || status == "recalled" {
+		query += ` AND m.status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY m.created_at DESC, m.id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminMessage{}
+	for rows.Next() {
+		var item AdminMessage
+		var created string
+		if err := rows.Scan(&item.ID, &item.ConversationID, &item.ConversationTitle, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath, &item.Body, &item.Status, &created, &item.AttachmentCount); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) RemoveAdminGroupMessage(ctx context.Context, actor identity.User, id, ip string) error {
+	if actor.Role != "admin" {
+		return ErrForbidden
+	}
+	now := nowText(time.Now().UTC())
+	result, err := s.db.ExecContext(ctx, `UPDATE messages SET status = 'recalled', recalled_at = ? WHERE id = ? AND status = 'sent'
+		AND EXISTS(SELECT 1 FROM conversations c WHERE c.id = messages.conversation_id AND c.type = 'group')`, now, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrConflict
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'admin.message.remove', 'message', ?, ?, ?)`, actor.ID, id, ip, now)
 	return nil
 }
 
@@ -356,6 +479,11 @@ func (s *Store) MarkNotificationRead(ctx context.Context, actor identity.User, i
 
 func (s *Store) MarkAllNotificationsRead(ctx context.Context, actor identity.User) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL`, nowText(time.Now().UTC()), actor.ID)
+	return err
+}
+
+func (s *Store) ClearNotifications(ctx context.Context, actor identity.User) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM notifications WHERE user_id = ?`, actor.ID)
 	return err
 }
 
@@ -458,7 +586,10 @@ func (s *Store) lastMessage(ctx context.Context, conversationID string) (Message
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
-	return item, err
+	if err != nil {
+		return Message{}, err
+	}
+	return item, s.loadAttachments(ctx, &item)
 }
 
 func (s *Store) messageByID(ctx context.Context, id string) (Message, error) {
@@ -466,7 +597,10 @@ func (s *Store) messageByID(ctx context.Context, id string) (Message, error) {
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
-	return item, err
+	if err != nil {
+		return Message{}, err
+	}
+	return item, s.loadAttachments(ctx, &item)
 }
 
 func messageSelect() string {
@@ -478,7 +612,7 @@ func messageSelect() string {
 type scanner interface{ Scan(...any) error }
 
 func scanMessage(row scanner) (Message, error) {
-	var item Message
+	item := Message{Attachments: []Attachment{}}
 	var created string
 	var recalled sql.NullString
 	if err := row.Scan(&item.ID, &item.ConversationID, &item.Body, &item.Status, &created, &recalled, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath); err != nil {
@@ -491,8 +625,45 @@ func scanMessage(row scanner) (Message, error) {
 	}
 	if item.Status == "recalled" {
 		item.Body = ""
+		item.Attachments = []Attachment{}
 	}
 	return item, nil
+}
+
+func (s *Store) loadAttachments(ctx context.Context, item *Message) error {
+	item.Attachments = []Attachment{}
+	if item.Status == "recalled" {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT media.id, media.original_filename, media.media_type, media.mime_type, media.size_bytes,
+		media.width, media.height, media.duration_ms, media.preview_path <> ''
+		FROM message_media mm JOIN media ON media.id = mm.media_id
+		WHERE mm.message_id = ? AND media.status = 'ready' ORDER BY mm.position`, item.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var attachment Attachment
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&attachment.ID, &attachment.OriginalFilename, &attachment.MediaType, &attachment.MimeType, &attachment.SizeBytes, &width, &height, &duration, &attachment.HasPreview); err != nil {
+			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			attachment.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			attachment.Height = &value
+		}
+		if duration.Valid {
+			value := duration.Int64
+			attachment.DurationMS = &value
+		}
+		item.Attachments = append(item.Attachments, attachment)
+	}
+	return rows.Err()
 }
 
 func scanNotification(row scanner) (Notification, error) {
@@ -542,4 +713,21 @@ func newID() string {
 	return hex.EncodeToString(value[:])
 }
 
-func nowText(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+func uniqueIDs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func nowText(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05.000000000Z") }
