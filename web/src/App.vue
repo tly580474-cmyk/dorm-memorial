@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 
@@ -150,7 +150,6 @@ const nav = [
   { id: 'timeline' as const, label: '时间线', icon: Sparkles, available: true },
   { id: 'wall' as const, label: '照片墙', icon: Camera, available: true },
   { id: 'guestbook' as const, label: '留言册', icon: BookHeart, available: true },
-  { label: '论坛', icon: BookOpenText, available: false },
   { id: 'messages' as const, label: '消息', icon: MessageCircle, available: true },
 ]
 
