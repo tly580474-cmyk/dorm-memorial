@@ -22,7 +22,6 @@ ProtectHome=true
 ReadWritePaths=/var/lib/alist
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
-MemoryDenyWriteExecute=true
 UMask=0027
 
 [Install]
