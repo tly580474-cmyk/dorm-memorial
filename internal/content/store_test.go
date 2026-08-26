@@ -153,6 +153,22 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	if _, err := store.CreateGuestbookEntry(ctx, other, GuestbookInput{Body: "不能盗用附件", MediaIDs: []string{mediaID}}, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("cross-owner guestbook media err=%v", err)
 	}
+	var interactionNotifications int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+		WHERE user_id = ? AND kind IN ('post_approved', 'post_like', 'post_comment')`, member.ID).Scan(&interactionNotifications); err != nil {
+		t.Fatal(err)
+	}
+	if interactionNotifications != 3 {
+		t.Fatalf("member interaction notifications=%d want=3", interactionNotifications)
+	}
+	var guestbookNotifications int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
+		WHERE user_id = ? AND kind = 'guestbook_entry'`, other.ID).Scan(&guestbookNotifications); err != nil {
+		t.Fatal(err)
+	}
+	if guestbookNotifications != 3 {
+		t.Fatalf("other guestbook notifications=%d want=3", guestbookNotifications)
+	}
 	if err := store.Delete(ctx, member, draft.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}

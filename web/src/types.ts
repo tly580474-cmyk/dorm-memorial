@@ -94,3 +94,47 @@ export interface GuestbookPage {
   entries: GuestbookEntry[]
   next_cursor?: string
 }
+
+export type MessagePerson = Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+
+export interface ChatMessage {
+  id: string
+  conversation_id: string
+  sender: MessagePerson
+  body: string
+  status: 'sent' | 'recalled'
+  created_at: string
+  recalled_at: string | null
+}
+
+export interface Conversation {
+  id: string
+  type: 'group' | 'direct'
+  title: string
+  peer: MessagePerson | null
+  last_message: ChatMessage | null
+  unread_count: number
+}
+
+export interface MessagePage {
+  messages: ChatMessage[]
+  next_cursor?: string
+}
+
+export interface NotificationItem {
+  id: string
+  actor: MessagePerson | null
+  kind: string
+  target_type: string
+  target_id: string
+  title: string
+  body: string
+  created_at: string
+  read_at: string | null
+}
+
+export interface NotificationPage {
+  notifications: NotificationItem[]
+  next_cursor?: string
+  unread_count: number
+}

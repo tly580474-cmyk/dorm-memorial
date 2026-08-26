@@ -20,6 +20,7 @@ import (
 	"dorm-memorial/internal/content"
 	"dorm-memorial/internal/identity"
 	mediastore "dorm-memorial/internal/media"
+	"dorm-memorial/internal/messaging"
 	"dorm-memorial/internal/storage"
 )
 
@@ -35,13 +36,14 @@ type principal struct {
 }
 
 type Server struct {
-	cfg      config.Config
-	db       *sql.DB
-	identity *identity.Store
-	content  *content.Store
-	media    *mediastore.Store
-	logger   *slog.Logger
-	handler  http.Handler
+	cfg       config.Config
+	db        *sql.DB
+	identity  *identity.Store
+	content   *content.Store
+	media     *mediastore.Store
+	messaging *messaging.Store
+	logger    *slog.Logger
+	handler   http.Handler
 }
 
 func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog.Logger, objects ...storage.ObjectStorage) *Server {
@@ -49,7 +51,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	if len(objects) > 0 {
 		objectStore = objects[0]
 	}
-	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore), logger: logger}
+	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore), messaging: messaging.NewStore(db), logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
@@ -59,6 +61,15 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/auth/sessions", s.requireAuth(http.HandlerFunc(s.sessions)))
 	mux.Handle("GET /api/members", s.requireAuth(http.HandlerFunc(s.listMembers)))
+	mux.Handle("GET /api/messages/conversations", s.requireAuth(http.HandlerFunc(s.listConversations)))
+	mux.Handle("POST /api/messages/conversations/direct", s.requireAuth(http.HandlerFunc(s.startDirectConversation)))
+	mux.Handle("GET /api/messages/conversations/{id}", s.requireAuth(http.HandlerFunc(s.listMessages)))
+	mux.Handle("POST /api/messages/conversations/{id}", s.requireAuth(http.HandlerFunc(s.sendMessage)))
+	mux.Handle("POST /api/messages/conversations/{id}/read", s.requireAuth(http.HandlerFunc(s.markConversationRead)))
+	mux.Handle("POST /api/messages/items/{id}/recall", s.requireAuth(http.HandlerFunc(s.recallMessage)))
+	mux.Handle("GET /api/notifications", s.requireAuth(http.HandlerFunc(s.listNotifications)))
+	mux.Handle("POST /api/notifications/read-all", s.requireAuth(http.HandlerFunc(s.markAllNotificationsRead)))
+	mux.Handle("POST /api/notifications/{id}/read", s.requireAuth(http.HandlerFunc(s.markNotificationRead)))
 	mux.Handle("DELETE /api/auth/sessions/{id}", s.requireAuth(http.HandlerFunc(s.revokeSession)))
 	mux.Handle("PATCH /api/profile", s.requireAuth(http.HandlerFunc(s.updateProfile)))
 	mux.Handle("POST /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.updateAvatar)))
@@ -99,6 +110,97 @@ func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+}
+
+func (s *Server) listConversations(w http.ResponseWriter, r *http.Request) {
+	items, err := s.messaging.ListConversations(r.Context(), mustPrincipal(r).User)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversations": items})
+}
+
+func (s *Server) startDirectConversation(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		RecipientID string `json:"recipient_id"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	item, err := s.messaging.StartDirect(r.Context(), mustPrincipal(r).User, body.RecipientID)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"conversation": item})
+}
+
+func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	page, err := s.messaging.ListMessages(r.Context(), mustPrincipal(r).User, r.PathValue("id"), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Body string `json:"body"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	item, err := s.messaging.SendMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"), body.Body, remoteIP(r))
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"message": item})
+}
+
+func (s *Server) markConversationRead(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.MarkConversationRead(r.Context(), mustPrincipal(r).User, r.PathValue("id")); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) recallMessage(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.RecallMessage(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) listNotifications(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	page, err := s.messaging.ListNotifications(r.Context(), mustPrincipal(r).User, r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) markNotificationRead(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.MarkNotificationRead(r.Context(), mustPrincipal(r).User, r.PathValue("id")); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) markAllNotificationsRead(w http.ResponseWriter, r *http.Request) {
+	if err := s.messaging.MarkAllNotificationsRead(r.Context(), mustPrincipal(r).User); err != nil {
+		writeMessagingError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
@@ -670,6 +772,19 @@ func writeContentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "无权访问该内容")
 	case errors.Is(err, content.ErrConflict):
 		writeError(w, http.StatusConflict, "内容状态已变化，请刷新后重试")
+	default:
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+func writeMessagingError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, messaging.ErrNotFound):
+		writeError(w, http.StatusNotFound, "消息或会话不存在")
+	case errors.Is(err, messaging.ErrForbidden):
+		writeError(w, http.StatusForbidden, "无权访问该会话")
+	case errors.Is(err, messaging.ErrConflict):
+		writeError(w, http.StatusConflict, "消息状态已变化或已超过撤回时间")
 	default:
 		writeError(w, http.StatusBadRequest, err.Error())
 	}

@@ -231,7 +231,59 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("second register status=%d body=%s", secondRegister.StatusCode, readBody(secondRegister))
 	}
 	observerCookie := findSessionCookie(secondRegister)
-	secondRegister.Body.Close()
+	var secondRegisterBody struct {
+		User identity.User `json:"user"`
+	}
+	decodeResponse(t, secondRegister, &secondRegisterBody)
+	startDirect := doJSON(t, server.URL+"/api/messages/conversations/direct", http.MethodPost, map[string]any{"recipient_id": secondRegisterBody.User.ID}, memberCookie)
+	if startDirect.StatusCode != http.StatusOK {
+		t.Fatalf("start direct status=%d body=%s", startDirect.StatusCode, readBody(startDirect))
+	}
+	var directBody struct {
+		Conversation struct {
+			ID string `json:"id"`
+		} `json:"conversation"`
+	}
+	decodeResponse(t, startDirect, &directBody)
+	sendDirect := doJSON(t, server.URL+"/api/messages/conversations/"+directBody.Conversation.ID, http.MethodPost, map[string]any{"body": "接口私信"}, memberCookie)
+	if sendDirect.StatusCode != http.StatusCreated {
+		t.Fatalf("send direct status=%d body=%s", sendDirect.StatusCode, readBody(sendDirect))
+	}
+	sendDirect.Body.Close()
+	observerMessages := doJSON(t, server.URL+"/api/messages/conversations/"+directBody.Conversation.ID, http.MethodGet, nil, observerCookie)
+	if observerMessages.StatusCode != http.StatusOK {
+		t.Fatalf("observer messages status=%d body=%s", observerMessages.StatusCode, readBody(observerMessages))
+	}
+	var observerMessagesBody struct {
+		Messages []struct {
+			Body string `json:"body"`
+		} `json:"messages"`
+	}
+	decodeResponse(t, observerMessages, &observerMessagesBody)
+	if len(observerMessagesBody.Messages) != 1 || observerMessagesBody.Messages[0].Body != "接口私信" {
+		t.Fatalf("observer messages=%+v", observerMessagesBody.Messages)
+	}
+	adminDirect := doJSON(t, server.URL+"/api/messages/conversations/"+directBody.Conversation.ID, http.MethodGet, nil, adminCookie)
+	if adminDirect.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin direct privacy status=%d body=%s", adminDirect.StatusCode, readBody(adminDirect))
+	}
+	adminDirect.Body.Close()
+	observerNotifications := doJSON(t, server.URL+"/api/notifications", http.MethodGet, nil, observerCookie)
+	if observerNotifications.StatusCode != http.StatusOK {
+		t.Fatalf("observer notifications status=%d body=%s", observerNotifications.StatusCode, readBody(observerNotifications))
+	}
+	var observerNotificationsBody struct {
+		UnreadCount int `json:"unread_count"`
+	}
+	decodeResponse(t, observerNotifications, &observerNotificationsBody)
+	if observerNotificationsBody.UnreadCount == 0 {
+		t.Fatal("observer direct notification was not unread")
+	}
+	readNotifications := doJSON(t, server.URL+"/api/notifications/read-all", http.MethodPost, map[string]any{}, observerCookie)
+	if readNotifications.StatusCode != http.StatusNoContent {
+		t.Fatalf("read notifications status=%d body=%s", readNotifications.StatusCode, readBody(readNotifications))
+	}
+	readNotifications.Body.Close()
 	observerDelete := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID, http.MethodDelete, nil, observerCookie)
 	if observerDelete.StatusCode != http.StatusNotFound {
 		t.Fatalf("non-author delete published post status=%d body=%s", observerDelete.StatusCode, readBody(observerDelete))

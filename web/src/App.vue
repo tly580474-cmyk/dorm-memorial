@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, UserRound, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { Comment, GuestbookEntry, Media, MediaUsage, Member, Post, Session, User } from './types'
+import type { ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 
 type EditorMedia = {
   key: string
@@ -105,7 +105,26 @@ let guestbookRequest = 0
 const guestbookMediaUploading = computed(() => guestbookMedia.value.some((item) => item.status === 'uploading'))
 const selectedGuestbookMember = computed(() => guestbookMembers.value.find((member) => member.id === guestbookRecipientID.value) ?? null)
 const canViewHiddenGuestbook = computed(() => user.value?.role === 'admin' || Boolean(user.value && guestbookRecipientID.value === user.value.id))
-const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'management'>('home')
+const notificationsOpen = ref(false)
+const notifications = ref<NotificationItem[]>([])
+const notificationUnread = ref(0)
+const notificationLoading = ref(false)
+const conversations = ref<Conversation[]>([])
+const selectedConversationID = ref('')
+const chatMessages = ref<ChatMessage[]>([])
+const messageMembers = ref<Member[]>([])
+const messageBody = ref('')
+const messageLoading = ref(false)
+const messageBusy = ref(false)
+const messageError = ref('')
+const messageNextCursor = ref('')
+const messageThreadOpen = ref(false)
+const messageScroll = ref<HTMLElement | null>(null)
+let activityTimer = 0
+let messageRequest = 0
+const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
+const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
+const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management'>('home')
 const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
 const timelineGroups = computed(() => {
   const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime())
@@ -131,15 +150,16 @@ const nav = [
   { id: 'wall' as const, label: '照片墙', icon: Camera, available: true },
   { id: 'guestbook' as const, label: '留言册', icon: BookHeart, available: true },
   { label: '论坛', icon: BookOpenText, available: false },
-  { label: '消息', icon: MessageCircle, available: false },
+  { id: 'messages' as const, label: '消息', icon: MessageCircle, available: true },
 ]
 
-function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook' | 'management') {
+async function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management') {
   if (view === 'management' && user.value?.role !== 'admin') return
   activeView.value = view
   mobileMenuOpen.value = false
-  if (view === 'guestbook') void loadGuestbook(true)
-  nextTick(() => document.querySelector<HTMLElement>('#main-content h1')?.focus())
+  if (view === 'guestbook') await loadGuestbook(true)
+  if (view === 'messages') await loadMessageCenter()
+  await nextTick(() => document.querySelector<HTMLElement>('#main-content h1')?.focus())
 }
 
 function timelineDate(post: Post) {
@@ -150,12 +170,15 @@ onMounted(async () => {
   try {
     applyUser((await api.me()).user)
     await loadContent()
+    await initializeActivity()
   } catch (error) {
     if (!(error instanceof ApiError) || error.status !== 401) console.error(error)
   } finally {
     booting.value = false
   }
 })
+
+onBeforeUnmount(() => stopActivityPolling())
 
 function applyUser(next: User) {
   user.value = next
@@ -174,6 +197,7 @@ async function submitAuth() {
       : await api.register({ invite_code: auth.inviteCode, username: auth.username, email: auth.email, password: auth.password, nickname: auth.nickname })
     applyUser(response.user)
     await loadContent()
+    await initializeActivity()
     auth.password = ''
   } catch (error) {
     authError.value = error instanceof Error ? error.message : '暂时无法完成请求'
@@ -183,11 +207,14 @@ async function submitAuth() {
 }
 
 async function logout() {
+  stopActivityPolling()
   await api.logout()
   user.value = null
   feedPosts.value = []
   myPosts.value = []
   pendingPosts.value = []
+  notifications.value = []
+  conversations.value = []
   profileOpen.value = false
 }
 
@@ -813,6 +840,176 @@ async function deletePost(post: Post) {
   }
 }
 
+async function initializeActivity() {
+  stopActivityPolling()
+  await Promise.allSettled([loadNotifications(), loadConversations()])
+  activityTimer = window.setInterval(() => {
+    if (!user.value) return
+    void loadNotifications(true)
+    void loadConversations(true)
+    if (activeView.value === 'messages' && selectedConversationID.value) void loadMessages(true, true)
+  }, 12000)
+}
+
+function stopActivityPolling() {
+  if (activityTimer) window.clearInterval(activityTimer)
+  activityTimer = 0
+}
+
+async function loadNotifications(quiet = false) {
+  if (!user.value) return
+  if (!quiet) notificationLoading.value = true
+  try {
+    const page = await api.notifications({ limit: 30 })
+    notifications.value = page.notifications
+    notificationUnread.value = page.unread_count
+  } catch (error) {
+    if (!quiet) console.error(error)
+  } finally {
+    if (!quiet) notificationLoading.value = false
+  }
+}
+
+async function toggleNotifications() {
+  notificationsOpen.value = !notificationsOpen.value
+  if (notificationsOpen.value) await loadNotifications()
+}
+
+async function markAllNotificationsRead() {
+  await api.markAllNotificationsRead()
+  notifications.value = notifications.value.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() }))
+  notificationUnread.value = 0
+}
+
+async function openNotification(item: NotificationItem) {
+  if (!item.read_at) {
+    await api.markNotificationRead(item.id).catch(() => undefined)
+    item.read_at = new Date().toISOString()
+    notificationUnread.value = Math.max(0, notificationUnread.value - 1)
+  }
+  notificationsOpen.value = false
+  if (item.target_type === 'conversation') {
+    await setView('messages')
+    await openConversation(item.target_id)
+  } else if (item.target_type === 'post') {
+    await setView('home')
+    const post = feedPosts.value.find((candidate) => candidate.id === item.target_id)
+    if (post) await openDetail(post)
+  } else if (item.target_type === 'guestbook') {
+    await setView('guestbook')
+    if (item.target_id) selectGuestbookRecipient(item.target_id)
+  }
+}
+
+async function loadConversations(quiet = false) {
+  if (!user.value) return
+  try {
+    conversations.value = (await api.conversations()).conversations
+  } catch (error) {
+    if (!quiet) messageError.value = error instanceof Error ? error.message : '无法读取会话'
+  }
+}
+
+async function loadMessageCenter() {
+  messageError.value = ''
+  if (messageMembers.value.length === 0) {
+    try {
+      messageMembers.value = (await api.members()).members.filter((member) => member.id !== user.value?.id)
+    } catch (error) {
+      messageError.value = error instanceof Error ? error.message : '无法读取成员'
+    }
+  }
+  await loadConversations()
+  if (!selectedConversationID.value && conversations.value.length) selectedConversationID.value = conversations.value[0]?.id ?? ''
+  if (selectedConversationID.value) await loadMessages(true)
+}
+
+async function startDirectConversation(member: Member) {
+  messageError.value = ''
+  try {
+    const response = await api.startDirectConversation(member.id)
+    await loadConversations()
+    if (!conversations.value.some((item) => item.id === response.conversation.id)) conversations.value.unshift(response.conversation)
+    await openConversation(response.conversation.id)
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '无法开始私信'
+  }
+}
+
+async function openConversation(id: string) {
+  selectedConversationID.value = id
+  messageThreadOpen.value = true
+  messageBody.value = ''
+  messageError.value = ''
+  messageNextCursor.value = ''
+  chatMessages.value = []
+  await loadMessages(true)
+}
+
+async function loadMessages(reset = true, quiet = false) {
+  const conversationID = selectedConversationID.value
+  if (!conversationID) return
+  const requestID = ++messageRequest
+  if (!quiet) messageLoading.value = true
+  try {
+    const previousLastID = chatMessages.value[chatMessages.value.length - 1]?.id
+    const page = await api.messages(conversationID, { cursor: reset ? undefined : messageNextCursor.value || undefined, limit: 50 })
+    if (requestID !== messageRequest || conversationID !== selectedConversationID.value) return
+    chatMessages.value = reset ? page.messages : [...page.messages, ...chatMessages.value]
+    messageNextCursor.value = page.next_cursor ?? ''
+    await api.markConversationRead(conversationID)
+    conversations.value = conversations.value.map((item) => item.id === conversationID ? { ...item, unread_count: 0 } : item)
+    if (reset && previousLastID !== chatMessages.value[chatMessages.value.length - 1]?.id) await nextTick(() => { if (messageScroll.value) messageScroll.value.scrollTop = messageScroll.value.scrollHeight })
+  } catch (error) {
+    if (!quiet && requestID === messageRequest) messageError.value = error instanceof Error ? error.message : '无法读取消息'
+  } finally {
+    if (!quiet && requestID === messageRequest) messageLoading.value = false
+  }
+}
+
+async function sendChatMessage() {
+  if (!selectedConversationID.value || !messageBody.value.trim() || messageBusy.value) return
+  messageBusy.value = true
+  messageError.value = ''
+  try {
+    const response = await api.sendMessage(selectedConversationID.value, messageBody.value)
+    chatMessages.value.push(response.message)
+    messageBody.value = ''
+    await loadConversations(true)
+    await nextTick(() => { if (messageScroll.value) messageScroll.value.scrollTop = messageScroll.value.scrollHeight })
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '消息发送失败'
+  } finally {
+    messageBusy.value = false
+  }
+}
+
+function canRecallMessage(item: ChatMessage) {
+  return item.status === 'sent' && item.sender.id === user.value?.id && Date.now() - new Date(item.created_at).getTime() <= 2 * 60 * 1000
+}
+
+async function recallChatMessage(item: ChatMessage) {
+  if (!window.confirm('确定撤回这条消息吗？')) return
+  try {
+    await api.recallMessage(item.id)
+    chatMessages.value = chatMessages.value.map((candidate) => candidate.id === item.id ? { ...candidate, body: '', status: 'recalled', recalled_at: new Date().toISOString() } : candidate)
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '消息撤回失败'
+  }
+}
+
+function closeMobileThread() {
+  messageThreadOpen.value = false
+}
+
+function formatMessageTime(value: string) {
+  const date = new Date(value)
+  const today = new Date()
+  return date.toDateString() === today.toDateString()
+    ? date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    : date.toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 function displayDate(value: string | null | undefined) {
   if (!value) return ''
   return new Date(value).toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
@@ -878,12 +1075,12 @@ async function copyInvites() {
     <header class="topbar">
       <button class="icon-button mobile-only" type="button" aria-label="打开菜单" @click="mobileMenuOpen = true"><Menu /></button>
       <a class="brand" href="#"><BookHeart :size="25" aria-hidden="true" /><span>妙妙小屋</span></a>
-      <div class="top-actions"><button class="icon-button" type="button" aria-label="查看通知"><Bell /></button><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
+      <div class="top-actions"><button class="icon-button notification-trigger" type="button" aria-label="查看通知" :aria-expanded="notificationsOpen" aria-controls="notification-panel" @click="toggleNotifications"><Bell /><span v-if="notificationUnread" class="notification-badge">{{ notificationUnread > 99 ? '99+' : notificationUnread }}</span></button><section v-if="notificationsOpen" id="notification-panel" class="notification-panel" aria-label="站内通知"><header><div><strong>通知</strong><span>{{ notificationUnread }} 条未读</span></div><button v-if="notificationUnread" type="button" @click="markAllNotificationsRead"><CheckCheck :size="17" />全部已读</button></header><div v-if="notificationLoading" class="notification-empty" role="status">正在读取通知…</div><div v-else-if="notifications.length === 0" class="notification-empty">暂时没有新通知</div><button v-for="item in notifications" v-else :key="item.id" class="notification-row" :class="{ unread: !item.read_at }" type="button" @click="openNotification(item)"><span class="mini-avatar"><img v-if="item.actor && avatarVisible(item.actor.avatar_path)" :src="avatarURL(item.actor.avatar_path)" alt="" @error="item.actor && markAvatarBroken(item.actor.avatar_path)" /><span v-else>{{ item.actor?.nickname.slice(0, 1) || '妙' }}</span></span><span><strong>{{ item.title }}</strong><small v-if="item.body">{{ item.body }}</small><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></span></button></section><button class="avatar-button" type="button" aria-label="打开个人设置" @click="openProfile"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></button></div>
     </header>
 
     <aside class="sidebar" :class="{ open: mobileMenuOpen }" aria-label="主要导航">
       <div class="mobile-menu-head"><span>浏览纪念册</span><button class="icon-button" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"><X /></button></div>
-      <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.id === activeView }" :disabled="!item.available" :aria-current="item.id === activeView ? 'page' : undefined" :title="item.available ? item.label : `${item.label}正在开发`" @click="item.id && setView(item.id)"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small></button></nav>
+      <nav><button v-for="item in nav" :key="item.label" type="button" :class="{ active: item.id === activeView }" :disabled="!item.available" :aria-current="item.id === activeView ? 'page' : undefined" :title="item.available ? item.label : `${item.label}正在开发`" @click="item.id && setView(item.id)"><component :is="item.icon" :size="20" aria-hidden="true" /><span>{{ item.label }}</span><small v-if="!item.available">开发中</small><small v-else-if="item.id === 'messages' && totalMessageUnread" class="nav-unread">{{ totalMessageUnread > 99 ? '99+' : totalMessageUnread }}</small></button></nav>
       <div class="sidebar-bottom"><button v-if="user.role === 'admin'" type="button" :class="{ active: activeView === 'management' }" :aria-current="activeView === 'management' ? 'page' : undefined" @click="setView('management')"><ShieldCheck :size="20" />管理</button><button type="button" @click="openProfile"><Settings :size="20" />设置</button></div>
     </aside>
     <button v-if="mobileMenuOpen" class="scrim" type="button" aria-label="关闭菜单" @click="mobileMenuOpen = false"></button>
@@ -944,6 +1141,24 @@ async function copyInvites() {
         </div>
       </template>
 
+      <template v-else-if="activeView === 'messages'">
+        <header class="page-heading"><div><p class="eyebrow">只在室友之间</p><h1 tabindex="-1">消息</h1><p>宿舍群聊和一对一私信都会保存在这里。</p></div></header>
+        <p v-if="messageError" class="form-error content-alert" role="alert">{{ messageError }}</p>
+        <div class="message-layout" :class="{ 'thread-open': messageThreadOpen }">
+          <aside class="conversation-panel" aria-label="会话列表">
+            <section class="direct-starters" aria-labelledby="direct-starters-title"><header><strong id="direct-starters-title">发起私信</strong><MailPlus :size="18" /></header><div><button v-for="member in messageMembers" :key="member.id" type="button" :title="`给${member.nickname}发私信`" @click="startDirectConversation(member)"><span class="mini-avatar"><img v-if="avatarVisible(member.avatar_path)" :src="avatarURL(member.avatar_path)" alt="" @error="markAvatarBroken(member.avatar_path)" /><span v-else>{{ member.nickname.slice(0, 1) }}</span></span><span>{{ member.nickname }}</span></button></div></section>
+            <nav class="conversation-list" aria-label="已有会话"><button v-for="conversation in conversations" :key="conversation.id" type="button" :class="{ active: selectedConversationID === conversation.id }" :aria-current="selectedConversationID === conversation.id ? 'true' : undefined" @click="openConversation(conversation.id)"><span class="conversation-avatar"><span v-if="conversation.type === 'group'"><Users :size="21" /></span><template v-else><img v-if="conversation.peer && avatarVisible(conversation.peer.avatar_path)" :src="avatarURL(conversation.peer.avatar_path)" alt="" @error="conversation.peer && markAvatarBroken(conversation.peer.avatar_path)" /><span v-else>{{ conversation.peer?.nickname.slice(0, 1) }}</span></template></span><span class="conversation-copy"><strong>{{ conversation.title }}</strong><small>{{ conversation.last_message?.status === 'recalled' ? '一条消息已撤回' : conversation.last_message?.body || '还没有消息' }}</small></span><span v-if="conversation.unread_count" class="conversation-unread">{{ conversation.unread_count > 99 ? '99+' : conversation.unread_count }}</span></button></nav>
+          </aside>
+
+          <section v-if="selectedConversation" class="message-thread" :aria-labelledby="`conversation-${selectedConversation.id}`">
+            <header><button class="icon-button thread-back" type="button" aria-label="返回会话列表" @click="closeMobileThread"><ChevronLeft /></button><span class="conversation-avatar"><Users v-if="selectedConversation.type === 'group'" :size="21" /><template v-else><img v-if="selectedConversation.peer && avatarVisible(selectedConversation.peer.avatar_path)" :src="avatarURL(selectedConversation.peer.avatar_path)" alt="" @error="selectedConversation.peer && markAvatarBroken(selectedConversation.peer.avatar_path)" /><span v-else>{{ selectedConversation.peer?.nickname.slice(0, 1) }}</span></template></span><div><strong :id="`conversation-${selectedConversation.id}`">{{ selectedConversation.title }}</strong><small>{{ selectedConversation.type === 'group' ? '所有室友可见' : '仅会话双方可见' }}</small></div></header>
+            <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><span v-if="item.sender.id !== user.id" class="mini-avatar"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></span><div><header><strong v-if="item.sender.id !== user.id">{{ item.sender.nickname }}</strong><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><p>{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
+            <form class="message-composer" @submit.prevent="sendChatMessage"><label class="visually-hidden" for="message-body">输入消息</label><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div><small>{{ messageBody.length }} / 4000</small><button class="primary-button compact" type="submit" :disabled="messageBusy || !messageBody.trim()"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
+          </section>
+          <section v-else class="message-welcome"><MessageCircle :size="38" /><h2>选择一个会话</h2><p>可以进入宿舍群聊，或从左侧选择一位室友开始私信。</p></section>
+        </div>
+      </template>
+
       <template v-else-if="activeView === 'management'">
         <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>集中处理成员邀请与内容管理操作。</p></div></header>
         <section class="admin-card management-card" aria-labelledby="invite-manager-title">
@@ -1000,7 +1215,7 @@ async function copyInvites() {
       </template>
     </main>
 
-    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'timeline' }" @click="setView('timeline')"><Sparkles /><span>时间线</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'guestbook' }" @click="setView('guestbook')"><BookHeart /><span>留言</span></button></nav>
+    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'guestbook' }" @click="setView('guestbook')"><BookHeart /><span>留言</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'messages' }" @click="setView('messages')"><MessageCircle /><span>消息</span><small v-if="totalMessageUnread">{{ totalMessageUnread > 9 ? '9+' : totalMessageUnread }}</small></button></nav>
 
     <div v-if="composerOpen" class="dialog-layer" role="presentation" @click.self="closeComposer">
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">

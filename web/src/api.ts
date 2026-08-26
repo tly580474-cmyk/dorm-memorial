@@ -1,4 +1,4 @@
-import type { Comment, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, Post, PostPage, Session, User } from './types'
+import type { ChatMessage, Comment, Conversation, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, MessagePage, NotificationPage, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -31,6 +31,23 @@ export const api = {
     request<{ user: User }>('/api/profile', { method: 'PATCH', body: JSON.stringify(body) }),
   sessions: () => request<{ sessions: Session[] }>('/api/auth/sessions'),
   members: () => request<{ members: Member[] }>('/api/members'),
+  conversations: () => request<{ conversations: Conversation[] }>('/api/messages/conversations'),
+  startDirectConversation: (recipientID: string) => request<{ conversation: Conversation }>('/api/messages/conversations/direct', { method: 'POST', body: JSON.stringify({ recipient_id: recipientID }) }),
+  messages: (conversationID: string, query: { cursor?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<MessagePage>(`/api/messages/conversations/${encodeURIComponent(conversationID)}${params.size ? `?${params}` : ''}`)
+  },
+  sendMessage: (conversationID: string, body: string) => request<{ message: ChatMessage }>(`/api/messages/conversations/${encodeURIComponent(conversationID)}`, { method: 'POST', body: JSON.stringify({ body }) }),
+  markConversationRead: (conversationID: string) => request<void>(`/api/messages/conversations/${encodeURIComponent(conversationID)}/read`, { method: 'POST', body: '{}' }),
+  recallMessage: (id: string) => request<void>(`/api/messages/items/${encodeURIComponent(id)}/recall`, { method: 'POST', body: '{}' }),
+  notifications: (query: { cursor?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<NotificationPage>(`/api/notifications${params.size ? `?${params}` : ''}`)
+  },
+  markNotificationRead: (id: string) => request<void>(`/api/notifications/${encodeURIComponent(id)}/read`, { method: 'POST', body: '{}' }),
+  markAllNotificationsRead: () => request<void>('/api/notifications/read-all', { method: 'POST', body: '{}' }),
   revokeSession: (id: string) => request<void>(`/api/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   createInvites: (body: { max_uses: number; expires_in_hours: number; count: number }) =>
     request<{ invites: Array<{ code: string; expires_at: string; max_uses: number }>; count: number }>('/api/admin/invites', { method: 'POST', body: JSON.stringify(body) }),

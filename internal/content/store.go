@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/messaging"
 )
 
 var (
@@ -255,7 +256,20 @@ func (s *Store) Moderate(ctx context.Context, actor identity.User, id, action, n
 		return Post{}, ErrConflict
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, metadata_json, ip_address, created_at) VALUES(?, ?, 'post', ?, ?, ?, ?)`, actor.ID, "post."+action, id, fmt.Sprintf(`{"note":%q}`, strings.TrimSpace(note)), ip, nowText())
-	return s.Get(ctx, actor, id)
+	post, err := s.Get(ctx, actor, id)
+	if err != nil {
+		return Post{}, err
+	}
+	if post.Author.ID != actor.ID {
+		title := "你的投稿已通过审核"
+		kind := "post_approved"
+		if action == "hide" {
+			title = "你的投稿未通过审核"
+			kind = "post_hidden"
+		}
+		_ = messaging.CreateNotification(ctx, s.db, messaging.NotificationInput{UserID: post.Author.ID, ActorID: actor.ID, Kind: kind, TargetType: "post", TargetID: post.ID, Title: title, Body: strings.TrimSpace(note), EventKey: "moderation:" + post.ID + ":" + action})
+	}
+	return post, nil
 }
 
 func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) error {
@@ -305,18 +319,21 @@ func (s *Store) AddComment(ctx context.Context, actor identity.User, postID, bod
 	if body == "" || len([]rune(body)) > 2000 {
 		return Comment{}, errors.New("comment must be 1-2000 characters")
 	}
-	var allowed int
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members')`, postID).Scan(&allowed); err != nil {
+	var postAuthorID string
+	if err := s.db.QueryRowContext(ctx, `SELECT author_id FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members'`, postID).Scan(&postAuthorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Comment{}, ErrForbidden
+		}
 		return Comment{}, err
-	}
-	if allowed == 0 {
-		return Comment{}, ErrForbidden
 	}
 	id, now := newID(), time.Now().UTC()
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO comments(id, post_id, author_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, postID, actor.ID, body, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		return Comment{}, err
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'comment.create', 'comment', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
+	if postAuthorID != actor.ID {
+		_ = messaging.CreateNotification(ctx, s.db, messaging.NotificationInput{UserID: postAuthorID, ActorID: actor.ID, Kind: "post_comment", TargetType: "post", TargetID: postID, Title: actor.Nickname + "评论了你的回忆", Body: truncateRunes(body, 80), EventKey: "comment:" + id})
+	}
 	return Comment{ID: id, PostID: postID, Author: Author{ID: actor.ID, Username: actor.Username, Nickname: actor.Nickname, AvatarPath: actor.AvatarPath}, Body: body, CreatedAt: now}, nil
 }
 
@@ -361,6 +378,33 @@ func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, i
 	}
 	if err := replaceGuestbookMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
 		return GuestbookEntry{}, err
+	}
+	if input.RecipientID != "" && input.RecipientID != actor.ID {
+		if err := messaging.CreateNotification(ctx, tx, messaging.NotificationInput{UserID: input.RecipientID, ActorID: actor.ID, Kind: "guestbook_entry", TargetType: "guestbook", TargetID: input.RecipientID, Title: actor.Nickname + "在你的留言页留下了新内容", Body: truncateRunes(input.Body, 80), EventKey: "guestbook:" + id + ":" + input.RecipientID}); err != nil {
+			return GuestbookEntry{}, err
+		}
+	} else if input.RecipientID == "" {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE status = 'active' AND id <> ?`, actor.ID)
+		if err != nil {
+			return GuestbookEntry{}, err
+		}
+		recipients := []string{}
+		for rows.Next() {
+			var userID string
+			if err := rows.Scan(&userID); err != nil {
+				rows.Close()
+				return GuestbookEntry{}, err
+			}
+			recipients = append(recipients, userID)
+		}
+		if err := rows.Close(); err != nil {
+			return GuestbookEntry{}, err
+		}
+		for _, userID := range recipients {
+			if err := messaging.CreateNotification(ctx, tx, messaging.NotificationInput{UserID: userID, ActorID: actor.ID, Kind: "guestbook_entry", TargetType: "guestbook", Title: actor.Nickname + "在宿舍留言册留下了新内容", Body: truncateRunes(input.Body, 80), EventKey: "guestbook:" + id + ":" + userID}); err != nil {
+				return GuestbookEntry{}, err
+			}
+		}
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.create', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
 	if err := tx.Commit(); err != nil {
@@ -474,12 +518,12 @@ func (s *Store) DeleteGuestbookEntry(ctx context.Context, actor identity.User, i
 }
 
 func (s *Store) ToggleLike(ctx context.Context, actor identity.User, postID, ip string) (bool, int, error) {
-	var allowed int
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members')`, postID).Scan(&allowed); err != nil {
+	var postAuthorID string
+	if err := s.db.QueryRowContext(ctx, `SELECT author_id FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members'`, postID).Scan(&postAuthorID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, 0, ErrForbidden
+		}
 		return false, 0, err
-	}
-	if allowed == 0 {
-		return false, 0, ErrForbidden
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -504,6 +548,11 @@ func (s *Store) ToggleLike(ctx context.Context, actor identity.User, postID, ip 
 		return false, 0, err
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, ?, 'post', ?, ?, ?)`, actor.ID, map[bool]string{true: "post.like", false: "post.unlike"}[liked], postID, ip, nowText())
+	if liked && postAuthorID != actor.ID {
+		if err := messaging.CreateNotification(ctx, tx, messaging.NotificationInput{UserID: postAuthorID, ActorID: actor.ID, Kind: "post_like", TargetType: "post", TargetID: postID, Title: actor.Nickname + "赞了你的回忆", EventKey: "like:" + postID + ":" + actor.ID}); err != nil {
+			return false, 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, 0, err
 	}
@@ -965,3 +1014,11 @@ func newID() string {
 }
 
 func nowText() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+func truncateRunes(value string, limit int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "…"
+}
