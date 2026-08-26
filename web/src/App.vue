@@ -122,6 +122,7 @@ const messageThreadOpen = ref(false)
 const messageScroll = ref<HTMLElement | null>(null)
 let activityTimer = 0
 let messageRequest = 0
+let messageLoadingRequest = 0
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
 const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
 const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management'>('home')
@@ -950,12 +951,16 @@ async function loadMessages(reset = true, quiet = false) {
   const conversationID = selectedConversationID.value
   if (!conversationID) return
   const requestID = ++messageRequest
-  if (!quiet) messageLoading.value = true
+  if (!quiet) {
+    messageLoadingRequest = requestID
+    messageLoading.value = true
+  }
   try {
     const previousLastID = chatMessages.value[chatMessages.value.length - 1]?.id
     const page = await api.messages(conversationID, { cursor: reset ? undefined : messageNextCursor.value || undefined, limit: 50 })
     if (requestID !== messageRequest || conversationID !== selectedConversationID.value) return
-    chatMessages.value = reset ? page.messages : [...page.messages, ...chatMessages.value]
+    const nextMessages = Array.isArray(page.messages) ? page.messages : []
+    chatMessages.value = reset ? nextMessages : [...nextMessages, ...chatMessages.value]
     messageNextCursor.value = page.next_cursor ?? ''
     await api.markConversationRead(conversationID)
     conversations.value = conversations.value.map((item) => item.id === conversationID ? { ...item, unread_count: 0 } : item)
@@ -963,7 +968,7 @@ async function loadMessages(reset = true, quiet = false) {
   } catch (error) {
     if (!quiet && requestID === messageRequest) messageError.value = error instanceof Error ? error.message : '无法读取消息'
   } finally {
-    if (!quiet && requestID === messageRequest) messageLoading.value = false
+    if (!quiet && messageLoadingRequest === requestID) messageLoading.value = false
   }
 }
 

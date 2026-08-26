@@ -31,6 +31,10 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 	if err != nil || len(aliceConversations) != 1 || aliceConversations[0].Type != "group" {
 		t.Fatalf("initial conversations=%+v err=%v", aliceConversations, err)
 	}
+	emptyGroup, err := store.ListMessages(ctx, alice, aliceConversations[0].ID, "", 20)
+	if err != nil || emptyGroup.Messages == nil || len(emptyGroup.Messages) != 0 {
+		t.Fatalf("empty group messages=%#v err=%v", emptyGroup.Messages, err)
+	}
 	direct, err := store.StartDirect(ctx, alice, bob.ID)
 	if err != nil || direct.Type != "direct" || direct.Peer == nil || direct.Peer.ID != bob.ID {
 		t.Fatalf("direct=%+v err=%v", direct, err)

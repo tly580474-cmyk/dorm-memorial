@@ -203,7 +203,7 @@ func (s *Store) ListMessages(ctx context.Context, actor identity.User, conversat
 	if err := rows.Err(); err != nil {
 		return MessagePage{}, err
 	}
-	page := MessagePage{}
+	page := MessagePage{Messages: []Message{}}
 	if len(desc) > limit {
 		oldest := desc[limit-1]
 		page.NextCursor = encodeCursor(messageCursor{Sort: oldest.CreatedAt.Format(time.RFC3339Nano), ID: oldest.ID})
