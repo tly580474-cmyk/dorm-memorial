@@ -1,4 +1,4 @@
-import type { Comment, Media, MediaUsage, Post, PostPage, Session, User } from './types'
+import type { Comment, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
 
@@ -30,6 +30,7 @@ export const api = {
   updateProfile: (body: { nickname: string; bio: string; bed_no: string; memorial_note: string }) =>
     request<{ user: User }>('/api/profile', { method: 'PATCH', body: JSON.stringify(body) }),
   sessions: () => request<{ sessions: Session[] }>('/api/auth/sessions'),
+  members: () => request<{ members: Member[] }>('/api/members'),
   revokeSession: (id: string) => request<void>(`/api/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   createInvites: (body: { max_uses: number; expires_in_hours: number; count: number }) =>
     request<{ invites: Array<{ code: string; expires_at: string; max_uses: number }>; count: number }>('/api/admin/invites', { method: 'POST', body: JSON.stringify(body) }),
@@ -51,6 +52,14 @@ export const api = {
   addComment: (postID: string, body: string) => request<{ comment: Comment }>(`/api/posts/${encodeURIComponent(postID)}/comments`, { method: 'POST', body: JSON.stringify({ body }) }),
   deleteComment: (id: string) => request<void>(`/api/comments/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   toggleLike: (postID: string) => request<{ liked: boolean; like_count: number }>(`/api/posts/${encodeURIComponent(postID)}/like`, { method: 'POST', body: '{}' }),
+  guestbook: (query: { recipient_id?: string; cursor?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams()
+    Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
+    return request<GuestbookPage>(`/api/guestbook${params.size ? `?${params}` : ''}`)
+  },
+  createGuestbookEntry: (body: { recipient_id: string; body: string; media_ids: string[] }) => request<{ entry: GuestbookEntry }>('/api/guestbook', { method: 'POST', body: JSON.stringify(body) }),
+  hideGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}/hide`, { method: 'POST', body: '{}' }),
+  deleteGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setAvatar: (mediaID: string) => request<{ user: User }>('/api/profile/avatar', { method: 'POST', body: JSON.stringify({ media_id: mediaID }) }),
   clearAvatar: () => request<{ user: User }>('/api/profile/avatar', { method: 'DELETE' }),
   mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),

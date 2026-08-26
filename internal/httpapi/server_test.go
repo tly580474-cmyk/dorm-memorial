@@ -156,6 +156,50 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	if len(feedBody.Posts) != 1 || feedBody.Posts[0].ID != createdPost.Post.ID {
 		t.Fatalf("feed=%+v", feedBody.Posts)
 	}
+	membersResponse := doJSON(t, server.URL+"/api/members", http.MethodGet, nil, memberCookie)
+	if membersResponse.StatusCode != http.StatusOK {
+		t.Fatalf("members status=%d body=%s", membersResponse.StatusCode, readBody(membersResponse))
+	}
+	var membersBody struct {
+		Members []identity.Member `json:"members"`
+	}
+	decodeResponse(t, membersResponse, &membersBody)
+	if len(membersBody.Members) != 2 {
+		t.Fatalf("members=%+v", membersBody.Members)
+	}
+	guestbookResponse := doJSON(t, server.URL+"/api/guestbook", http.MethodPost, map[string]any{"body": "接口留言", "media_ids": []string{}}, memberCookie)
+	if guestbookResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("create guestbook status=%d body=%s", guestbookResponse.StatusCode, readBody(guestbookResponse))
+	}
+	var guestbookBody struct {
+		Entry struct {
+			ID string `json:"id"`
+		} `json:"entry"`
+	}
+	decodeResponse(t, guestbookResponse, &guestbookBody)
+	guestbookList := doJSON(t, server.URL+"/api/guestbook", http.MethodGet, nil, memberCookie)
+	if guestbookList.StatusCode != http.StatusOK {
+		t.Fatalf("guestbook list status=%d body=%s", guestbookList.StatusCode, readBody(guestbookList))
+	}
+	var guestbookListBody struct {
+		Entries []struct {
+			ID string `json:"id"`
+		} `json:"entries"`
+	}
+	decodeResponse(t, guestbookList, &guestbookListBody)
+	if len(guestbookListBody.Entries) != 1 || guestbookListBody.Entries[0].ID != guestbookBody.Entry.ID {
+		t.Fatalf("guestbook entries=%+v", guestbookListBody.Entries)
+	}
+	memberHide := doJSON(t, server.URL+"/api/guestbook/"+guestbookBody.Entry.ID+"/hide", http.MethodPost, map[string]any{}, memberCookie)
+	if memberHide.StatusCode != http.StatusForbidden {
+		t.Fatalf("member hide dorm guestbook status=%d body=%s", memberHide.StatusCode, readBody(memberHide))
+	}
+	memberHide.Body.Close()
+	adminHide := doJSON(t, server.URL+"/api/guestbook/"+guestbookBody.Entry.ID+"/hide", http.MethodPost, map[string]any{}, adminCookie)
+	if adminHide.StatusCode != http.StatusNoContent {
+		t.Fatalf("admin hide guestbook status=%d body=%s", adminHide.StatusCode, readBody(adminHide))
+	}
+	adminHide.Body.Close()
 
 	forbidden := doJSON(t, server.URL+"/api/admin/invites", http.MethodPost, map[string]any{"max_uses": 1, "expires_in_hours": 24}, memberCookie)
 	if forbidden.StatusCode != http.StatusForbidden {

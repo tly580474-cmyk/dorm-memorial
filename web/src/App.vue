@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { AlertCircle, Bell, BookHeart, BookOpenText, CalendarDays, Camera, Check, Copy, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, Menu, MessageCircle, Plus, RotateCcw, Send, Settings, ShieldCheck, Sparkles, Trash2, UploadCloud, UserRound, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { Comment, Media, MediaUsage, Post, Session, User } from './types'
+import type { Comment, GuestbookEntry, Media, MediaUsage, Member, Post, Session, User } from './types'
 
 type EditorMedia = {
   key: string
@@ -89,7 +89,20 @@ const detailLoading = ref(false)
 const detailError = ref('')
 const commentBody = ref('')
 const commentBusy = ref(false)
-const activeView = ref<'home' | 'timeline' | 'wall'>('home')
+const guestbookEntries = ref<GuestbookEntry[]>([])
+const guestbookMembers = ref<Member[]>([])
+const guestbookRecipientID = ref('')
+const guestbookBody = ref('')
+const guestbookMedia = ref<EditorMedia[]>([])
+const guestbookMediaInput = ref<HTMLInputElement | null>(null)
+const guestbookLoading = ref(false)
+const guestbookBusy = ref(false)
+const guestbookError = ref('')
+const guestbookNextCursor = ref('')
+let guestbookRequest = 0
+const guestbookMediaUploading = computed(() => guestbookMedia.value.some((item) => item.status === 'uploading'))
+const selectedGuestbookMember = computed(() => guestbookMembers.value.find((member) => member.id === guestbookRecipientID.value) ?? null)
+const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook'>('home')
 const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
 const timelineGroups = computed(() => {
   const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime())
@@ -113,14 +126,15 @@ const nav = [
   { id: 'home' as const, label: '首页', icon: Home, available: true },
   { id: 'timeline' as const, label: '时间线', icon: Sparkles, available: true },
   { id: 'wall' as const, label: '照片墙', icon: Camera, available: true },
-  { label: '留言册', icon: BookHeart, available: false },
+  { id: 'guestbook' as const, label: '留言册', icon: BookHeart, available: true },
   { label: '论坛', icon: BookOpenText, available: false },
   { label: '消息', icon: MessageCircle, available: false },
 ]
 
-function setView(view: 'home' | 'timeline' | 'wall') {
+function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook') {
   activeView.value = view
   mobileMenuOpen.value = false
+  if (view === 'guestbook') void loadGuestbook(true)
   nextTick(() => document.querySelector<HTMLElement>('#main-content h1')?.focus())
 }
 
@@ -410,6 +424,102 @@ async function removeComment(comment: Comment) {
     if (detailPost.value) replacePost({ ...detailPost.value, comment_count: Math.max(0, detailPost.value.comment_count - 1) })
   } catch (error) {
     detailError.value = error instanceof Error ? error.message : '删除评论失败'
+  }
+}
+
+async function loadGuestbook(reset = false) {
+  if (!user.value) return
+  const requestID = ++guestbookRequest
+  guestbookLoading.value = true
+  guestbookError.value = ''
+  const recipientID = guestbookRecipientID.value
+  try {
+    if (guestbookMembers.value.length === 0) guestbookMembers.value = (await api.members()).members
+    const response = await api.guestbook({ recipient_id: recipientID || undefined, cursor: reset ? undefined : guestbookNextCursor.value || undefined, limit: 20 })
+    if (requestID !== guestbookRequest || recipientID !== guestbookRecipientID.value) return
+    guestbookEntries.value = reset ? response.entries : [...guestbookEntries.value, ...response.entries]
+    guestbookNextCursor.value = response.next_cursor ?? ''
+  } catch (error) {
+    if (requestID === guestbookRequest) guestbookError.value = error instanceof Error ? error.message : '暂时无法读取留言'
+  } finally {
+    if (requestID === guestbookRequest) guestbookLoading.value = false
+  }
+}
+
+function selectGuestbookRecipient(id: string) {
+  if (guestbookRecipientID.value === id) return
+  guestbookRecipientID.value = id
+  guestbookEntries.value = []
+  guestbookNextCursor.value = ''
+  void loadGuestbook(true)
+}
+
+function handleGuestbookMediaInput(event: Event) {
+  const input = event.target as HTMLInputElement
+  addGuestbookMediaFiles(input.files ? [...input.files] : [])
+  input.value = ''
+}
+
+function addGuestbookMediaFiles(files: File[]) {
+  guestbookError.value = ''
+  const available = 6 - guestbookMedia.value.length
+  if (files.length > available) guestbookError.value = `每条留言最多附带 6 个文件，本次只加入前 ${Math.max(available, 0)} 个。`
+  for (const file of files.slice(0, Math.max(available, 0))) {
+    const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null
+    if (!kind || file.size <= 0 || file.size > 8 * 1024 ** 3) {
+      guestbookError.value = `${file.name} 不是有效的图片或视频，或文件超过 8 GiB。`
+      continue
+    }
+    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    guestbookMedia.value.push(item)
+    if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
+  }
+}
+
+async function removeGuestbookMedia(item: EditorMedia) {
+  if (item.status === 'uploading') return
+  guestbookMedia.value = guestbookMedia.value.filter((candidate) => candidate.key !== item.key)
+  if (item.media) await api.deleteMedia(item.media.id).catch(() => undefined)
+}
+
+async function submitGuestbookEntry() {
+  if ((!guestbookBody.value.trim() && guestbookMedia.value.length === 0) || guestbookBusy.value) return
+  guestbookBusy.value = true
+  guestbookError.value = ''
+  try {
+    for (const item of guestbookMedia.value) {
+      if (item.status === 'pending' || item.status === 'error') await uploadEditorMedia(item)
+    }
+    const response = await api.createGuestbookEntry({
+      recipient_id: guestbookRecipientID.value,
+      body: guestbookBody.value,
+      media_ids: guestbookMedia.value.flatMap((item) => item.media ? [item.media.id] : []),
+    })
+    guestbookEntries.value.unshift(response.entry)
+    guestbookBody.value = ''
+    guestbookMedia.value = []
+  } catch (error) {
+    guestbookError.value = error instanceof Error ? error.message : '留言发布失败'
+  } finally {
+    guestbookBusy.value = false
+  }
+}
+
+async function hideGuestbookEntry(entry: GuestbookEntry) {
+  try {
+    await api.hideGuestbookEntry(entry.id)
+    guestbookEntries.value = guestbookEntries.value.filter((item) => item.id !== entry.id)
+  } catch (error) {
+    guestbookError.value = error instanceof Error ? error.message : '隐藏留言失败'
+  }
+}
+
+async function deleteGuestbookEntry(entry: GuestbookEntry) {
+  try {
+    await api.deleteGuestbookEntry(entry.id)
+    guestbookEntries.value = guestbookEntries.value.filter((item) => item.id !== entry.id)
+  } catch (error) {
+    guestbookError.value = error instanceof Error ? error.message : '删除留言失败'
   }
 }
 
@@ -789,7 +899,7 @@ async function copyInvites() {
         </div>
       </template>
 
-      <template v-else>
+      <template v-else-if="activeView === 'wall'">
         <header class="page-heading"><div><p class="eyebrow">照片与视频</p><h1 tabindex="-1">宿舍照片墙</h1><p>按最近发布排序，共收藏 {{ wallItems.length }} 个媒体文件。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />添加照片</button></header>
         <div v-if="wallItems.length === 0" class="content-empty"><Camera :size="34" aria-hidden="true" /><h2>照片墙还没有内容</h2><p>发布带照片或视频的回忆后，就会陈列在这里。</p></div>
         <div v-else class="photo-wall">
@@ -801,9 +911,51 @@ async function copyInvites() {
           </figure>
         </div>
       </template>
+
+      <template v-else>
+        <header class="page-heading"><div><p class="eyebrow">写给我们，也写给某个人</p><h1 tabindex="-1">宿舍留言册</h1><p>每句话都只在室友之间可见，接收者可以隐藏不合适的留言。</p></div></header>
+        <div class="guestbook-layout">
+          <aside class="guestbook-people" aria-label="选择留言页">
+            <button type="button" :class="{ active: guestbookRecipientID === '' }" :aria-pressed="guestbookRecipientID === ''" @click="selectGuestbookRecipient('')"><span class="guestbook-dorm-icon"><BookHeart :size="21" /></span><span><strong>写给整个宿舍</strong><small>大家共同的留言页</small></span></button>
+            <button v-for="member in guestbookMembers" :key="member.id" type="button" :class="{ active: guestbookRecipientID === member.id }" :aria-pressed="guestbookRecipientID === member.id" @click="selectGuestbookRecipient(member.id)"><span class="mini-avatar"><img v-if="avatarVisible(member.avatar_path)" :src="avatarURL(member.avatar_path)" alt="" @error="markAvatarBroken(member.avatar_path)" /><span v-else>{{ member.nickname.slice(0, 1) }}</span></span><span><strong>{{ member.nickname }}</strong><small>{{ member.bed_no || `@${member.username}` }}</small></span></button>
+          </aside>
+
+          <div class="guestbook-main">
+            <section class="guestbook-intro">
+              <span v-if="selectedGuestbookMember" class="guestbook-hero-avatar"><img v-if="avatarVisible(selectedGuestbookMember.avatar_path)" :src="avatarURL(selectedGuestbookMember.avatar_path)" :alt="`${selectedGuestbookMember.nickname}的头像`" @error="markAvatarBroken(selectedGuestbookMember.avatar_path)" /><span v-else>{{ selectedGuestbookMember.nickname.slice(0, 1) }}</span></span>
+              <BookHeart v-else :size="34" aria-hidden="true" />
+              <div><p class="eyebrow">{{ selectedGuestbookMember ? '个人留言页' : '公共留言页' }}</p><h2>{{ selectedGuestbookMember ? `写给${selectedGuestbookMember.nickname}` : '写给 3048 的我们' }}</h2><p>{{ selectedGuestbookMember?.memorial_note || selectedGuestbookMember?.bio || '把没来得及说的话、祝福和照片留在这里。' }}</p></div>
+            </section>
+
+            <form class="guestbook-composer" @submit.prevent="submitGuestbookEntry">
+              <label for="guestbook-body">{{ selectedGuestbookMember ? `给${selectedGuestbookMember.nickname}留言` : '给宿舍留言' }}</label>
+              <textarea id="guestbook-body" v-model="guestbookBody" rows="4" maxlength="2000" placeholder="写一句以后再看到还会想起今天的话…"></textarea>
+              <div class="guestbook-composer-meta"><small>{{ guestbookBody.length }} / 2000</small><span>最多 6 个附件</span></div>
+              <input ref="guestbookMediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleGuestbookMediaInput" />
+              <div v-if="guestbookMedia.length" class="media-queue guestbook-media-queue">
+                <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? `上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress></div><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
+              </div>
+              <p v-if="guestbookError" class="form-error" role="alert">{{ guestbookError }}</p>
+              <footer><button class="secondary-button" type="button" :disabled="guestbookBusy || guestbookMedia.length >= 6" @click="guestbookMediaInput?.click()"><UploadCloud :size="18" />添加照片或视频</button><button class="primary-button compact" type="submit" :disabled="guestbookBusy || guestbookMediaUploading || (!guestbookBody.trim() && guestbookMedia.length === 0)"><Send :size="18" />{{ guestbookBusy ? '发布中…' : '留下这句话' }}</button></footer>
+            </form>
+
+            <div v-if="guestbookLoading && guestbookEntries.length === 0" class="content-empty" role="status"><span class="loader"></span><span>正在翻开留言册…</span></div>
+            <div v-else-if="guestbookEntries.length === 0" class="content-empty guestbook-empty"><BookHeart :size="34" aria-hidden="true" /><h2>这一页还没有留言</h2><p>成为第一个在这里留下字迹的人吧。</p></div>
+            <section v-else class="guestbook-entries" aria-label="留言列表">
+              <article v-for="entry in guestbookEntries" :key="entry.id" class="guestbook-entry">
+                <header><span class="mini-avatar"><img v-if="avatarVisible(entry.author.avatar_path)" :src="avatarURL(entry.author.avatar_path)" alt="" @error="markAvatarBroken(entry.author.avatar_path)" /><span v-else>{{ entry.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ entry.author.nickname }}</strong><span>{{ entry.recipient ? `写给 ${entry.recipient.nickname}` : '写给整个宿舍' }}</span></div></header>
+                <p v-if="entry.body">{{ entry.body }}</p>
+                <div v-if="entry.media.length" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename" @error="markMediaLoadError(item.id)"></video></template></div>
+                <footer><time :datetime="entry.created_at">{{ new Date(entry.created_at).toLocaleString('zh-CN') }}</time><div><button v-if="user.role === 'admin' || entry.recipient?.id === user.id" type="button" @click="hideGuestbookEntry(entry)">隐藏</button><button v-if="entry.author.id === user.id || user.role === 'admin'" class="danger-link" type="button" @click="deleteGuestbookEntry(entry)">删除</button></div></footer>
+              </article>
+            </section>
+            <button v-if="guestbookNextCursor" class="secondary-button guestbook-more" type="button" :disabled="guestbookLoading" @click="loadGuestbook(false)">{{ guestbookLoading ? '读取中…' : '翻看更早的留言' }}</button>
+          </div>
+        </div>
+      </template>
     </main>
 
-    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'timeline' }" @click="setView('timeline')"><Sparkles /><span>时间线</span></button><button type="button" class="nav-item" disabled title="消息正在开发"><MessageCircle /><span>消息</span></button></nav>
+    <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'timeline' }" @click="setView('timeline')"><Sparkles /><span>时间线</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'guestbook' }" @click="setView('guestbook')"><BookHeart /><span>留言</span></button></nav>
 
     <div v-if="composerOpen" class="dialog-layer" role="presentation" @click.self="closeComposer">
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">

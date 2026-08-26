@@ -76,3 +76,21 @@ export interface Comment {
   body: string
   created_at: string
 }
+
+export type Member = Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path' | 'bio' | 'bed_no' | 'memorial_note'>
+
+export interface GuestbookEntry {
+  id: string
+  author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+  recipient: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'> | null
+  body: string
+  status: 'visible' | 'hidden' | 'deleted'
+  created_at: string
+  updated_at: string
+  media: Media[]
+}
+
+export interface GuestbookPage {
+  entries: GuestbookEntry[]
+  next_cursor?: string
+}

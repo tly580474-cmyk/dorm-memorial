@@ -68,6 +68,28 @@ type Comment struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type GuestbookEntry struct {
+	ID        string    `json:"id"`
+	Author    Author    `json:"author"`
+	Recipient *Author   `json:"recipient"`
+	Body      string    `json:"body"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Media     []Media   `json:"media"`
+}
+
+type GuestbookInput struct {
+	RecipientID string   `json:"recipient_id"`
+	Body        string   `json:"body"`
+	MediaIDs    []string `json:"media_ids"`
+}
+
+type GuestbookPage struct {
+	Entries    []GuestbookEntry `json:"entries"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+}
+
 type WriteInput struct {
 	Body        string   `json:"body"`
 	ContentDate string   `json:"content_date"`
@@ -310,6 +332,125 @@ func (s *Store) DeleteComment(ctx context.Context, actor identity.User, id, ip s
 	return nil
 }
 
+func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, input GuestbookInput, ip string) (GuestbookEntry, error) {
+	input, err := validateGuestbookInput(input)
+	if err != nil {
+		return GuestbookEntry{}, err
+	}
+	if input.RecipientID != "" {
+		var active int
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND status = 'active')`, input.RecipientID).Scan(&active); err != nil {
+			return GuestbookEntry{}, err
+		}
+		if active == 0 {
+			return GuestbookEntry{}, ErrNotFound
+		}
+	}
+	id, now := newID(), time.Now().UTC()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return GuestbookEntry{}, err
+	}
+	defer tx.Rollback()
+	var recipient any
+	if input.RecipientID != "" {
+		recipient = input.RecipientID
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO guestbook_entries(id, author_id, recipient_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, actor.ID, recipient, input.Body, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+		return GuestbookEntry{}, err
+	}
+	if err := replaceGuestbookMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
+		return GuestbookEntry{}, err
+	}
+	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.create', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
+	if err := tx.Commit(); err != nil {
+		return GuestbookEntry{}, err
+	}
+	return s.getGuestbookEntry(ctx, id)
+}
+
+func (s *Store) ListGuestbook(ctx context.Context, recipientID, cursorValue string, limit int) (GuestbookPage, error) {
+	if limit <= 0 || limit > 50 {
+		limit = 20
+	}
+	args := []any{}
+	where := "WHERE g.status = 'visible' AND g.recipient_id IS NULL"
+	if recipientID != "" {
+		var active int
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND status = 'active')`, recipientID).Scan(&active); err != nil {
+			return GuestbookPage{}, err
+		}
+		if active == 0 {
+			return GuestbookPage{}, ErrNotFound
+		}
+		where = "WHERE g.status = 'visible' AND g.recipient_id = ?"
+		args = append(args, recipientID)
+	}
+	if cursorValue != "" {
+		decoded, err := decodeCursor(cursorValue)
+		if err != nil {
+			return GuestbookPage{}, errors.New("invalid cursor")
+		}
+		where += " AND (g.created_at < ? OR (g.created_at = ? AND g.id < ?))"
+		args = append(args, decoded.Sort, decoded.Sort, decoded.ID)
+	}
+	args = append(args, limit+1)
+	rows, err := s.db.QueryContext(ctx, guestbookSelect()+" "+where+" ORDER BY g.created_at DESC, g.id DESC LIMIT ?", args...)
+	if err != nil {
+		return GuestbookPage{}, err
+	}
+	defer rows.Close()
+	entries := make([]GuestbookEntry, 0, limit+1)
+	for rows.Next() {
+		entry, err := scanGuestbookEntry(rows)
+		if err != nil {
+			return GuestbookPage{}, err
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return GuestbookPage{}, err
+	}
+	for index := range entries {
+		if err := s.loadGuestbookMedia(ctx, &entries[index]); err != nil {
+			return GuestbookPage{}, err
+		}
+	}
+	page := GuestbookPage{Entries: entries}
+	if len(entries) > limit {
+		last := entries[limit-1]
+		page.Entries = entries[:limit]
+		page.NextCursor = encodeCursor(cursor{Sort: last.CreatedAt.Format(time.RFC3339Nano), ID: last.ID})
+	}
+	return page, nil
+}
+
+func (s *Store) HideGuestbookEntry(ctx context.Context, actor identity.User, id, ip string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE guestbook_entries SET status = 'hidden', updated_at = ?
+		WHERE id = ? AND status = 'visible' AND (? = 'admin' OR recipient_id = ?)`, nowText(), id, actor.Role, actor.ID)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrForbidden
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.hide', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, nowText())
+	return nil
+}
+
+func (s *Store) DeleteGuestbookEntry(ctx context.Context, actor identity.User, id, ip string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE guestbook_entries SET status = 'deleted', deleted_at = ?, updated_at = ?
+		WHERE id = ? AND status <> 'deleted' AND (author_id = ? OR ? = 'admin')`, nowText(), nowText(), id, actor.ID, actor.Role)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrForbidden
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.delete', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, nowText())
+	return nil
+}
+
 func (s *Store) ToggleLike(ctx context.Context, actor identity.User, postID, ip string) (bool, int, error) {
 	var allowed int
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members')`, postID).Scan(&allowed); err != nil {
@@ -538,6 +679,77 @@ func (s *Store) loadMedia(ctx context.Context, post *Post) error {
 	return rows.Err()
 }
 
+func (s *Store) getGuestbookEntry(ctx context.Context, id string) (GuestbookEntry, error) {
+	entry, err := scanGuestbookEntry(s.db.QueryRowContext(ctx, guestbookSelect()+" WHERE g.id = ?", id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return GuestbookEntry{}, ErrNotFound
+	}
+	if err != nil {
+		return GuestbookEntry{}, err
+	}
+	if err := s.loadGuestbookMedia(ctx, &entry); err != nil {
+		return GuestbookEntry{}, err
+	}
+	return entry, nil
+}
+
+func guestbookSelect() string {
+	return `SELECT g.id, g.body, g.status, g.created_at, g.updated_at,
+		a.id, a.username, ap.nickname, ap.avatar_path,
+		r.id, r.username, rp.nickname, rp.avatar_path
+		FROM guestbook_entries g
+		JOIN users a ON a.id = g.author_id JOIN profiles ap ON ap.user_id = a.id
+		LEFT JOIN users r ON r.id = g.recipient_id LEFT JOIN profiles rp ON rp.user_id = r.id`
+}
+
+func scanGuestbookEntry(row scanner) (GuestbookEntry, error) {
+	var entry GuestbookEntry
+	var created, updated string
+	var recipientID, recipientUsername, recipientNickname, recipientAvatar sql.NullString
+	err := row.Scan(&entry.ID, &entry.Body, &entry.Status, &created, &updated,
+		&entry.Author.ID, &entry.Author.Username, &entry.Author.Nickname, &entry.Author.AvatarPath,
+		&recipientID, &recipientUsername, &recipientNickname, &recipientAvatar)
+	if err != nil {
+		return GuestbookEntry{}, err
+	}
+	entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	entry.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	entry.Media = []Media{}
+	if recipientID.Valid {
+		entry.Recipient = &Author{ID: recipientID.String, Username: recipientUsername.String, Nickname: recipientNickname.String, AvatarPath: recipientAvatar.String}
+	}
+	return entry, nil
+}
+
+func (s *Store) loadGuestbookMedia(ctx context.Context, entry *GuestbookEntry) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.width, m.height, m.duration_ms, m.preview_path <> ''
+		FROM media m JOIN guestbook_media gm ON gm.media_id = m.id WHERE gm.entry_id = ? AND m.status <> 'deleted' ORDER BY gm.position`, entry.ID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item Media
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status, &width, &height, &duration, &item.HasPreview); err != nil {
+			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			item.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			item.Height = &value
+		}
+		if duration.Valid {
+			item.DurationMS = &duration.Int64
+		}
+		entry.Media = append(entry.Media, item)
+	}
+	return rows.Err()
+}
+
 func replaceTags(ctx context.Context, tx *sql.Tx, postID string, tags []string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM content_tags WHERE post_id = ?", postID); err != nil {
 		return err
@@ -569,6 +781,51 @@ func replaceMedia(ctx context.Context, tx *sql.Tx, ownerID, postID string, media
 		}
 	}
 	return nil
+}
+
+func replaceGuestbookMedia(ctx context.Context, tx *sql.Tx, ownerID, entryID string, mediaIDs []string) error {
+	for position, mediaID := range mediaIDs {
+		result, err := tx.ExecContext(ctx, `INSERT INTO guestbook_media(entry_id, media_id, position)
+			SELECT ?, id, ? FROM media WHERE id = ? AND owner_id = ? AND status = 'ready'`, entryID, position, mediaID, ownerID)
+		if err != nil {
+			return err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return ErrForbidden
+		}
+	}
+	return nil
+}
+
+func validateGuestbookInput(input GuestbookInput) (GuestbookInput, error) {
+	input.Body = strings.TrimSpace(input.Body)
+	input.RecipientID = strings.TrimSpace(input.RecipientID)
+	if input.RecipientID != "" && len(input.RecipientID) != 32 {
+		return input, errors.New("invalid guestbook recipient")
+	}
+	if len([]rune(input.Body)) > 2000 {
+		return input, errors.New("guestbook message must be at most 2000 characters")
+	}
+	if input.Body == "" && len(input.MediaIDs) == 0 {
+		return input, errors.New("guestbook message or media is required")
+	}
+	if len(input.MediaIDs) > 6 {
+		return input, errors.New("a guestbook entry can have at most 6 media files")
+	}
+	seen := make(map[string]bool)
+	clean := make([]string, 0, len(input.MediaIDs))
+	for _, id := range input.MediaIDs {
+		id = strings.TrimSpace(id)
+		if len(id) != 32 {
+			return input, errors.New("invalid media id")
+		}
+		if !seen[id] {
+			seen[id] = true
+			clean = append(clean, id)
+		}
+	}
+	input.MediaIDs = clean
+	return input, nil
 }
 
 func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {

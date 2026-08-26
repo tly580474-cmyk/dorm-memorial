@@ -93,6 +93,49 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	if err := store.DeleteComment(ctx, admin, comment.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
+	mediaID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES(?, ?, ?, '留言照片.png', 'image', 'image/png', 128, ?, 'ready', ?, ?)`, mediaID, member.ID, "/test/guestbook.png", mediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	dormEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{Body: "写给整个宿舍", MediaIDs: []string{mediaID}}, "127.0.0.1")
+	if err != nil || dormEntry.Recipient != nil || len(dormEntry.Media) != 1 {
+		t.Fatalf("create dorm guestbook entry=%+v err=%v", dormEntry, err)
+	}
+	dormPage, err := store.ListGuestbook(ctx, "", "", 20)
+	if err != nil || len(dormPage.Entries) != 1 || dormPage.Entries[0].ID != dormEntry.ID {
+		t.Fatalf("dorm guestbook page=%+v err=%v", dormPage, err)
+	}
+	if err := store.HideGuestbookEntry(ctx, other, dormEntry.ID, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ordinary member hide dorm entry err=%v", err)
+	}
+	if err := store.HideGuestbookEntry(ctx, admin, dormEntry.ID, "127.0.0.1"); err != nil {
+		t.Fatalf("admin hide dorm entry: %v", err)
+	}
+	personalEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{RecipientID: other.ID, Body: "只写在你的留言页"}, "127.0.0.1")
+	if err != nil || personalEntry.Recipient == nil || personalEntry.Recipient.ID != other.ID {
+		t.Fatalf("create personal guestbook entry=%+v err=%v", personalEntry, err)
+	}
+	if err := store.HideGuestbookEntry(ctx, member, personalEntry.ID, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("author hide personal entry err=%v", err)
+	}
+	if err := store.HideGuestbookEntry(ctx, other, personalEntry.ID, "127.0.0.1"); err != nil {
+		t.Fatalf("recipient hide personal entry: %v", err)
+	}
+	deletableEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{Body: "稍后由作者删除"}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteGuestbookEntry(ctx, other, deletableEntry.ID, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("non-author delete guestbook entry err=%v", err)
+	}
+	if err := store.DeleteGuestbookEntry(ctx, member, deletableEntry.ID, "127.0.0.1"); err != nil {
+		t.Fatalf("author delete guestbook entry: %v", err)
+	}
+	if _, err := store.CreateGuestbookEntry(ctx, other, GuestbookInput{Body: "不能盗用附件", MediaIDs: []string{mediaID}}, "127.0.0.1"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("cross-owner guestbook media err=%v", err)
+	}
 	if err := store.Delete(ctx, member, draft.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}

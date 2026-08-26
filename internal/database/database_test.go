@@ -23,7 +23,7 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	}
 	defer db.Close()
 	var count int
-	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil || count != 2 {
+	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil || count != 3 {
 		t.Fatalf("migrations count=%d err=%v", count, err)
 	}
 }

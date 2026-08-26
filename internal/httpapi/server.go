@@ -58,6 +58,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/auth/logout", s.requireAuth(http.HandlerFunc(s.logout)))
 	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.me)))
 	mux.Handle("GET /api/auth/sessions", s.requireAuth(http.HandlerFunc(s.sessions)))
+	mux.Handle("GET /api/members", s.requireAuth(http.HandlerFunc(s.listMembers)))
 	mux.Handle("DELETE /api/auth/sessions/{id}", s.requireAuth(http.HandlerFunc(s.revokeSession)))
 	mux.Handle("PATCH /api/profile", s.requireAuth(http.HandlerFunc(s.updateProfile)))
 	mux.Handle("POST /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.updateAvatar)))
@@ -74,6 +75,10 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/posts/{id}/comments", s.requireAuth(http.HandlerFunc(s.addComment)))
 	mux.Handle("POST /api/posts/{id}/like", s.requireAuth(http.HandlerFunc(s.toggleLike)))
 	mux.Handle("DELETE /api/comments/{id}", s.requireAuth(http.HandlerFunc(s.deleteComment)))
+	mux.Handle("GET /api/guestbook", s.requireAuth(http.HandlerFunc(s.listGuestbook)))
+	mux.Handle("POST /api/guestbook", s.requireAuth(http.HandlerFunc(s.createGuestbookEntry)))
+	mux.Handle("POST /api/guestbook/{id}/hide", s.requireAuth(http.HandlerFunc(s.hideGuestbookEntry)))
+	mux.Handle("DELETE /api/guestbook/{id}", s.requireAuth(http.HandlerFunc(s.deleteGuestbookEntry)))
 	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
 	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
@@ -85,6 +90,15 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 }
 
 func (s *Server) Handler() http.Handler { return s.handler }
+
+func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := s.identity.ListMembers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "无法读取成员列表")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"members": members})
+}
 
 func (s *Server) middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +430,45 @@ func (s *Server) toggleLike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked, "like_count": count})
+}
+
+func (s *Server) listGuestbook(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	page, err := s.content.ListGuestbook(r.Context(), strings.TrimSpace(r.URL.Query().Get("recipient_id")), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) createGuestbookEntry(w http.ResponseWriter, r *http.Request) {
+	var body content.GuestbookInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	entry, err := s.content.CreateGuestbookEntry(r.Context(), mustPrincipal(r).User, body, remoteIP(r))
+	if err != nil {
+		writeContentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"entry": entry})
+}
+
+func (s *Server) hideGuestbookEntry(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.HideGuestbookEntry(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteGuestbookEntry(w http.ResponseWriter, r *http.Request) {
+	if err := s.content.DeleteGuestbookEntry(r.Context(), mustPrincipal(r).User, r.PathValue("id"), remoteIP(r)); err != nil {
+		writeContentError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {

@@ -40,6 +40,16 @@ type User struct {
 	AvatarPath   string `json:"avatar_path"`
 }
 
+type Member struct {
+	ID           string `json:"id"`
+	Username     string `json:"username"`
+	Nickname     string `json:"nickname"`
+	AvatarPath   string `json:"avatar_path"`
+	Bio          string `json:"bio"`
+	BedNo        string `json:"bed_no"`
+	MemorialNote string `json:"memorial_note"`
+}
+
 type Session struct {
 	ID         string    `json:"id"`
 	UserAgent  string    `json:"user_agent"`
@@ -70,6 +80,24 @@ type Store struct {
 }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+func (s *Store) ListMembers(ctx context.Context) ([]Member, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path, p.bio, p.bed_no, p.memorial_note
+		FROM users u JOIN profiles p ON p.user_id = u.id WHERE u.status = 'active' ORDER BY p.nickname COLLATE NOCASE, u.username COLLATE NOCASE`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	members := []Member{}
+	for rows.Next() {
+		var member Member
+		if err := rows.Scan(&member.ID, &member.Username, &member.Nickname, &member.AvatarPath, &member.Bio, &member.BedNo, &member.MemorialNote); err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, rows.Err()
+}
 
 func (s *Store) BootstrapAdmin(ctx context.Context, username, email, password, nickname string) (bool, error) {
 	if username == "" {

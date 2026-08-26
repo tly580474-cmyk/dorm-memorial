@@ -222,7 +222,9 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 	var ownerID, objectPath, previewPath, status string
 	var attached int
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.status,
-		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id) OR EXISTS(SELECT 1 FROM profiles p WHERE p.avatar_path = m.id)
+		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM guestbook_media gm WHERE gm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM profiles p WHERE p.avatar_path = m.id)
 		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &status, &attached)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return ErrNotFound
@@ -265,6 +267,7 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	var publiclyReadable int
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
+		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'visible')
 		OR EXISTS(SELECT 1 FROM profiles profile WHERE profile.avatar_path = m.id)
 		FROM media m WHERE m.id = ?`, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &publiclyReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
