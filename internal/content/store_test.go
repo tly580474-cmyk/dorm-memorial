@@ -51,22 +51,18 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 		t.Fatalf("other member draft access err=%v", err)
 	}
 
-	pending, err := store.Submit(ctx, member, draft.ID, "127.0.0.1")
-	if err != nil || pending.Status != "pending" {
-		t.Fatalf("submit status=%q err=%v", pending.Status, err)
+	published, err := store.Submit(ctx, member, draft.ID, "127.0.0.1")
+	if err != nil || published.Status != "published" {
+		t.Fatalf("submit status=%q err=%v", published.Status, err)
 	}
 	feed, err := store.List(ctx, other, ListOptions{Scope: "feed"})
-	if err != nil || len(feed.Posts) != 0 {
-		t.Fatalf("feed before approval=%d err=%v", len(feed.Posts), err)
+	if err != nil || len(feed.Posts) != 1 {
+		t.Fatalf("feed after direct publish=%d err=%v", len(feed.Posts), err)
 	}
 	if _, err := store.List(ctx, member, ListOptions{Scope: "pending"}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("member pending list err=%v", err)
 	}
 
-	published, err := store.Moderate(ctx, admin, draft.ID, "approve", "", "127.0.0.1")
-	if err != nil || published.Status != "published" || published.PublishedAt == nil {
-		t.Fatalf("approve post=%+v err=%v", published, err)
-	}
 	feed, err = store.List(ctx, other, ListOptions{Scope: "feed", Limit: 10})
 	if err != nil || len(feed.Posts) != 1 || feed.Posts[0].ID != draft.ID {
 		t.Fatalf("feed after approval=%+v err=%v", feed, err)
@@ -99,8 +95,8 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 		VALUES(?, ?, ?, '留言照片.png', 'image', 'image/png', 128, ?, 'ready', ?, ?)`, mediaID, member.ID, "/test/guestbook.png", mediaID, now, now); err != nil {
 		t.Fatal(err)
 	}
-	dormEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{Body: "写给整个宿舍", MediaIDs: []string{mediaID}}, "127.0.0.1")
-	if err != nil || dormEntry.Recipient != nil || len(dormEntry.Media) != 1 {
+	dormEntry, err := store.CreateGuestbookEntry(ctx, member, GuestbookInput{Body: "写给整个宿舍", MediaIDs: []string{mediaID}, ExternalVideoURL: "https://cdn.example.test/memory.mp4"}, "127.0.0.1")
+	if err != nil || dormEntry.Recipient != nil || len(dormEntry.Media) != 1 || dormEntry.ExternalVideoURL != "https://cdn.example.test/memory.mp4" {
 		t.Fatalf("create dorm guestbook entry=%+v err=%v", dormEntry, err)
 	}
 	dormPage, err := store.ListGuestbook(ctx, other, "", "visible", "", 20)
@@ -158,8 +154,8 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 		WHERE user_id = ? AND kind IN ('post_approved', 'post_like', 'post_comment')`, member.ID).Scan(&interactionNotifications); err != nil {
 		t.Fatal(err)
 	}
-	if interactionNotifications != 3 {
-		t.Fatalf("member interaction notifications=%d want=3", interactionNotifications)
+	if interactionNotifications != 2 {
+		t.Fatalf("member interaction notifications=%d want=2", interactionNotifications)
 	}
 	var guestbookNotifications int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications
@@ -175,5 +171,23 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	feed, err = store.List(ctx, other, ListOptions{Scope: "feed"})
 	if err != nil || len(feed.Posts) != 0 {
 		t.Fatalf("feed after delete=%+v err=%v", feed, err)
+	}
+}
+
+func TestNormalizeExternalVideoEmbed(t *testing.T) {
+	bilibili := `<iframe src="//player.bilibili.com/player.html?isOutside=true&amp;bvid=BV1kB8S6sEa1" allowfullscreen="true"></iframe>`
+	got, err := normalizeExternalVideo(bilibili)
+	if err != nil || got != "https://player.bilibili.com/player.html?isOutside=true&bvid=BV1kB8S6sEa1" {
+		t.Fatalf("bilibili embed=%q err=%v", got, err)
+	}
+	youtube, err := normalizeExternalVideo(`<iframe src='https://www.youtube-nocookie.com/embed/abc123'></iframe>`)
+	if err != nil || youtube != "https://www.youtube-nocookie.com/embed/abc123" {
+		t.Fatalf("youtube embed=%q err=%v", youtube, err)
+	}
+	if _, err := normalizeExternalVideo(`<iframe src="https://evil.example/embed/1"></iframe>`); err == nil {
+		t.Fatal("expected unsupported iframe host to fail")
+	}
+	if got, err := normalizeExternalVideo("https://cdn.example/video.mp4"); err != nil || got == "" {
+		t.Fatalf("direct video=%q err=%v", got, err)
 	}
 }

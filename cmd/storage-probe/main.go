@@ -25,6 +25,7 @@ func main() {
 	filePath := flag.String("file", "", "local file used for the upload probe")
 	remotePath := flag.String("remote", "", "object path below ALIST_ROOT")
 	keep := flag.Bool("keep", false, "keep the uploaded probe object")
+	skipMove := flag.Bool("skip-move", false, "skip move/rename verification for providers that do not support file rename")
 	timeout := flag.Duration("timeout", 3*time.Hour, "maximum duration of the remote probe")
 	flag.Parse()
 
@@ -66,7 +67,7 @@ func main() {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := runProbe(ctx, client, source, name, *remotePath, movedPath, size, localHash, *keep)
+	result, err := runProbe(ctx, client, source, name, *remotePath, movedPath, size, localHash, *keep, *skipMove)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -94,7 +95,7 @@ type probeResult struct {
 	memory          memoryPeaks
 }
 
-func runProbe(ctx context.Context, client *alist.Client, source *os.File, name, remotePath, movedPath string, size int64, localHash string, keep bool) (result probeResult, err error) {
+func runProbe(ctx context.Context, client *alist.Client, source *os.File, name, remotePath, movedPath string, size int64, localHash string, keep, skipMove bool) (result probeResult, err error) {
 	started := time.Now()
 	stopMemorySampler := startMemorySampler()
 	memoryStopped := false
@@ -158,11 +159,14 @@ func runProbe(ctx context.Context, client *alist.Client, source *os.File, name, 
 	downloadElapsed := time.Since(downloadStarted)
 	log.Printf("download verification completed: elapsed=%s rate=%.2f MiB/s", downloadElapsed.Round(time.Millisecond), transferRate(size, downloadElapsed))
 
-	if err := client.Move(ctx, remotePath, movedPath); err != nil {
+	cleanupPath := movedPath
+	if skipMove {
+		cleanupPath = remotePath
+	} else if err := client.Move(ctx, remotePath, movedPath); err != nil {
 		return result, fmt.Errorf("move failed: %w", err)
 	}
 	if !keep {
-		if err := client.Delete(ctx, movedPath); err != nil {
+		if err := client.Delete(ctx, cleanupPath); err != nil {
 			return result, fmt.Errorf("cleanup failed: %w", err)
 		}
 		remoteMayExist = false
@@ -229,7 +233,23 @@ func verifyRange(ctx context.Context, client *alist.Client, source *os.File, obj
 	}
 
 	started := time.Now()
-	resp, err := client.OpenRange(ctx, objectPath, fmt.Sprintf("bytes=0-%d", prefixSize-1))
+	var resp *http.Response
+	var err error
+	delays := []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute}
+	for attempt, delay := range delays {
+		if delay > 0 {
+			log.Printf("range not ready; retrying in %s", delay)
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+		resp, err = client.OpenRange(ctx, objectPath, fmt.Sprintf("bytes=0-%d", prefixSize-1))
+		if err == nil || !strings.Contains(err.Error(), "HTTP 416") || attempt == len(delays)-1 {
+			break
+		}
+	}
 	if err != nil {
 		return 0, err
 	}

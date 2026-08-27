@@ -40,6 +40,8 @@ export const api = {
   logout: () => request<void>('/api/auth/logout', { method: 'POST', body: '{}' }),
   updateProfile: (body: { nickname: string; bio: string; bed_no: string; memorial_note: string }) =>
     request<{ user: User }>('/api/profile', { method: 'PATCH', body: JSON.stringify(body) }),
+  updateAccount: (body: { username: string; email: string; nickname: string; current_password: string; new_password: string }) =>
+    request<{ user: User }>('/api/account', { method: 'PATCH', body: JSON.stringify(body) }),
   sessions: () => request<{ sessions: Session[] }>('/api/auth/sessions'),
   members: () => request<{ members: Member[] }>('/api/members'),
   conversations: () => request<{ conversations: Conversation[] }>('/api/messages/conversations'),
@@ -89,9 +91,9 @@ export const api = {
     return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)
   },
   post: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`),
-  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
+  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
     request<{ post: Post }>('/api/posts', { method: 'POST', body: JSON.stringify(body) }),
-  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean }) =>
+  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
     request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   submitPost: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}/submit`, { method: 'POST', body: '{}' }),
   moderatePost: (id: string, action: 'approve' | 'hide', note = '') =>
@@ -106,7 +108,7 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<GuestbookPage>(`/api/guestbook${params.size ? `?${params}` : ''}`)
   },
-  createGuestbookEntry: (body: { recipient_id: string; body: string; media_ids: string[] }) => request<{ entry: GuestbookEntry }>('/api/guestbook', { method: 'POST', body: JSON.stringify(body) }),
+  createGuestbookEntry: (body: { recipient_id: string; body: string; media_ids: string[]; external_video_url: string }) => request<{ entry: GuestbookEntry }>('/api/guestbook', { method: 'POST', body: JSON.stringify(body) }),
   hideGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}/hide`, { method: 'POST', body: '{}' }),
   restoreGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}/restore`, { method: 'POST', body: '{}' }),
   deleteGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}`, { method: 'DELETE' }),

@@ -87,11 +87,16 @@ type Content struct {
 type Store struct {
 	db           *sql.DB
 	objects      storage.ObjectStorage
+	ffmpegPath   string
 	verifyDelays []time.Duration
 }
 
-func NewStore(db *sql.DB, objects storage.ObjectStorage) *Store {
-	return &Store{db: db, objects: objects, verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}}
+func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) *Store {
+	ffmpegPath := "ffmpeg"
+	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
+		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
+	}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}}
 }
 
 func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInput) (Record, error) {
@@ -113,7 +118,7 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	}
 
 	mediaID := newID()
-	objectPath := fmt.Sprintf("/originals/%s/%s/%s%s", actor.ID, time.Now().UTC().Format("2006/01"), mediaID, ext)
+	objectPath := fmt.Sprintf("/originals/%s/%s/%s%s", remoteOwnerSegment(actor.ID), time.Now().UTC().Format("2006/01"), mediaID, ext)
 	jobID := newID()
 	if err := s.reserve(ctx, actor.ID, jobID, input.ClientRequestID, objectPath, input.Size); err != nil {
 		return Record{}, err
@@ -136,6 +141,10 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	if mediaType == "image" {
 		imageInfo = buildImagePreview(ctx, s.objects, objectPath, actor.ID, mediaID, now)
 	}
+	previewPath := imageInfo.previewPath
+	if mediaType == "video" {
+		previewPath = buildVideoPreview(ctx, s.objects, s.ffmpegPath, objectPath, actor.ID, mediaID, now, input.DurationMS)
+	}
 	record := Record{
 		ID: mediaID, OwnerID: actor.ID, OriginalFilename: input.Filename, MediaType: mediaType,
 		MimeType: input.MimeType, SizeBytes: input.Size, SHA256: hex.EncodeToString(hasher.Sum(nil)), Status: "ready", CreatedAt: now,
@@ -153,8 +162,8 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	if imageInfo.width > 0 {
 		record.Width = &imageInfo.width
 		record.Height = &imageInfo.height
-		record.HasPreview = imageInfo.previewPath != ""
 	}
+	record.HasPreview = previewPath != ""
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
@@ -162,18 +171,18 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, preview_path, original_filename, media_type, mime_type, size_bytes, sha256, width, height, duration_ms, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`, mediaID, actor.ID, objectPath, imageInfo.previewPath, input.Filename, mediaType, input.MimeType, input.Size, record.SHA256, nullableInt(record.Width), nullableInt(record.Height), nullableInt64(record.DurationMS), nowText(now), nowText(now)); err != nil {
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`, mediaID, actor.ID, objectPath, previewPath, input.Filename, mediaType, input.MimeType, input.Size, record.SHA256, nullableInt(record.Width), nullableInt(record.Height), nullableInt64(record.DurationMS), nowText(now), nowText(now)); err != nil {
 		_ = tx.Rollback()
-		if imageInfo.previewPath != "" {
-			_ = s.objects.Delete(context.WithoutCancel(ctx), imageInfo.previewPath)
+		if previewPath != "" {
+			_ = s.objects.Delete(context.WithoutCancel(ctx), previewPath)
 		}
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
 		return Record{}, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE upload_jobs SET state = 'completed', updated_at = ? WHERE id = ?`, nowText(now), jobID); err != nil {
 		_ = tx.Rollback()
-		if imageInfo.previewPath != "" {
-			_ = s.objects.Delete(context.WithoutCancel(ctx), imageInfo.previewPath)
+		if previewPath != "" {
+			_ = s.objects.Delete(context.WithoutCancel(ctx), previewPath)
 		}
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
 		return Record{}, err
@@ -185,6 +194,14 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 		return Record{}, err
 	}
 	return record, nil
+}
+
+// remoteOwnerSegment returns a deterministic, opaque directory name that is
+// accepted by storage providers with a 16-character folder-name limit. Media
+// rows retain their complete object paths, so existing uploads remain readable.
+func remoteOwnerSegment(ownerID string) string {
+	sum := sha256.Sum256([]byte(ownerID))
+	return hex.EncodeToString(sum[:8])
 }
 
 func (s *Store) verifySize(ctx context.Context, objectPath string, expected int64) error {
@@ -334,10 +351,11 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 }
 
 func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {
-	var ownerID, objectPath, previewPath, filename, mimeType, status string
+	var ownerID, objectPath, previewPath, filename, mediaType, mimeType, status, createdText string
 	var size int64
+	var durationMS sql.NullInt64
 	var generallyReadable, messageAttached, messageReadable int
-	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.status,
+	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.created_at, m.duration_ms,
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'visible')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'hidden' AND g.recipient_id = ?)
@@ -346,7 +364,7 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 		EXISTS(SELECT 1 FROM message_media mm JOIN messages msg ON msg.id = mm.message_id
 			JOIN conversation_members cm ON cm.conversation_id = msg.conversation_id
 			WHERE mm.media_id = m.id AND cm.user_id = ?)
-		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mimeType, &size, &status, &generallyReadable, &messageAttached, &messageReadable)
+		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mediaType, &mimeType, &size, &status, &createdText, &durationMS, &generallyReadable, &messageAttached, &messageReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
 		return Content{}, ErrNotFound
 	}
@@ -362,6 +380,13 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	if status != "ready" || s.objects == nil {
 		return Content{}, ErrStorageUnavailable
 	}
+	if preview && previewPath == "" && mediaType == "video" {
+		createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
+		previewPath = buildVideoPreview(ctx, s.objects, s.ffmpegPath, objectPath, ownerID, id, createdAt, durationMS.Int64)
+		if previewPath != "" {
+			_, _ = s.db.ExecContext(context.WithoutCancel(ctx), `UPDATE media SET preview_path = ?, updated_at = ? WHERE id = ? AND preview_path = ''`, previewPath, nowText(time.Now().UTC()), id)
+		}
+	}
 	if preview && previewPath != "" {
 		body, err := s.objects.Open(ctx, previewPath)
 		if err == nil {
@@ -370,6 +395,9 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 		// AList-backed drivers can acknowledge a newly written preview before its
 		// raw URL becomes readable. The original remains a valid display source,
 		// so a transient preview failure must not leave avatars or cards broken.
+	}
+	if preview && mediaType == "video" {
+		return Content{}, ErrStorageUnavailable
 	}
 	if byteRange != "" {
 		if ranged, ok := s.objects.(storage.RangeStorage); ok {

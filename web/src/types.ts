@@ -86,6 +86,7 @@ export interface Post {
   like_count: number
   liked_by_me: boolean
   media: Media[]
+  external_video_url: string
 }
 
 export interface PostPage {
@@ -112,6 +113,7 @@ export interface GuestbookEntry {
   created_at: string
   updated_at: string
   media: Media[]
+  external_video_url: string
 }
 
 export interface GuestbookPage {

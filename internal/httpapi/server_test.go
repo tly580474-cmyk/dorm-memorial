@@ -169,6 +169,26 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	if profileBody.User.BedNo != "2" || profileBody.User.MemorialNote != "纪念寄语" {
 		t.Fatalf("updated profile=%+v", profileBody.User)
 	}
+	wrongAccount := doJSON(t, server.URL+"/api/account", http.MethodPatch, map[string]any{
+		"username": "roommate-renamed", "email": "renamed@example.com", "nickname": "账号新昵称", "current_password": "wrong-password", "new_password": "",
+	}, memberCookie)
+	if wrongAccount.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong account password status=%d body=%s", wrongAccount.StatusCode, readBody(wrongAccount))
+	}
+	wrongAccount.Body.Close()
+	accountResponse := doJSON(t, server.URL+"/api/account", http.MethodPatch, map[string]any{
+		"username": "roommate-renamed", "email": "renamed@example.com", "nickname": "账号新昵称", "current_password": "a-secure-password", "new_password": "new-secure-password",
+	}, memberCookie)
+	if accountResponse.StatusCode != http.StatusOK {
+		t.Fatalf("update account status=%d body=%s", accountResponse.StatusCode, readBody(accountResponse))
+	}
+	var accountBody struct {
+		User identity.User `json:"user"`
+	}
+	decodeResponse(t, accountResponse, &accountBody)
+	if accountBody.User.Username != "roommate-renamed" || accountBody.User.Email != "renamed@example.com" || accountBody.User.Nickname != "账号新昵称" {
+		t.Fatalf("updated account=%+v", accountBody.User)
+	}
 
 	createPost := doJSON(t, server.URL+"/api/posts", http.MethodPost, map[string]any{
 		"body": "一起搬进宿舍的第一天", "content_date": "2024-09-01", "visibility": "members", "tags": []string{"开学"}, "submit": false,
@@ -196,11 +216,6 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 		t.Fatalf("member pending status=%d", memberPending.StatusCode)
 	}
 	memberPending.Body.Close()
-	moderatePost := doJSON(t, server.URL+"/api/admin/posts/"+createdPost.Post.ID+"/moderate", http.MethodPost, map[string]any{"action": "approve", "note": ""}, adminCookie)
-	if moderatePost.StatusCode != http.StatusOK {
-		t.Fatalf("moderate post status=%d body=%s", moderatePost.StatusCode, readBody(moderatePost))
-	}
-	moderatePost.Body.Close()
 	likeResponse := doJSON(t, server.URL+"/api/posts/"+createdPost.Post.ID+"/like", http.MethodPost, map[string]any{}, memberCookie)
 	if likeResponse.StatusCode != http.StatusOK {
 		t.Fatalf("like status=%d body=%s", likeResponse.StatusCode, readBody(likeResponse))
@@ -513,7 +528,7 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 		} `json:"post"`
 	}
 	decodeResponse(t, postResponse, &postBody)
-	if postBody.Post.Status != "pending" || len(postBody.Post.Media) != 1 || postBody.Post.Media[0].ID != uploaded.Media.ID {
+	if postBody.Post.Status != "published" || len(postBody.Post.Media) != 1 || postBody.Post.Media[0].ID != uploaded.Media.ID {
 		t.Fatalf("unexpected media post: %+v", postBody.Post)
 	}
 	deleteResponse := doJSON(t, server.URL+"/api/media/"+uploaded.Media.ID, http.MethodDelete, nil, cookie)

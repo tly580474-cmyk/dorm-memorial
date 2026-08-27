@@ -86,6 +86,14 @@ type ProfileInput struct {
 	MemorialNote string `json:"memorial_note"`
 }
 
+type AccountInput struct {
+	Username        string `json:"username"`
+	Email           string `json:"email"`
+	Nickname        string `json:"nickname"`
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
 type Store struct {
 	db *sql.DB
 }
@@ -434,6 +442,78 @@ func (s *Store) UpdateProfile(ctx context.Context, userID string, input ProfileI
 		return User{}, err
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'profile.update', 'user', ?, ?, ?)`, userID, userID, ip, nowText())
+	return s.UserByID(ctx, userID)
+}
+
+func (s *Store) UpdateAccount(ctx context.Context, userID, currentSessionID string, input AccountInput, ip string) (User, error) {
+	input.Username = strings.TrimSpace(input.Username)
+	input.Email = strings.TrimSpace(input.Email)
+	input.Nickname = strings.TrimSpace(input.Nickname)
+	if !usernamePattern.MatchString(input.Username) {
+		return User{}, errors.New("username must be 3-24 letters, numbers, underscores, or hyphens")
+	}
+	parsedEmail, err := mail.ParseAddress(input.Email)
+	if err != nil || parsedEmail.Address != input.Email || !strings.Contains(input.Email, "@") {
+		return User{}, errors.New("invalid email")
+	}
+	if length := len([]rune(input.Nickname)); length < 1 || length > 40 {
+		return User{}, errors.New("nickname must be 1-40 characters")
+	}
+	if input.CurrentPassword == "" {
+		return User{}, ErrInvalidCredentials
+	}
+	if input.NewPassword != "" && (len(input.NewPassword) < 10 || len(input.NewPassword) > 128) {
+		return User{}, errors.New("password must be 10-128 characters")
+	}
+
+	var passwordHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ? AND status = 'active'`, userID).Scan(&passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return User{}, ErrNotFound
+		}
+		return User{}, err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(input.CurrentPassword)) != nil {
+		return User{}, ErrInvalidCredentials
+	}
+	var conflict int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id <> ? AND (username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE))`, userID, input.Username, input.Email).Scan(&conflict); err != nil {
+		return User{}, err
+	}
+	if conflict != 0 {
+		return User{}, ErrConflict
+	}
+	if input.NewPassword != "" {
+		generated, err := bcrypt.GenerateFromPassword([]byte(input.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return User{}, err
+		}
+		passwordHash = string(generated)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return User{}, err
+	}
+	defer tx.Rollback()
+	now := nowText()
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, email = ?, password_hash = ?, updated_at = ? WHERE id = ?`, input.Username, input.Email, passwordHash, now, userID); err != nil {
+		return User{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE profiles SET nickname = ?, updated_at = ? WHERE user_id = ?`, input.Nickname, now, userID); err != nil {
+		return User{}, err
+	}
+	if input.NewPassword != "" {
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND id <> ? AND revoked_at IS NULL`, now, userID, currentSessionID); err != nil {
+			return User{}, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'account.update', 'user', ?, ?, ?)`, userID, userID, ip, now); err != nil {
+		return User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return User{}, err
+	}
 	return s.UserByID(ctx, userID)
 }
 

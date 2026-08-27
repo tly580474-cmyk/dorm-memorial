@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -54,7 +55,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	if len(objects) > 0 {
 		objectStore = objects[0]
 	}
-	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore), messaging: messaging.NewStore(db), logger: logger}
+	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore, cfg.FFmpegPath), messaging: messaging.NewStore(db), logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
@@ -77,6 +78,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/notifications/{id}/read", s.requireAuth(http.HandlerFunc(s.markNotificationRead)))
 	mux.Handle("DELETE /api/auth/sessions/{id}", s.requireAuth(http.HandlerFunc(s.revokeSession)))
 	mux.Handle("PATCH /api/profile", s.requireAuth(http.HandlerFunc(s.updateProfile)))
+	mux.Handle("PATCH /api/account", s.requireAuth(http.HandlerFunc(s.updateAccount)))
 	mux.Handle("POST /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.updateAvatar)))
 	mux.Handle("DELETE /api/profile/avatar", s.requireAuth(http.HandlerFunc(s.clearAvatar)))
 	mux.Handle("POST /api/admin/invites", s.requireAuth(http.HandlerFunc(s.createInvite)))
@@ -102,7 +104,6 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/guestbook/{id}/hide", s.requireAuth(http.HandlerFunc(s.hideGuestbookEntry)))
 	mux.Handle("POST /api/guestbook/{id}/restore", s.requireAuth(http.HandlerFunc(s.restoreGuestbookEntry)))
 	mux.Handle("DELETE /api/guestbook/{id}", s.requireAuth(http.HandlerFunc(s.deleteGuestbookEntry)))
-	mux.Handle("POST /api/admin/posts/{id}/moderate", s.requireAuth(http.HandlerFunc(s.moderatePost)))
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
 	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
 	mux.Handle("DELETE /api/media/{id}", s.requireAuth(http.HandlerFunc(s.deleteMedia)))
@@ -239,7 +240,9 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		w.Header().Set("Cache-Control", "no-store")
+		if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/media/") {
+			w.Header().Set("Cache-Control", "no-store")
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 			writeError(w, http.StatusForbidden, "cross-site request rejected")
 			return
@@ -380,6 +383,20 @@ func (s *Server) updateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := s.identity.UpdateProfile(r.Context(), mustPrincipal(r).User.ID, body, remoteIP(r))
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": user})
+}
+
+func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
+	var body identity.AccountInput
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	principal := mustPrincipal(r)
+	user, err := s.identity.UpdateAccount(r.Context(), principal.User.ID, principal.SessionID, body, remoteIP(r))
 	if err != nil {
 		writeIdentityError(w, err)
 		return
@@ -723,7 +740,16 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusLengthRequired, "上传文件必须提供大小")
 		return
 	}
-	if r.ContentLength > mediastore.MaxFileSize {
+	mimeType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+	maxFileSize := mediastore.MaxFileSize
+	if strings.HasPrefix(mimeType, "video/") {
+		maxFileSize = s.cfg.MaxVideoUploadBytes
+	}
+	if r.ContentLength > maxFileSize {
+		if strings.HasPrefix(mimeType, "video/") {
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个视频不能超过 %d MiB", maxFileSize/(1024*1024)))
+			return
+		}
 		writeError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 8 GiB")
 		return
 	}
@@ -732,7 +758,7 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "文件名格式不正确")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, mediastore.MaxFileSize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize)
 	record, err := s.media.Upload(r.Context(), mustPrincipal(r).User, mediastore.UploadInput{
 		ClientRequestID: r.Header.Get("X-Upload-ID"),
 		Filename:        filename,
@@ -785,6 +811,17 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer content.Body.Close()
+	variant := "original"
+	if r.URL.Query().Get("variant") == "preview" {
+		variant = "preview"
+	}
+	etag := `"media-` + r.PathValue("id") + `-` + variant + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
+	if r.Header.Get("Range") == "" && r.Header.Get("If-None-Match") == etag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	w.Header().Set("Content-Type", content.MimeType)
 	w.Header().Set("Content-Disposition", "inline")
 	if content.AcceptRanges != "" {
@@ -844,7 +881,11 @@ func (s *Server) frontend() http.Handler {
 		}
 		path := filepath.Join(s.cfg.FrontendDir, filepath.Clean(r.URL.Path))
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			w.Header().Del("Cache-Control")
+			if strings.HasPrefix(r.URL.Path, "/assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			} else {
+				w.Header().Set("Cache-Control", "no-cache")
+			}
 			files.ServeHTTP(w, r)
 			return
 		}

@@ -9,6 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -20,6 +23,7 @@ var (
 	ErrNotFound  = errors.New("content not found")
 	ErrForbidden = errors.New("content access forbidden")
 	ErrConflict  = errors.New("content state conflict")
+	iframeSource = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))`)
 )
 
 type Author struct {
@@ -30,22 +34,23 @@ type Author struct {
 }
 
 type Post struct {
-	ID             string     `json:"id"`
-	Author         Author     `json:"author"`
-	Body           string     `json:"body"`
-	Status         string     `json:"status"`
-	Visibility     string     `json:"visibility"`
-	ContentDate    *time.Time `json:"content_date"`
-	ModerationNote string     `json:"moderation_note"`
-	SubmittedAt    *time.Time `json:"submitted_at"`
-	PublishedAt    *time.Time `json:"published_at"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	Tags           []string   `json:"tags"`
-	CommentCount   int        `json:"comment_count"`
-	LikeCount      int        `json:"like_count"`
-	LikedByMe      bool       `json:"liked_by_me"`
-	Media          []Media    `json:"media"`
+	ID               string     `json:"id"`
+	Author           Author     `json:"author"`
+	Body             string     `json:"body"`
+	Status           string     `json:"status"`
+	Visibility       string     `json:"visibility"`
+	ContentDate      *time.Time `json:"content_date"`
+	ModerationNote   string     `json:"moderation_note"`
+	SubmittedAt      *time.Time `json:"submitted_at"`
+	PublishedAt      *time.Time `json:"published_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	Tags             []string   `json:"tags"`
+	CommentCount     int        `json:"comment_count"`
+	LikeCount        int        `json:"like_count"`
+	LikedByMe        bool       `json:"liked_by_me"`
+	Media            []Media    `json:"media"`
+	ExternalVideoURL string     `json:"external_video_url"`
 }
 
 type Media struct {
@@ -70,20 +75,22 @@ type Comment struct {
 }
 
 type GuestbookEntry struct {
-	ID        string    `json:"id"`
-	Author    Author    `json:"author"`
-	Recipient *Author   `json:"recipient"`
-	Body      string    `json:"body"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Media     []Media   `json:"media"`
+	ID               string    `json:"id"`
+	Author           Author    `json:"author"`
+	Recipient        *Author   `json:"recipient"`
+	Body             string    `json:"body"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	Media            []Media   `json:"media"`
+	ExternalVideoURL string    `json:"external_video_url"`
 }
 
 type GuestbookInput struct {
-	RecipientID string   `json:"recipient_id"`
-	Body        string   `json:"body"`
-	MediaIDs    []string `json:"media_ids"`
+	RecipientID      string   `json:"recipient_id"`
+	Body             string   `json:"body"`
+	MediaIDs         []string `json:"media_ids"`
+	ExternalVideoURL string   `json:"external_video_url"`
 }
 
 type GuestbookPage struct {
@@ -92,12 +99,13 @@ type GuestbookPage struct {
 }
 
 type WriteInput struct {
-	Body        string   `json:"body"`
-	ContentDate string   `json:"content_date"`
-	Visibility  string   `json:"visibility"`
-	Tags        []string `json:"tags"`
-	MediaIDs    []string `json:"media_ids"`
-	Submit      bool     `json:"submit"`
+	Body             string   `json:"body"`
+	ContentDate      string   `json:"content_date"`
+	Visibility       string   `json:"visibility"`
+	Tags             []string `json:"tags"`
+	MediaIDs         []string `json:"media_ids"`
+	Submit           bool     `json:"submit"`
+	ExternalVideoURL string   `json:"external_video_url"`
 }
 
 type ListOptions struct {
@@ -128,7 +136,7 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 	}
 	status := "draft"
 	if input.Submit {
-		status = "pending"
+		status = "published"
 	}
 	now := time.Now().UTC()
 	id := newID()
@@ -138,11 +146,15 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 	}
 	defer tx.Rollback()
 	var submitted any
-	if status == "pending" {
+	if status == "published" {
 		submitted = now.Format(time.RFC3339Nano)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO posts(id, author_id, body, status, visibility, content_date, submitted_at, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Body, status, input.Visibility, nullableDate(contentDate), submitted, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	var published any
+	if status == "published" {
+		published = submitted
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO posts(id, author_id, body, status, visibility, content_date, submitted_at, published_at, external_video_url, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Body, status, input.Visibility, nullableDate(contentDate), submitted, published, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return Post{}, err
 	}
@@ -177,13 +189,15 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 	if authorID != actor.ID && actor.Role != "admin" {
 		return Post{}, ErrForbidden
 	}
-	if status != "draft" {
+	if status != "draft" && status != "published" {
 		return Post{}, ErrConflict
 	}
-	nextStatus := "draft"
+	nextStatus := status
 	var submitted any
 	if input.Submit {
-		nextStatus = "pending"
+		nextStatus = "published"
+		submitted = time.Now().UTC().Format(time.RFC3339Nano)
+	} else if status == "published" {
 		submitted = time.Now().UTC().Format(time.RFC3339Nano)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -191,7 +205,11 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 		return Post{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE posts SET body = ?, visibility = ?, content_date = ?, status = ?, submitted_at = ?, updated_at = ? WHERE id = ? AND status = 'draft'`, input.Body, input.Visibility, nullableDate(contentDate), nextStatus, submitted, nowText(), id)
+	var published any
+	if nextStatus == "published" {
+		published = nowText()
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE posts SET body = ?, visibility = ?, content_date = ?, status = ?, submitted_at = COALESCE(?, submitted_at), published_at = COALESCE(published_at, ?), external_video_url = ?, moderation_note = '', updated_at = ? WHERE id = ? AND status IN ('draft', 'published')`, input.Body, input.Visibility, nullableDate(contentDate), nextStatus, submitted, published, input.ExternalVideoURL, nowText(), id)
 	if err != nil {
 		return Post{}, err
 	}
@@ -212,8 +230,8 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 }
 
 func (s *Store) Submit(ctx context.Context, actor identity.User, id, ip string) (Post, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE posts SET status = 'pending', submitted_at = ?, updated_at = ?
-		WHERE id = ? AND author_id = ? AND status = 'draft' AND length(trim(body)) > 0`, nowText(), nowText(), id, actor.ID)
+	result, err := s.db.ExecContext(ctx, `UPDATE posts SET status = 'published', submitted_at = ?, published_at = ?, moderation_note = '', updated_at = ?
+		WHERE id = ? AND author_id = ? AND status = 'draft' AND (length(trim(body)) > 0 OR external_video_url <> '' OR EXISTS(SELECT 1 FROM post_media WHERE post_id = posts.id))`, nowText(), nowText(), nowText(), id, actor.ID)
 	if err != nil {
 		return Post{}, err
 	}
@@ -373,7 +391,7 @@ func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, i
 	if input.RecipientID != "" {
 		recipient = input.RecipientID
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO guestbook_entries(id, author_id, recipient_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, actor.ID, recipient, input.Body, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO guestbook_entries(id, author_id, recipient_id, body, external_video_url, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 'visible', ?, ?)`, id, actor.ID, recipient, input.Body, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
 		return GuestbookEntry{}, err
 	}
 	if err := replaceGuestbookMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
@@ -676,7 +694,7 @@ func (s *Store) scanOne(ctx context.Context, viewerID, where string, args ...any
 
 func postSelect() string {
 	return `SELECT p.id, p.body, p.status, p.visibility, p.content_date, p.moderation_note,
-		p.submitted_at, p.published_at, p.created_at, p.updated_at,
+		p.submitted_at, p.published_at, p.created_at, p.updated_at, p.external_video_url,
 		u.id, u.username, pr.nickname, pr.avatar_path,
 		(SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'visible'),
 		(SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id AND r.kind = 'like'),
@@ -689,7 +707,7 @@ func scanPost(row scanner) (Post, error) {
 	var contentDate, submittedAt, publishedAt sql.NullString
 	var createdAt, updatedAt string
 	err := row.Scan(&post.ID, &post.Body, &post.Status, &post.Visibility, &contentDate, &post.ModerationNote,
-		&submittedAt, &publishedAt, &createdAt, &updatedAt,
+		&submittedAt, &publishedAt, &createdAt, &updatedAt, &post.ExternalVideoURL,
 		&post.Author.ID, &post.Author.Username, &post.Author.Nickname, &post.Author.AvatarPath,
 		&post.CommentCount, &post.LikeCount, &post.LikedByMe)
 	if err != nil {
@@ -765,7 +783,7 @@ func (s *Store) getGuestbookEntry(ctx context.Context, id string) (GuestbookEntr
 }
 
 func guestbookSelect() string {
-	return `SELECT g.id, g.body, g.status, g.created_at, g.updated_at,
+	return `SELECT g.id, g.body, g.external_video_url, g.status, g.created_at, g.updated_at,
 		a.id, a.username, ap.nickname, ap.avatar_path,
 		r.id, r.username, rp.nickname, rp.avatar_path
 		FROM guestbook_entries g
@@ -777,7 +795,7 @@ func scanGuestbookEntry(row scanner) (GuestbookEntry, error) {
 	var entry GuestbookEntry
 	var created, updated string
 	var recipientID, recipientUsername, recipientNickname, recipientAvatar sql.NullString
-	err := row.Scan(&entry.ID, &entry.Body, &entry.Status, &created, &updated,
+	err := row.Scan(&entry.ID, &entry.Body, &entry.ExternalVideoURL, &entry.Status, &created, &updated,
 		&entry.Author.ID, &entry.Author.Username, &entry.Author.Nickname, &entry.Author.AvatarPath,
 		&recipientID, &recipientUsername, &recipientNickname, &recipientAvatar)
 	if err != nil {
@@ -871,14 +889,19 @@ func replaceGuestbookMedia(ctx context.Context, tx *sql.Tx, ownerID, entryID str
 func validateGuestbookInput(input GuestbookInput) (GuestbookInput, error) {
 	input.Body = strings.TrimSpace(input.Body)
 	input.RecipientID = strings.TrimSpace(input.RecipientID)
+	externalVideoURL, err := normalizeExternalVideo(input.ExternalVideoURL)
+	if err != nil {
+		return input, err
+	}
+	input.ExternalVideoURL = externalVideoURL
 	if input.RecipientID != "" && len(input.RecipientID) != 32 {
 		return input, errors.New("invalid guestbook recipient")
 	}
 	if len([]rune(input.Body)) > 2000 {
 		return input, errors.New("guestbook message must be at most 2000 characters")
 	}
-	if input.Body == "" && len(input.MediaIDs) == 0 {
-		return input, errors.New("guestbook message or media is required")
+	if input.Body == "" && len(input.MediaIDs) == 0 && input.ExternalVideoURL == "" {
+		return input, errors.New("guestbook message, media, or external video is required")
 	}
 	if len(input.MediaIDs) > 6 {
 		return input, errors.New("a guestbook entry can have at most 6 media files")
@@ -901,10 +924,15 @@ func validateGuestbookInput(input GuestbookInput) (GuestbookInput, error) {
 
 func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	input.Body = strings.TrimSpace(input.Body)
+	externalVideoURL, err := normalizeExternalVideo(input.ExternalVideoURL)
+	if err != nil {
+		return input, nil, err
+	}
+	input.ExternalVideoURL = externalVideoURL
 	if len([]rune(input.Body)) > 10000 {
 		return input, nil, errors.New("content body is too long")
 	}
-	if input.Submit && input.Body == "" && len(input.MediaIDs) == 0 {
+	if input.Submit && input.Body == "" && len(input.MediaIDs) == 0 && input.ExternalVideoURL == "" {
 		return input, nil, errors.New("content body is required before submission")
 	}
 	if input.Visibility == "" {
@@ -956,6 +984,46 @@ func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	}
 	input.MediaIDs = cleanMedia
 	return input, contentDate, nil
+}
+
+func normalizeExternalVideo(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	fromIframe := strings.Contains(strings.ToLower(value), "<iframe")
+	if fromIframe {
+		matches := iframeSource.FindStringSubmatch(value)
+		if len(matches) == 0 {
+			return "", errors.New("iframe embed code does not contain a valid src")
+		}
+		value = ""
+		for _, candidate := range matches[1:] {
+			if candidate != "" {
+				value = html.UnescapeString(candidate)
+				break
+			}
+		}
+	}
+	if strings.HasPrefix(value, "//") {
+		value = "https:" + value
+	}
+	if len(value) > 2048 {
+		return "", errors.New("external video URL is too long")
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", errors.New("external video must be a valid http or https URL or iframe embed code")
+	}
+	if fromIframe && !allowedEmbedHost(parsed.Hostname()) {
+		return "", errors.New("iframe player domain is not supported")
+	}
+	return parsed.String(), nil
+}
+
+func allowedEmbedHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	return host == "player.bilibili.com" || host == "www.youtube.com" || host == "youtube.com" || host == "www.youtube-nocookie.com"
 }
 
 func canRead(actor identity.User, post Post) bool {

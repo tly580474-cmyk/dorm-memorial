@@ -83,7 +83,10 @@ func New(cfg Config) (*Client, error) {
 			KeepAlive: 30 * time.Second,
 		}).DialContext
 		transport.TLSHandshakeTimeout = 10 * time.Second
-		transport.ResponseHeaderTimeout = 5 * time.Minute
+		// AList does not return response headers until the remote provider has
+		// accepted the upload. Overseas routes can legitimately need tens of
+		// minutes for the configured 500 MiB maximum video size.
+		transport.ResponseHeaderTimeout = 45 * time.Minute
 		transport.IdleConnTimeout = 90 * time.Second
 		// Do not set http.Client.Timeout: it includes the entire response body
 		// and would abort legitimate multi-gigabyte uploads and downloads.

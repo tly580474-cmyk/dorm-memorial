@@ -55,7 +55,7 @@ func buildImagePreview(ctx context.Context, objects storage.ObjectStorage, objec
 	if err := jpeg.Encode(&encoded, preview, &jpeg.Options{Quality: 82}); err != nil {
 		return details
 	}
-	previewPath := "/previews/" + ownerID + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
+	previewPath := "/previews/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
 	if err := objects.Put(ctx, previewPath, bytes.NewReader(encoded.Bytes()), int64(encoded.Len())); err != nil {
 		return details
 	}

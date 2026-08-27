@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
+import VideoPreview from './components/VideoPreview.vue'
 
 type EditorMedia = {
   key: string
@@ -34,6 +35,9 @@ let profileTrigger: HTMLElement | null = null
 const mobileMenuOpen = ref(false)
 const profileBusy = ref(false)
 const profileMessage = ref('')
+const accountBusy = ref(false)
+const accountMessage = ref('')
+const account = reactive({ username: '', email: '', nickname: '', current_password: '', new_password: '', confirm_password: '' })
 const avatarInput = ref<HTMLInputElement | null>(null)
 const avatarBusy = ref(false)
 const avatarProgress = ref(0)
@@ -78,19 +82,30 @@ const myPosts = ref<Post[]>([])
 const pendingPosts = ref<Post[]>([])
 const contentLoading = ref(false)
 const contentError = ref('')
+const feedNextCursor = ref('')
+const feedLoadingMore = ref(false)
+const contentLoadSentinel = ref<HTMLElement | null>(null)
+const timelineVisibleCount = ref(8)
+const wallVisibleCount = ref(12)
+let contentObserver: IntersectionObserver | null = null
+const topNotice = ref('')
+let topNoticeTimer = 0
 const composerOpen = ref(false)
 const composerDialog = ref<HTMLElement | null>(null)
 let composerTrigger: HTMLElement | null = null
 const composerBusy = ref(false)
 const composerError = ref('')
 const editingPostID = ref('')
-const editor = reactive({ body: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '' })
+let composerInitialState = ''
+let dialogBackdropArmed = false
+const editor = reactive({ body: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '', external_video_url: '' })
 const editorMedia = ref<EditorMedia[]>([])
 const removedMediaIDs = ref<string[]>([])
 const mediaInput = ref<HTMLInputElement | null>(null)
 const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
+const publicProfile = ref<Member | null>(null)
 const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
 const detailOpen = ref(false)
 const detailDialog = ref<HTMLElement | null>(null)
@@ -105,6 +120,7 @@ const guestbookEntries = ref<GuestbookEntry[]>([])
 const guestbookMembers = ref<Member[]>([])
 const guestbookRecipientID = ref('')
 const guestbookBody = ref('')
+const guestbookExternalVideoURL = ref('')
 const guestbookMedia = ref<EditorMedia[]>([])
 const guestbookMediaInput = ref<HTMLInputElement | null>(null)
 const guestbookLoading = ref(false)
@@ -145,9 +161,19 @@ let messageHighlightTimer = 0
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
 const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
 const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management'>('home')
-const wallItems = computed(() => feedPosts.value.flatMap((post) => post.media.map((media) => ({ post, media }))))
+const wallItems = computed(() => feedPosts.value.flatMap((post) => [
+  ...post.media.map((media) => ({ key: `media-${media.id}`, post, media, externalVideoURL: '' })),
+  ...(post.external_video_url ? [{ key: `external-${post.id}`, post, media: null, externalVideoURL: post.external_video_url }] : []),
+]))
+const visibleWallItems = computed(() => wallItems.value.slice(0, wallVisibleCount.value))
+
+function showPublicProfile(id: string) {
+  const member = [...guestbookMembers.value, ...messageMembers.value].find((item) => item.id === id)
+  if (member) publicProfile.value = member
+}
+
 const timelineGroups = computed(() => {
-  const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime())
+  const sorted = [...feedPosts.value].sort((left, right) => timelineDate(right).getTime() - timelineDate(left).getTime()).slice(0, timelineVisibleCount.value)
   const groups = new Map<string, { label: string; posts: Post[] }>()
   for (const post of sorted) {
     const date = timelineDate(post)
@@ -189,6 +215,11 @@ function timelineDate(post: Post) {
 onMounted(async () => {
   document.addEventListener('pointerdown', handleNotificationOutsidePointer)
   document.addEventListener('keydown', handleNotificationKeydown)
+  document.addEventListener('visibilitychange', handleVisibilityRefresh)
+  contentObserver = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) void revealMoreContent()
+  }, { rootMargin: '500px 0px' })
+  if (contentLoadSentinel.value) contentObserver.observe(contentLoadSentinel.value)
   try {
     applyUser((await api.me()).user)
     await loadContent()
@@ -204,6 +235,9 @@ onBeforeUnmount(() => {
   stopActivityPolling()
   document.removeEventListener('pointerdown', handleNotificationOutsidePointer)
   document.removeEventListener('keydown', handleNotificationKeydown)
+  document.removeEventListener('visibilitychange', handleVisibilityRefresh)
+  contentObserver?.disconnect()
+  if (topNoticeTimer) window.clearTimeout(topNoticeTimer)
   if (messageHighlightTimer) window.clearTimeout(messageHighlightTimer)
 })
 
@@ -213,7 +247,20 @@ function applyUser(next: User) {
   profile.bio = next.bio
   profile.bed_no = next.bed_no
   profile.memorial_note = next.memorial_note
+  account.username = next.username
+  account.email = next.email
+  account.nickname = next.nickname
+  const author = { id: next.id, username: next.username, nickname: next.nickname, avatar_path: next.avatar_path }
+  feedPosts.value = feedPosts.value.map((post) => post.author.id === next.id ? { ...post, author } : post)
+  myPosts.value = myPosts.value.map((post) => post.author.id === next.id ? { ...post, author } : post)
+  guestbookMembers.value = guestbookMembers.value.map((member) => member.id === next.id ? { ...member, username: next.username, nickname: next.nickname, avatar_path: next.avatar_path, bio: next.bio, bed_no: next.bed_no, memorial_note: next.memorial_note } : member)
+  messageMembers.value = messageMembers.value.map((member) => member.id === next.id ? { ...member, username: next.username, nickname: next.nickname, avatar_path: next.avatar_path, bio: next.bio, bed_no: next.bed_no, memorial_note: next.memorial_note } : member)
 }
+
+watch(contentLoadSentinel, (next, previous) => {
+  if (previous) contentObserver?.unobserve(previous)
+  if (next) contentObserver?.observe(next)
+})
 
 async function submitAuth() {
   authBusy.value = true
@@ -249,6 +296,10 @@ async function openProfile() {
 	profileTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   profileOpen.value = true
   profileMessage.value = ''
+  accountMessage.value = ''
+  account.current_password = ''
+  account.new_password = ''
+  account.confirm_password = ''
   try {
     sessions.value = (await api.sessions()).sessions
   } catch (error) {
@@ -262,6 +313,18 @@ function closeProfile() {
   resetAvatarCrop()
   profileOpen.value = false
   nextTick(() => profileTrigger?.focus())
+}
+
+function closeProfileFromBackdrop(event: MouseEvent) {
+  if (consumeDialogBackdrop(event)) closeProfile()
+}
+
+function closeDetailFromBackdrop(event: MouseEvent) {
+  if (consumeDialogBackdrop(event)) closeDetail()
+}
+
+function closePublicProfileFromBackdrop(event: MouseEvent) {
+  if (consumeDialogBackdrop(event)) publicProfile.value = null
 }
 
 function trapProfileFocus(event: KeyboardEvent) {
@@ -294,6 +357,36 @@ async function saveProfile() {
     profileMessage.value = error instanceof Error ? error.message : '保存失败'
   } finally {
     profileBusy.value = false
+  }
+}
+
+async function saveAccount() {
+  if (accountBusy.value) return
+  accountMessage.value = ''
+  if (account.new_password !== account.confirm_password) {
+    accountMessage.value = '两次输入的新密码不一致'
+    return
+  }
+  accountBusy.value = true
+  try {
+    const passwordChanged = Boolean(account.new_password)
+    applyUser((await api.updateAccount({
+      username: account.username,
+      email: account.email,
+      nickname: account.nickname,
+      current_password: account.current_password,
+      new_password: account.new_password,
+    })).user)
+    account.current_password = ''
+    account.new_password = ''
+    account.confirm_password = ''
+    if (passwordChanged) sessions.value = (await api.sessions()).sessions
+    accountMessage.value = passwordChanged ? '账号与密码已更新，其他设备已退出登录' : '账号信息已更新'
+    showTopNotice(accountMessage.value)
+  } catch (error) {
+    accountMessage.value = error instanceof ApiError && error.status === 401 ? '当前密码不正确' : error instanceof Error ? error.message : '账号信息保存失败'
+  } finally {
+    accountBusy.value = false
   }
 }
 
@@ -534,8 +627,12 @@ function addGuestbookMediaFiles(files: File[]) {
   if (files.length > available) guestbookError.value = `每条留言最多附带 6 个文件，本次只加入前 ${Math.max(available, 0)} 个。`
   for (const file of files.slice(0, Math.max(available, 0))) {
     const kind = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null
-    if (!kind || file.size <= 0 || file.size > 8 * 1024 ** 3) {
-      guestbookError.value = `${file.name} 不是有效的图片或视频，或文件超过 8 GiB。`
+    if (!kind) {
+      guestbookError.value = `${file.name} 不是有效的图片或视频。`
+      continue
+    }
+    if (file.size <= 0 || file.size > (kind === 'video' ? 500 * 1024 ** 2 : 8 * 1024 ** 3)) {
+      guestbookError.value = kind === 'video' ? `${file.name} 为空或超过 150 MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 8 GiB。`
       continue
     }
     const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
@@ -551,7 +648,7 @@ async function removeGuestbookMedia(item: EditorMedia) {
 }
 
 async function submitGuestbookEntry() {
-  if ((!guestbookBody.value.trim() && guestbookMedia.value.length === 0) || guestbookBusy.value) return
+  if ((!guestbookBody.value.trim() && !guestbookExternalVideoURL.value.trim() && guestbookMedia.value.length === 0) || guestbookBusy.value) return
   guestbookBusy.value = true
   guestbookError.value = ''
   try {
@@ -562,9 +659,11 @@ async function submitGuestbookEntry() {
       recipient_id: guestbookRecipientID.value,
       body: guestbookBody.value,
       media_ids: guestbookMedia.value.flatMap((item) => item.media ? [item.media.id] : []),
+      external_video_url: guestbookExternalVideoURL.value,
     })
     guestbookEntries.value.unshift(response.entry)
     guestbookBody.value = ''
+    guestbookExternalVideoURL.value = ''
     guestbookMedia.value = []
   } catch (error) {
     guestbookError.value = error instanceof Error ? error.message : '留言发布失败'
@@ -734,21 +833,98 @@ async function loadContent() {
   contentLoading.value = true
   contentError.value = ''
   try {
-    const requests: [Promise<{ posts: Post[] }>, Promise<{ posts: Post[] }>, Promise<{ posts: Post[] }> | null] = [
-      api.posts({ scope: 'feed', limit: 20 }),
+    if (guestbookMembers.value.length === 0) guestbookMembers.value = (await api.members()).members
+    const requests = [
+      api.posts({ scope: 'feed', limit: 8 }),
       api.posts({ scope: 'mine', limit: 20 }),
-      user.value.role === 'admin' ? api.posts({ scope: 'pending', limit: 20 }) : null,
-    ]
-    const [feed, mine, pending] = await Promise.all([requests[0], requests[1], requests[2] ?? Promise.resolve({ posts: [] })])
+    ] as const
+    const [feed, mine] = await Promise.all(requests)
     feedPosts.value = feed.posts
+    feedNextCursor.value = feed.next_cursor ?? ''
     myPosts.value = mine.posts
-    pendingPosts.value = pending.posts
+    pendingPosts.value = []
+    timelineVisibleCount.value = 8
+    wallVisibleCount.value = 12
     mediaUsage.value = (await api.mediaUsage()).usage
   } catch (error) {
     contentError.value = error instanceof Error ? error.message : '暂时无法读取纪念内容'
   } finally {
     contentLoading.value = false
   }
+}
+
+async function loadMoreFeed() {
+  if (!user.value || !feedNextCursor.value || feedLoadingMore.value) return
+  feedLoadingMore.value = true
+  try {
+    const page = await api.posts({ scope: 'feed', cursor: feedNextCursor.value, limit: 8 })
+    const known = new Set(feedPosts.value.map((post) => post.id))
+    feedPosts.value.push(...page.posts.filter((post) => !known.has(post.id)))
+    feedNextCursor.value = page.next_cursor ?? ''
+  } catch (error) {
+    contentError.value = error instanceof Error ? error.message : '无法继续读取回忆'
+  } finally {
+    feedLoadingMore.value = false
+  }
+}
+
+async function revealMoreContent() {
+  if (contentLoading.value || feedLoadingMore.value) return
+  if (activeView.value === 'home') {
+    await loadMoreFeed()
+    return
+  }
+  if (activeView.value === 'timeline') {
+    if (timelineVisibleCount.value < feedPosts.value.length) {
+      timelineVisibleCount.value += 8
+      return
+    }
+    const before = feedPosts.value.length
+    await loadMoreFeed()
+    if (feedPosts.value.length > before) timelineVisibleCount.value += 8
+    return
+  }
+  if (activeView.value === 'wall') {
+    if (wallVisibleCount.value < wallItems.value.length) {
+      wallVisibleCount.value += 12
+      return
+    }
+    const before = feedPosts.value.length
+    await loadMoreFeed()
+    if (feedPosts.value.length > before) wallVisibleCount.value += 12
+  }
+}
+
+function showTopNotice(message: string) {
+  topNotice.value = message
+  if (topNoticeTimer) window.clearTimeout(topNoticeTimer)
+  topNoticeTimer = window.setTimeout(() => { topNotice.value = '' }, 3500)
+}
+
+function armDialogBackdrop(event: PointerEvent) {
+  dialogBackdropArmed = event.target === event.currentTarget
+}
+
+function consumeDialogBackdrop(event: MouseEvent) {
+  const shouldClose = dialogBackdropArmed && event.target === event.currentTarget
+  dialogBackdropArmed = false
+  return shouldClose
+}
+
+function composerState() {
+  return JSON.stringify({
+    body: editor.body,
+    contentDate: editor.content_date,
+    visibility: editor.visibility,
+    tags: editor.tags,
+    externalVideoURL: editor.external_video_url,
+    media: editorMedia.value.map((item) => item.media?.id ?? item.key),
+    removed: removedMediaIDs.value,
+  })
+}
+
+function composerHasContent() {
+  return Boolean(editor.body.trim() || editor.external_video_url.trim() || editorMedia.value.length)
 }
 
 async function openComposer(post?: Post) {
@@ -758,19 +934,29 @@ async function openComposer(post?: Post) {
   editor.content_date = post?.content_date?.slice(0, 10) ?? ''
   editor.visibility = post?.visibility ?? 'members'
   editor.tags = post?.tags.join('、') ?? ''
+  editor.external_video_url = post?.external_video_url ?? ''
   editorMedia.value = (post?.media ?? []).map((item) => ({ key: item.id, media: item, name: item.original_filename, size: item.size_bytes, kind: item.media_type, status: 'ready', progress: 100, error: '', persisted: true, width: item.width ?? undefined, height: item.height ?? undefined, duration_ms: item.duration_ms ?? undefined }))
   removedMediaIDs.value = []
   mediaSelectionError.value = ''
   composerError.value = ''
+  composerInitialState = composerState()
   composerOpen.value = true
   await nextTick()
   composerDialog.value?.querySelector<HTMLElement>('textarea, input, button')?.focus()
 }
 
-function closeComposer() {
+async function closeComposer() {
   if (composerBusy.value) return
+  if (composerState() !== composerInitialState && (composerHasContent() || editingPostID.value)) {
+    await savePost(false, true)
+    return
+  }
   composerOpen.value = false
-  nextTick(() => composerTrigger?.focus())
+  await nextTick(() => composerTrigger?.focus())
+}
+
+function closeComposerFromBackdrop(event: MouseEvent) {
+  if (consumeDialogBackdrop(event)) void closeComposer()
 }
 
 function trapComposerFocus(event: KeyboardEvent) {
@@ -793,7 +979,7 @@ function trapComposerFocus(event: KeyboardEvent) {
   }
 }
 
-async function savePost(submit: boolean) {
+async function savePost(submit: boolean, automatic = false) {
   composerBusy.value = true
   composerError.value = ''
   try {
@@ -807,12 +993,16 @@ async function savePost(submit: boolean) {
       tags: editor.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
       media_ids: editorMedia.value.flatMap((item) => item.media ? [item.media.id] : []),
       submit,
+      external_video_url: editor.external_video_url,
     }
-    if (editingPostID.value) await api.updatePost(editingPostID.value, body)
+    const wasEditing = Boolean(editingPostID.value)
+    if (wasEditing) await api.updatePost(editingPostID.value, body)
     else await api.createPost(body)
     await Promise.allSettled(removedMediaIDs.value.map((id) => api.deleteMedia(id)))
     composerOpen.value = false
     await loadContent()
+    showTopNotice(automatic ? (wasEditing ? '编辑内容已自动保存' : '已自动保存到草稿') : (submit ? '回忆已发布' : '草稿已保存'))
+    await nextTick(() => composerTrigger?.focus())
   } catch (error) {
     composerError.value = error instanceof Error ? error.message : '保存失败'
   } finally {
@@ -844,8 +1034,8 @@ function addMediaFiles(files: File[]) {
       mediaSelectionError.value = `${file.name} 不是支持的图片或视频格式。`
       continue
     }
-    if (file.size <= 0 || file.size > 8 * 1024 ** 3) {
-      mediaSelectionError.value = `${file.name} 为空或超过 8 GiB。`
+    if (file.size <= 0 || file.size > (kind === 'video' ? 150 * 1024 ** 2 : 8 * 1024 ** 3)) {
+      mediaSelectionError.value = kind === 'video' ? `${file.name} 为空或超过 150 MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 8 GiB。`
       continue
     }
     const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
@@ -962,6 +1152,35 @@ function mediaContentURL(id: string, preview = false) {
   return `/api/media/${encodeURIComponent(id)}/content${preview ? '?variant=preview' : ''}`
 }
 
+function isEmbeddedPlayer(value: string) {
+  try {
+    const host = new URL(value).hostname.toLowerCase()
+    return ['player.bilibili.com', 'youtube.com', 'www.youtube.com', 'www.youtube-nocookie.com'].includes(host)
+  } catch {
+    return false
+  }
+}
+
+function externalVideoThumbnail(value: string) {
+  try {
+    const url = new URL(value)
+    const host = url.hostname.toLowerCase()
+    let videoID = ''
+    if (host === 'youtu.be') videoID = url.pathname.split('/').filter(Boolean)[0] ?? ''
+    if (host.includes('youtube.com')) {
+      videoID = url.searchParams.get('v') ?? ''
+      if (!videoID) {
+        const parts = url.pathname.split('/').filter(Boolean)
+        const marker = parts.findIndex((part) => part === 'embed' || part === 'shorts')
+        if (marker >= 0) videoID = parts[marker + 1] ?? ''
+      }
+    }
+    return /^[\w-]{6,20}$/.test(videoID) ? `https://i.ytimg.com/vi/${videoID}/hqdefault.jpg` : ''
+  } catch {
+    return ''
+  }
+}
+
 function markMediaLoadError(id: string) {
   mediaLoadErrors.value.add(id)
 }
@@ -1007,11 +1226,18 @@ async function initializeActivity() {
   stopActivityPolling()
   await Promise.allSettled([loadNotifications(), loadConversations()])
   activityTimer = window.setInterval(() => {
-    if (!user.value) return
+    if (!user.value || document.hidden) return
     void loadNotifications(true)
     void loadConversations(true)
     if (activeView.value === 'messages' && selectedConversationID.value) void loadMessages(true, true)
-  }, 12000)
+  }, 4000)
+}
+
+function handleVisibilityRefresh() {
+  if (document.hidden || !user.value) return
+  void loadNotifications(true)
+  void loadConversations(true)
+  if (activeView.value === 'messages' && selectedConversationID.value) void loadMessages(true, true)
 }
 
 function stopActivityPolling() {
@@ -1182,8 +1408,8 @@ function addMessageMediaFiles(files: File[]) {
       messageError.value = `${file.name} 不是支持的图片、视频或音频格式。`
       continue
     }
-    if (file.size <= 0 || file.size > 8 * 1024 ** 3) {
-      messageError.value = `${file.name} 为空或超过 8 GiB。`
+    if (file.size <= 0 || file.size > (kind === 'video' ? 500 * 1024 ** 2 : 8 * 1024 ** 3)) {
+      messageError.value = kind === 'video' ? `${file.name} 为空或超过 150 MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 8 GiB。`
       continue
     }
     const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
@@ -1358,6 +1584,7 @@ async function copyInvites() {
 
   <div v-else class="app-shell">
     <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div v-if="topNotice" class="top-notice" role="status" aria-live="polite"><Check :size="18" aria-hidden="true" />{{ topNotice }}</div>
     <header class="topbar">
       <button class="icon-button mobile-only" type="button" aria-label="打开菜单" @click="mobileMenuOpen = true"><Menu /></button>
       <a class="brand" href="#"><BookHeart :size="25" aria-hidden="true" /><span>妙妙小屋</span></a>
@@ -1388,26 +1615,28 @@ async function copyInvites() {
         <div class="feed-column">
           <button class="quick-composer" type="button" @click="openComposer()"><span class="mini-avatar"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" alt="" @error="markAvatarBroken(user.avatar_path)" /><span v-else>{{ user.nickname.slice(0, 1) }}</span></span><span>想记录今天的什么？</span><FileEdit :size="20" aria-hidden="true" /></button>
           <div v-if="contentLoading" class="content-empty" role="status"><span class="loader"></span><span>正在读取回忆…</span></div>
-          <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>投稿通过审核后，会出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
+          <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>发布后，会立即出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
-            <header><span class="mini-avatar"><img v-if="avatarVisible(post.author.avatar_path)" :src="avatarURL(post.author.avatar_path)" alt="" @error="markAvatarBroken(post.author.avatar_path)" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ post.author.nickname }}</strong><span>{{ displayDate(post.published_at) }}</span></div></header>
+            <header><button class="profile-summary" type="button" @click="showPublicProfile(post.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(post.author.avatar_path)" :src="avatarURL(post.author.avatar_path)" alt="" @error="markAvatarBroken(post.author.avatar_path)" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ post.author.nickname }}</strong><small>{{ displayDate(post.published_at) }}</small></span></button></header>
             <p class="post-body">{{ post.body }}</p>
             <div v-if="post.media.length" class="post-media-grid">
-              <figure v-for="item in post.media" :key="item.id">
+              <figure v-for="(item, mediaIndex) in post.media.slice(0, 4)" :key="item.id">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" aria-hidden="true" /><strong>远端媒体暂时不可用</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重新加载</button></div>
-                <img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" />
-                <video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename" @error="markMediaLoadError(item.id)"></video>
+                <img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" />
+                <VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" />
+                <button v-if="mediaIndex === 3 && post.media.length > 4" class="remaining-media" type="button" :aria-label="`还有 ${post.media.length - 4} 张媒体，打开详情查看`" @click="openDetail(post)"><span>剩余 +{{ post.media.length - 4 }} 张</span><small>进入详情查看</small></button>
                 <figcaption><span>{{ item.original_filename }}</span><small>{{ formatBytes(item.size_bytes) }}</small></figcaption>
               </figure>
             </div>
+            <VideoPreview v-if="post.external_video_url" class="external-video-frame" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" />
             <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
-            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button v-if="post.author.id === user.id || user.role === 'admin'" class="post-delete-link" type="button" :aria-label="`删除${post.author.nickname}的回忆`" @click="deletePost(post)"><Trash2 :size="17" />删除</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
+            <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button v-if="post.author.id === user.id || user.role === 'admin'" type="button" @click="openComposer(post)"><FileEdit :size="17" />编辑</button><button v-if="post.author.id === user.id || user.role === 'admin'" class="post-delete-link" type="button" :aria-label="`删除${post.author.nickname}的回忆`" @click="deletePost(post)"><Trash2 :size="17" />删除</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
           </article>
+          <div v-if="feedNextCursor || feedLoadingMore" ref="contentLoadSentinel" class="scroll-load-sentinel" role="status"><span v-if="feedLoadingMore" class="loader"></span><span>{{ feedLoadingMore ? '正在加载更多回忆…' : '继续向下滑动加载更多' }}</span></div>
         </div>
 
         <aside class="content-rail" aria-label="我的投稿">
-          <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与投稿</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有草稿</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft'" @click="post.status === 'draft' && openComposer(post)"><span>{{ post.body || '无标题草稿' }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
-          <section v-if="user.role === 'admin'" class="rail-card review-card"><header><div><p class="eyebrow">管理员审核</p><h2>待审核</h2></div><span>{{ pendingPosts.length }}</span></header><div v-if="pendingPosts.length === 0" class="rail-empty">当前没有待审核内容</div><article v-for="post in pendingPosts" :key="post.id" class="review-row"><strong>{{ post.author.nickname }}</strong><p>{{ post.body }}</p><div><button type="button" @click="moderate(post, 'hide')">退回隐藏</button><button type="button" @click="moderate(post, 'approve')">通过发布</button></div></article></section>
+          <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与回忆</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有内容</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft' && post.status !== 'published'" @click="(post.status === 'draft' || post.status === 'published') && openComposer(post)"><span>{{ post.body || '无标题回忆' }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
         </aside>
       </section>
       </template>
@@ -1417,22 +1646,25 @@ async function copyInvites() {
         <div v-if="timelineGroups.length === 0" class="content-empty"><Sparkles :size="34" aria-hidden="true" /><h2>时间线还是空的</h2><p>发布第一段回忆后，它会出现在这里。</p></div>
         <div v-else class="timeline-list">
           <section v-for="group in timelineGroups" :key="group.key" class="timeline-group"><header><span></span><h2>{{ group.label }}</h2><small>{{ group.posts.length }} 条</small></header><div>
-            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><strong>{{ post.author.nickname }}</strong><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length" class="timeline-media"><img v-for="item in post.media.filter((media) => media.media_type === 'image').slice(0, 4)" :key="item.id" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div></div></article>
+            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><button class="text-profile-link" type="button" @click="showPublicProfile(post.author.id)">{{ post.author.nickname }}</button><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length || post.external_video_url" class="timeline-media"><template v-for="item in post.media.slice(0, post.external_video_url ? 3 : 4)" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" square /></template><VideoPreview v-if="post.external_video_url" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" square /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div><button v-if="post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(post)"><FileEdit :size="15" />编辑这条回忆</button></div></article>
           </div></section>
         </div>
+        <div v-if="timelineVisibleCount < feedPosts.length || feedNextCursor || feedLoadingMore" ref="contentLoadSentinel" class="scroll-load-sentinel" role="status"><span v-if="feedLoadingMore" class="loader"></span><span>{{ feedLoadingMore ? '正在展开时间线…' : '继续向下滑动查看更多' }}</span></div>
       </template>
 
       <template v-else-if="activeView === 'wall'">
-        <header class="page-heading"><div><p class="eyebrow">照片与视频</p><h1 tabindex="-1">宿舍照片墙</h1><p>按最近发布排序，共收藏 {{ wallItems.length }} 个媒体文件。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />添加照片</button></header>
+        <header class="page-heading"><div><p class="eyebrow">照片与视频</p><h1 tabindex="-1">宿舍照片墙</h1><p>按最近发布排序，当前已加载 {{ wallItems.length }} 个媒体文件。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />添加照片</button></header>
         <div v-if="wallItems.length === 0" class="content-empty"><Camera :size="34" aria-hidden="true" /><h2>照片墙还没有内容</h2><p>发布带照片或视频的回忆后，就会陈列在这里。</p></div>
         <div v-else class="photo-wall">
-          <figure v-for="item in wallItems" :key="item.media.id">
-            <div v-if="mediaLoadErrors.has(item.media.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.media.id)"><RotateCcw :size="17" />重试</button></div>
-            <a v-else-if="item.media.media_type === 'image'" :href="mediaContentURL(item.media.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.media.original_filename}`"><img :src="mediaContentURL(item.media.id, item.media.has_preview)" :alt="item.media.original_filename" loading="lazy" @error="markMediaLoadError(item.media.id)" /></a>
-            <video v-else :src="mediaContentURL(item.media.id)" controls preload="metadata" :aria-label="item.media.original_filename" @error="markMediaLoadError(item.media.id)"></video>
-            <figcaption><div><strong>{{ item.post.author.nickname }}</strong><span>{{ item.post.body || item.media.original_filename }}</span></div><time :datetime="item.post.content_date || item.post.published_at || item.post.created_at">{{ displayDate(item.post.content_date || item.post.published_at || item.post.created_at) }}</time></figcaption>
+          <figure v-for="item in visibleWallItems" :key="item.key">
+            <div v-if="item.media && mediaLoadErrors.has(item.media.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.media.id)"><RotateCcw :size="17" />重试</button></div>
+            <a v-else-if="item.media?.media_type === 'image'" :href="mediaContentURL(item.media.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.media.original_filename}`"><img :src="mediaContentURL(item.media.id, item.media.has_preview)" :alt="item.media.original_filename" loading="lazy" @error="markMediaLoadError(item.media.id)" /></a>
+            <VideoPreview v-else-if="item.media" :src="mediaContentURL(item.media.id)" :poster="mediaContentURL(item.media.id, true)" :title="item.media.original_filename" />
+            <VideoPreview v-else :src="item.externalVideoURL" :poster="externalVideoThumbnail(item.externalVideoURL)" :title="item.post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(item.externalVideoURL)" />
+            <figcaption><div><button class="text-profile-link" type="button" @click="showPublicProfile(item.post.author.id)">{{ item.post.author.nickname }}</button><span>{{ item.post.body || item.media?.original_filename || '外链视频' }}</span><button v-if="item.post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(item.post)"><FileEdit :size="14" />编辑</button></div><time :datetime="item.post.content_date || item.post.published_at || item.post.created_at">{{ displayDate(item.post.content_date || item.post.published_at || item.post.created_at) }}</time></figcaption>
           </figure>
         </div>
+        <div v-if="wallVisibleCount < wallItems.length || feedNextCursor || feedLoadingMore" ref="contentLoadSentinel" class="scroll-load-sentinel" role="status"><span v-if="feedLoadingMore" class="loader"></span><span>{{ feedLoadingMore ? '正在加载更多照片…' : '继续向下滑动查看更多' }}</span></div>
       </template>
 
       <template v-else-if="activeView === 'messages'">
@@ -1446,7 +1678,7 @@ async function copyInvites() {
 
           <section v-if="selectedConversation" class="message-thread" :aria-labelledby="`conversation-${selectedConversation.id}`">
             <header><button class="icon-button thread-back" type="button" aria-label="返回会话列表" @click="closeMobileThread"><ChevronLeft /></button><span class="conversation-avatar"><Users v-if="selectedConversation.type === 'group'" :size="21" /><template v-else><img v-if="selectedConversation.peer && avatarVisible(selectedConversation.peer.avatar_path)" :src="avatarURL(selectedConversation.peer.avatar_path)" alt="" @error="selectedConversation.peer && markAvatarBroken(selectedConversation.peer.avatar_path)" /><span v-else>{{ selectedConversation.peer?.nickname.slice(0, 1) }}</span></template></span><div><strong :id="`conversation-${selectedConversation.id}`">{{ selectedConversation.title }}</strong><small>{{ selectedConversation.type === 'group' ? '所有室友可见' : '仅会话双方可见' }}</small></div></header>
-            <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><span v-if="item.sender.id !== user.id" class="mini-avatar"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></span><div><header><strong v-if="item.sender.id !== user.id">{{ item.sender.nickname }}</strong><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><div v-if="item.status === 'sent' && (item.attachments ?? []).length" class="chat-attachments"><figure v-for="attachment in (item.attachments ?? [])" :key="attachment.id" class="chat-attachment" :class="attachment.media_type"><div v-if="mediaLoadErrors.has(attachment.id)" class="message-media-unavailable"><AlertCircle :size="21" /><span>附件暂时无法读取</span><button type="button" @click="retryMediaLoad(attachment.id)"><RotateCcw :size="15" />重试</button></div><a v-else-if="attachment.media_type === 'image'" :href="mediaContentURL(attachment.id)" target="_blank" rel="noopener"><img :src="mediaContentURL(attachment.id, attachment.has_preview)" :alt="attachment.original_filename" loading="lazy" @error="markMediaLoadError(attachment.id)" /></a><video v-else-if="attachment.media_type === 'video'" :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></video><audio v-else :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></audio><figcaption><span :title="attachment.original_filename">{{ attachment.original_filename }}</span><small>{{ formatBytes(attachment.size_bytes) }}</small></figcaption></figure></div><p v-if="item.status === 'recalled' || item.body">{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
+            <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><button v-if="item.sender.id !== user.id" class="mini-avatar" type="button" :aria-label="`查看${item.sender.nickname}的资料`" @click="showPublicProfile(item.sender.id)"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></button><div><header><button v-if="item.sender.id !== user.id" class="message-author-link" type="button" @click="showPublicProfile(item.sender.id)">{{ item.sender.nickname }}</button><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><div v-if="item.status === 'sent' && (item.attachments ?? []).length" class="chat-attachments"><figure v-for="attachment in (item.attachments ?? [])" :key="attachment.id" class="chat-attachment" :class="attachment.media_type"><div v-if="mediaLoadErrors.has(attachment.id)" class="message-media-unavailable"><AlertCircle :size="21" /><span>附件暂时无法读取</span><button type="button" @click="retryMediaLoad(attachment.id)"><RotateCcw :size="15" />重试</button></div><a v-else-if="attachment.media_type === 'image'" :href="mediaContentURL(attachment.id)" target="_blank" rel="noopener"><img :src="mediaContentURL(attachment.id, attachment.has_preview)" :alt="attachment.original_filename" loading="lazy" @error="markMediaLoadError(attachment.id)" /></a><video v-else-if="attachment.media_type === 'video'" :src="mediaContentURL(attachment.id)" controls preload="none" playsinline :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></video><audio v-else :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></audio><figcaption><span :title="attachment.original_filename">{{ attachment.original_filename }}</span><small>{{ formatBytes(attachment.size_bytes) }}</small></figcaption></figure></div><p v-if="item.status === 'recalled' || item.body">{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
             <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" accept="image/*,video/*,audio/*" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">上传中 {{ item.progress }}%</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
           </section>
           <section v-else class="message-welcome"><MessageCircle :size="38" /><h2>选择一个会话</h2><p>可以进入宿舍群聊，或从左侧选择一位室友开始私信。</p></section>
@@ -1566,12 +1798,13 @@ async function copyInvites() {
               <label for="guestbook-body">{{ selectedGuestbookMember ? `给${selectedGuestbookMember.nickname}留言` : '给宿舍留言' }}</label>
               <textarea id="guestbook-body" v-model="guestbookBody" rows="4" maxlength="2000" placeholder="写一句以后再看到还会想起今天的话…"></textarea>
               <div class="guestbook-composer-meta"><small>{{ guestbookBody.length }} / 2000</small><span>最多 6 个附件</span></div>
+              <div class="field guestbook-video-link"><label for="guestbook-video-url">外链视频（可选）</label><input id="guestbook-video-url" v-model.trim="guestbookExternalVideoURL" type="url" inputmode="url" maxlength="2000" placeholder="粘贴视频链接或播放器 iframe 代码" /><small>外链只在点击播放后从原网站加载，不占用本站视频流量。</small></div>
               <input ref="guestbookMediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleGuestbookMediaInput" />
               <div v-if="guestbookMedia.length" class="media-queue guestbook-media-queue">
                 <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? `上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress></div><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
               </div>
               <p v-if="guestbookError" class="form-error" role="alert">{{ guestbookError }}</p>
-              <footer><button class="secondary-button" type="button" :disabled="guestbookBusy || guestbookMedia.length >= 6" @click="guestbookMediaInput?.click()"><UploadCloud :size="18" />添加照片或视频</button><button class="primary-button compact" type="submit" :disabled="guestbookBusy || guestbookMediaUploading || (!guestbookBody.trim() && guestbookMedia.length === 0)"><Send :size="18" />{{ guestbookBusy ? '发布中…' : '留下这句话' }}</button></footer>
+              <footer><button class="secondary-button" type="button" :disabled="guestbookBusy || guestbookMedia.length >= 6" @click="guestbookMediaInput?.click()"><UploadCloud :size="18" />添加照片或视频</button><button class="primary-button compact" type="submit" :disabled="guestbookBusy || guestbookMediaUploading || (!guestbookBody.trim() && !guestbookExternalVideoURL.trim() && guestbookMedia.length === 0)"><Send :size="18" />{{ guestbookBusy ? '发布中…' : '留下这句话' }}</button></footer>
             </form>
 
             <div v-if="guestbookLoading && guestbookEntries.length === 0" class="content-empty" role="status"><span class="loader"></span><span>正在翻开留言册…</span></div>
@@ -1580,7 +1813,7 @@ async function copyInvites() {
               <article v-for="entry in guestbookEntries" :key="entry.id" class="guestbook-entry">
                 <header><span class="mini-avatar"><img v-if="avatarVisible(entry.author.avatar_path)" :src="avatarURL(entry.author.avatar_path)" alt="" @error="markAvatarBroken(entry.author.avatar_path)" /><span v-else>{{ entry.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ entry.author.nickname }}</strong><span>{{ entry.recipient ? `写给 ${entry.recipient.nickname}` : '写给整个宿舍' }}</span></div></header>
                 <p v-if="entry.body">{{ entry.body }}</p>
-                <div v-if="entry.media.length" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename" @error="markMediaLoadError(item.id)"></video></template></div>
+                <div v-if="entry.media.length || entry.external_video_url" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="entry.external_video_url" :src="entry.external_video_url" :poster="externalVideoThumbnail(entry.external_video_url)" :title="entry.body || '留言中的外链视频'" external :embedded="isEmbeddedPlayer(entry.external_video_url)" /></div>
                 <footer><time :datetime="entry.created_at">{{ new Date(entry.created_at).toLocaleString('zh-CN') }}</time><div><button v-if="guestbookStatus === 'hidden'" type="button" @click="restoreGuestbookEntry(entry)"><ArchiveRestore :size="17" />恢复显示</button><button v-else-if="user.role === 'admin' || entry.recipient?.id === user.id" type="button" @click="hideGuestbookEntry(entry)">隐藏</button><button v-if="entry.author.id === user.id || user.role === 'admin'" class="danger-link" type="button" @click="deleteGuestbookEntry(entry)">删除</button></div></footer>
               </article>
             </section>
@@ -1592,15 +1825,15 @@ async function copyInvites() {
 
     <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'guestbook' }" @click="setView('guestbook')"><BookHeart /><span>留言</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'messages' }" @click="setView('messages')"><MessageCircle /><span>消息</span><small v-if="totalMessageUnread">{{ totalMessageUnread > 9 ? '9+' : totalMessageUnread }}</small></button></nav>
 
-    <div v-if="composerOpen" class="dialog-layer" role="presentation" @click.self="closeComposer">
+    <div v-if="composerOpen" class="dialog-layer" role="presentation" @pointerdown="armDialogBackdrop" @click.self="closeComposerFromBackdrop">
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">
-        <header><div><p class="eyebrow">{{ editingPostID ? '编辑草稿' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
+        <header><div><p class="eyebrow">{{ editingPostID ? '编辑回忆' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
         <form @submit.prevent="savePost(true)">
           <div class="field"><label for="post-body">正文</label><textarea id="post-body" v-model="editor.body" rows="8" maxlength="10000" autofocus placeholder="那天发生了什么？也可以只上传照片或视频。"></textarea><small>{{ editor.body.length }} / 10000</small></div>
           <section class="media-editor" aria-labelledby="media-editor-title">
             <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后会在保存投稿时上传，不会暂存在生产服务器。</small></div><span>{{ editorMedia.length }} / 20</span></header>
             <input ref="mediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleMediaInput" />
-            <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>也可以把文件拖到这里，单个不超过 8 GiB</small></span></button>
+            <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>单个视频不超过 150 MiB；建议先压缩视频，可明显缩短上传时间</small></span></button>
             <p v-if="mediaSelectionError" class="field-error" role="alert"><AlertCircle :size="17" aria-hidden="true" />{{ mediaSelectionError }}</p>
             <div v-if="editorMedia.length" class="media-queue">
               <article v-for="item in editorMedia" :key="item.key" :data-status="item.status">
@@ -1613,14 +1846,15 @@ async function copyInvites() {
             <div v-if="mediaUsage" class="media-usage"><span>我的媒体空间</span><span>{{ formatBytes(mediaUsage.used_bytes + mediaUsage.reserved_bytes) }} / {{ formatBytes(mediaUsage.quota_bytes) }}</span><progress :value="usagePercent()" max="100">{{ usagePercent() }}%</progress></div>
           </section>
           <div class="field-grid"><div class="field"><label for="content-date">内容日期</label><input id="content-date" v-model="editor.content_date" type="date" /></div><div class="field"><label for="post-visibility">可见范围</label><select id="post-visibility" v-model="editor.visibility"><option value="members">所有室友</option><option value="private">仅自己</option></select></div></div>
+          <div class="field"><label for="external-video-url">视频外链或嵌入代码（可选）</label><textarea id="external-video-url" v-model.trim="editor.external_video_url" rows="3" maxlength="5000" placeholder="粘贴视频直链，或 Bilibili / YouTube 提供的 &lt;iframe&gt; 嵌入代码"></textarea><small>嵌入代码只会提取播放器地址；目前允许 Bilibili、YouTube 和 YouTube NoCookie。</small></div>
           <div class="field"><label for="post-tags">标签</label><input id="post-tags" v-model="editor.tags" maxlength="320" placeholder="用逗号或顿号分隔，最多 10 个" /></div>
           <p v-if="composerError" class="form-error" role="alert">{{ composerError }}</p>
-          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || mediaUploading || (!editor.body.trim() && editorMedia.length === 0)"><Send :size="18" />{{ composerBusy ? '上传并保存中…' : '提交审核' }}</button></footer>
+          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || mediaUploading || (!editor.body.trim() && editorMedia.length === 0 && !editor.external_video_url)"><Send :size="18" />{{ composerBusy ? '上传并保存中…' : editingPostID ? '保存并发布' : '直接发布' }}</button></footer>
         </form>
       </section>
     </div>
 
-    <div v-if="profileOpen" class="dialog-layer" role="presentation" @click.self="closeProfile">
+    <div v-if="profileOpen" class="dialog-layer" role="presentation" @pointerdown="armDialogBackdrop" @click.self="closeProfileFromBackdrop">
       <section ref="profileDialog" class="profile-dialog" role="dialog" aria-modal="true" aria-labelledby="profile-title" @keydown="trapProfileFocus">
         <header><div><p class="eyebrow">账号与个人资料</p><h2 id="profile-title">{{ user.nickname }}</h2></div><button class="icon-button" type="button" aria-label="关闭" @click="closeProfile"><X /></button></header>
         <section class="avatar-editor" :class="{ 'is-cropping': avatarCrop.sourceURL }" aria-labelledby="avatar-editor-title">
@@ -1641,8 +1875,17 @@ async function copyInvites() {
             <div class="avatar-preview"><img v-if="avatarVisible(user.avatar_path)" :src="avatarURL(user.avatar_path)" :alt="`${user.nickname}的头像`" @error="markAvatarBroken(user.avatar_path)" /><UserRound v-else :size="34" aria-hidden="true" /></div><div><strong id="avatar-editor-title">个人头像</strong><span>支持 JPEG、PNG 或 WebP，最大 25 MiB；上传前可裁剪。</span><input ref="avatarInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/webp" @change="handleAvatarInput" /><div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="avatarInput?.click()">选择新头像</button><button v-if="user.avatar_path" type="button" class="text-danger" :disabled="avatarBusy" @click="clearAvatar">移除头像</button></div></div>
           </template>
         </section>
+        <form class="account-form" @submit.prevent="saveAccount">
+          <div><p class="eyebrow">登录信息</p><h3>修改账号</h3><small>用户名、邮箱、昵称或密码发生变化时，需要输入当前密码确认。</small></div>
+          <div class="field-grid"><div class="field"><label for="account-username">用户名</label><input id="account-username" v-model.trim="account.username" autocomplete="username" minlength="3" maxlength="24" required /></div><div class="field"><label for="account-email">邮箱</label><input id="account-email" v-model.trim="account.email" type="email" autocomplete="email" required /></div></div>
+          <div class="field"><label for="account-nickname">昵称</label><input id="account-nickname" v-model.trim="account.nickname" maxlength="40" required /></div>
+          <div class="field"><label for="account-current-password">当前密码</label><input id="account-current-password" v-model="account.current_password" type="password" autocomplete="current-password" minlength="10" maxlength="128" required /></div>
+          <div class="field-grid"><div class="field"><label for="account-new-password">新密码（可选）</label><input id="account-new-password" v-model="account.new_password" type="password" autocomplete="new-password" minlength="10" maxlength="128" placeholder="至少 10 个字符" /></div><div class="field"><label for="account-confirm-password">确认新密码</label><input id="account-confirm-password" v-model="account.confirm_password" type="password" autocomplete="new-password" :required="Boolean(account.new_password)" /></div></div>
+          <p v-if="accountMessage" class="form-message" role="status">{{ accountMessage }}</p><button class="primary-button" type="submit" :disabled="accountBusy || !account.current_password">{{ accountBusy ? '保存中…' : '保存账号信息' }}</button>
+        </form>
         <form @submit.prevent="saveProfile">
-          <div class="field-grid"><div class="field"><label for="profile-nickname">昵称</label><input id="profile-nickname" v-model.trim="profile.nickname" maxlength="40" required /></div><div class="field"><label for="bed-no">床号或位置</label><input id="bed-no" v-model.trim="profile.bed_no" maxlength="30" placeholder="例如 2 号床" /></div></div>
+          <div><p class="eyebrow">公开资料</p><h3>纪念册资料</h3></div>
+          <div class="field"><label for="bed-no">床号或位置</label><input id="bed-no" v-model.trim="profile.bed_no" maxlength="30" placeholder="例如 2 号床" /></div>
           <div class="field"><label for="bio">个人简介</label><textarea id="bio" v-model="profile.bio" maxlength="500" rows="3"></textarea></div>
           <div class="field"><label for="memorial-note">纪念寄语</label><textarea id="memorial-note" v-model="profile.memorial_note" maxlength="500" rows="3"></textarea></div>
           <p v-if="profileMessage" class="form-message" role="status">{{ profileMessage }}</p><button class="primary-button" type="submit" :disabled="profileBusy">{{ profileBusy ? '保存中…' : '保存资料' }}</button>
@@ -1652,13 +1895,22 @@ async function copyInvites() {
       </section>
     </div>
 
-    <div v-if="detailOpen && detailPost" class="dialog-layer" role="presentation" @click.self="closeDetail">
+    <div v-if="publicProfile" class="dialog-layer" role="presentation" @pointerdown="armDialogBackdrop" @click.self="closePublicProfileFromBackdrop">
+      <section class="profile-dialog public-profile-dialog" role="dialog" aria-modal="true" aria-labelledby="public-profile-title">
+        <header><div><p class="eyebrow">室友公开资料</p><h2 id="public-profile-title">{{ publicProfile.nickname }}</h2></div><button class="icon-button" type="button" aria-label="关闭公开资料" @click="publicProfile = null"><X /></button></header>
+        <div class="public-profile-hero"><span class="public-profile-avatar"><img v-if="avatarVisible(publicProfile.avatar_path)" :src="avatarURL(publicProfile.avatar_path)" alt="" @error="markAvatarBroken(publicProfile.avatar_path)" /><span v-else>{{ publicProfile.nickname.slice(0, 1) }}</span></span><div><strong>{{ publicProfile.nickname }}</strong><span>@{{ publicProfile.username }}</span><small v-if="publicProfile.bed_no">床号或位置：{{ publicProfile.bed_no }}</small></div></div>
+        <dl class="public-profile-fields"><div><dt>个人简介</dt><dd>{{ publicProfile.bio || '这位室友还没有填写简介。' }}</dd></div><div><dt>纪念寄语</dt><dd>{{ publicProfile.memorial_note || '暂时没有留下寄语。' }}</dd></div></dl>
+        <p class="privacy-note">邮箱、账号状态、登录会话等敏感信息不会在这里显示。</p>
+      </section>
+    </div>
+
+    <div v-if="detailOpen && detailPost" class="dialog-layer" role="presentation" @pointerdown="armDialogBackdrop" @click.self="closeDetailFromBackdrop">
       <section ref="detailDialog" class="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title" @keydown="trapDetailFocus">
         <header><div><p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p><h2 id="detail-title">{{ detailPost.author.nickname }}的回忆</h2></div><button class="icon-button" type="button" aria-label="关闭详情" @click="closeDetail"><X /></button></header>
-        <div class="detail-author"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ detailPost.author.nickname }}</strong><span>{{ displayDate(detailPost.published_at) }}</span></div></div>
+        <button class="detail-author" type="button" @click="showPublicProfile(detailPost.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ detailPost.author.nickname }}</strong><small>{{ displayDate(detailPost.published_at) }}</small></span></button>
         <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
-        <div v-if="detailPost.media.length" class="detail-media"><template v-for="item in detailPost.media" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" /><video v-else :src="mediaContentURL(item.id)" controls preload="metadata" :aria-label="item.original_filename"></video></template></div>
-        <div class="detail-actions"><button type="button" :class="{ liked: detailPost.liked_by_me }" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.liked_by_me ? '已点赞' : '点赞' }} · {{ detailPost.like_count }}</button><span><MessageCircle :size="19" />{{ detailPost.comment_count }} 条评论</span></div>
+        <div v-if="detailPost.media.length" class="detail-media"><template v-for="item in detailPost.media" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template></div><VideoPreview v-if="detailPost.external_video_url" class="external-video-frame" :src="detailPost.external_video_url" :poster="externalVideoThumbnail(detailPost.external_video_url)" :title="detailPost.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(detailPost.external_video_url)" />
+        <div class="detail-actions"><button type="button" :class="{ liked: detailPost.liked_by_me }" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.liked_by_me ? '已点赞' : '点赞' }} · {{ detailPost.like_count }}</button><span><MessageCircle :size="19" />{{ detailPost.comment_count }} 条评论</span><button v-if="detailPost.author.id === user.id || user.role === 'admin'" type="button" @click="closeDetail(); openComposer(detailPost)"><FileEdit :size="18" />编辑</button></div>
         <section class="comments-section" aria-labelledby="comments-title"><h3 id="comments-title">评论</h3><p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p><div v-if="detailLoading" class="comment-empty" role="status">正在读取评论…</div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div><article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="avatarVisible(comment.author.avatar_path)" :src="avatarURL(comment.author.avatar_path)" alt="" @error="markAvatarBroken(comment.author.avatar_path)" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article><form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="3" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form></section>
       </section>
     </div>

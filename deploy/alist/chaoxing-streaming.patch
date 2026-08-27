@@ -1,0 +1,109 @@
+diff --git a/drivers/chaoxing/driver.go b/drivers/chaoxing/driver.go
+index bf01a83..0615072 100644
+--- a/drivers/chaoxing/driver.go
++++ b/drivers/chaoxing/driver.go
+@@ -225,33 +225,15 @@ func (d *ChaoXing) Put(ctx context.Context, dstDir model.Obj, file model.FileStr
+ 	if resp.Result != 1 {
+ 		return errors.New("get upload data error")
+ 	}
+-	body := &bytes.Buffer{}
+-	writer := multipart.NewWriter(body)
+-	filePart, err := writer.CreateFormFile("file", file.GetName())
+-	if err != nil {
+-		return err
+-	}
+-	_, err = utils.CopyWithBuffer(filePart, file)
+-	if err != nil {
+-		return err
+-	}
+-	err = writer.WriteField("_token", resp.Msg.Token)
+-	if err != nil {
+-		return err
+-	}
+-	err = writer.WriteField("puid", fmt.Sprintf("%d", resp.Msg.Puid))
+-	if err != nil {
+-		fmt.Println("Error writing param2 to request body:", err)
+-		return err
+-	}
+-	err = writer.Close()
++	body, contentType, contentLength, err := newStreamingUploadBody(ctx, file, resp.Msg.Token, resp.Msg.Puid)
+ 	if err != nil {
+ 		return err
+ 	}
++	defer body.Close()
+ 	r := driver.NewLimitedUploadStream(ctx, &driver.ReaderUpdatingProgress{
+ 		Reader: &driver.SimpleReaderWithSize{
+ 			Reader: body,
+-			Size:   int64(body.Len()),
++			Size:   contentLength,
+ 		},
+ 		UpdateProgress: up,
+ 	})
+@@ -259,8 +241,8 @@ func (d *ChaoXing) Put(ctx context.Context, dstDir model.Obj, file model.FileStr
+ 	if err != nil {
+ 		return err
+ 	}
+-	req.Header.Set("Content-Type", writer.FormDataContentType())
+-	req.Header.Set("Content-Length", fmt.Sprintf("%d", body.Len()))
++	req.Header.Set("Content-Type", contentType)
++	req.Header.Set("Content-Length", fmt.Sprintf("%d", contentLength))
+ 	resps, err := http.DefaultClient.Do(req)
+ 	if err != nil {
+ 		return err
+@@ -303,4 +285,56 @@ func (d *ChaoXing) Put(ctx context.Context, dstDir model.Obj, file model.FileStr
+ 	return nil
+ }
+ 
++func newStreamingUploadBody(ctx context.Context, file model.FileStreamer, token string, puid int) (io.ReadCloser, string, int64, error) {
++	if file == nil || file.GetSize() < 0 {
++		return nil, "", 0, errors.New("invalid upload file")
++	}
++
++	var framing bytes.Buffer
++	framingWriter := multipart.NewWriter(&framing)
++	boundary := framingWriter.Boundary()
++	if _, err := framingWriter.CreateFormFile("file", file.GetName()); err != nil {
++		return nil, "", 0, err
++	}
++	if err := framingWriter.WriteField("_token", token); err != nil {
++		return nil, "", 0, err
++	}
++	if err := framingWriter.WriteField("puid", fmt.Sprintf("%d", puid)); err != nil {
++		return nil, "", 0, err
++	}
++	if err := framingWriter.Close(); err != nil {
++		return nil, "", 0, err
++	}
++
++	reader, writer := io.Pipe()
++	go func() {
++		multipartWriter := multipart.NewWriter(writer)
++		if err := multipartWriter.SetBoundary(boundary); err != nil {
++			_ = writer.CloseWithError(err)
++			return
++		}
++		filePart, err := multipartWriter.CreateFormFile("file", file.GetName())
++		if err == nil {
++			_, err = utils.CopyWithBuffer(filePart, file)
++		}
++		if err == nil {
++			err = multipartWriter.WriteField("_token", token)
++		}
++		if err == nil {
++			err = multipartWriter.WriteField("puid", fmt.Sprintf("%d", puid))
++		}
++		if err == nil {
++			err = multipartWriter.Close()
++		}
++		if err == nil {
++			if contextErr := ctx.Err(); contextErr != nil {
++				err = contextErr
++			}
++		}
++		_ = writer.CloseWithError(err)
++	}()
++
++	return reader, "multipart/form-data; boundary=" + boundary, int64(framing.Len()) + file.GetSize(), nil
++}
++
+ var _ driver.Driver = (*ChaoXing)(nil)

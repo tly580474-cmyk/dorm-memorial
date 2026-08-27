@@ -1,0 +1,9 @@
+{
+	https_port 13443
+	auto_https disable_redirects
+}
+
+m3048.clical.xin {
+	bind 127.0.0.1
+	reverse_proxy 127.0.0.1:13048
+}

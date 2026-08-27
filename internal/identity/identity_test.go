@@ -46,3 +46,45 @@ func TestAdminUserManagementProtectsCurrentAndLastAdmin(t *testing.T) {
 		t.Fatalf("items=%+v err=%v", items, err)
 	}
 }
+
+func TestUserCanUpdateOwnAccountAndRevokeOtherSessions(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "account.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := NewStore(db)
+	if _, err := store.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	user, err := store.Authenticate(ctx, "admin", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, currentSessionID, _, err := store.CreateSession(ctx, user.ID, "current", "127.0.0.1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = store.CreateSession(ctx, user.ID, "other", "127.0.0.1", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateAccount(ctx, user.ID, currentSessionID, AccountInput{Username: "renamed-admin", Email: "renamed@example.test", Nickname: "新昵称", CurrentPassword: "wrong-password"}, "127.0.0.1"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("wrong current password err=%v", err)
+	}
+	updated, err := store.UpdateAccount(ctx, user.ID, currentSessionID, AccountInput{Username: "renamed-admin", Email: "renamed@example.test", Nickname: "新昵称", CurrentPassword: "correct-horse-battery", NewPassword: "new-correct-password"}, "127.0.0.1")
+	if err != nil || updated.Username != "renamed-admin" || updated.Email != "renamed@example.test" || updated.Nickname != "新昵称" {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	if _, err := store.Authenticate(ctx, "admin", "correct-horse-battery"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("old credentials err=%v", err)
+	}
+	if _, err := store.Authenticate(ctx, "renamed-admin", "new-correct-password"); err != nil {
+		t.Fatalf("new credentials: %v", err)
+	}
+	sessions, err := store.ListSessions(ctx, user.ID, currentSessionID)
+	if err != nil || len(sessions) != 1 || !sessions[0].Current {
+		t.Fatalf("sessions=%+v err=%v", sessions, err)
+	}
+}

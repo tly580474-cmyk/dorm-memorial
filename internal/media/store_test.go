@@ -9,7 +9,11 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"os"
+	"os/exec"
 	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +23,59 @@ import (
 	"dorm-memorial/internal/messaging"
 	"dorm-memorial/internal/storage"
 )
+
+func TestRemoteOwnerSegmentFitsRestrictedStorage(t *testing.T) {
+	ownerID := "5ebba3bdb607f775f2f4687596c2ad81"
+	segment := remoteOwnerSegment(ownerID)
+	if len(segment) != 16 {
+		t.Fatalf("segment length = %d, want 16: %q", len(segment), segment)
+	}
+	if segment != remoteOwnerSegment(ownerID) {
+		t.Fatal("owner segment is not deterministic")
+	}
+	if segment == remoteOwnerSegment(ownerID+"-different") {
+		t.Fatal("different owners produced the same test segment")
+	}
+	if strings.ContainsAny(segment, "/\\") {
+		t.Fatalf("segment contains a path separator: %q", segment)
+	}
+}
+
+func TestVideoPreviewSeekIsStableAndInsideVideo(t *testing.T) {
+	seek := videoPreviewSeek("0123456789abcdef0123456789abcdef", 10_000)
+	if seek < 1.5 || seek > 7.5 {
+		t.Fatalf("seek=%v, want a frame between 15%% and 75%%", seek)
+	}
+	if again := videoPreviewSeek("0123456789abcdef0123456789abcdef", 10_000); again != seek {
+		t.Fatalf("seek changed between calls: %v != %v", again, seek)
+	}
+	if fallback := videoPreviewSeek("video-without-duration", 0); fallback != 1 {
+		t.Fatalf("fallback seek=%v, want 1", fallback)
+	}
+}
+
+func TestBuildVideoPreviewWithFFmpeg(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	sourcePath := filepath.Join(t.TempDir(), "preview-source.mp4")
+	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "2", "-pix_fmt", "yuv420p", "-y", sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create test video: %v: %s", err, output)
+	}
+	payload, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := newMemoryObjects()
+	objects.objects["/source.mp4"] = payload
+	previewPath := buildVideoPreview(context.Background(), objects, ffmpegPath, "/source.mp4", "owner", "0123456789abcdef0123456789abcdef", time.Now(), 2_000)
+	preview := objects.objects[previewPath]
+	if previewPath == "" || len(preview) < 2 || preview[0] != 0xff || preview[1] != 0xd8 {
+		t.Fatalf("preview was not stored as JPEG: path=%q bytes=%d", previewPath, len(preview))
+	}
+}
 
 type memoryObjects struct {
 	mu       sync.Mutex
@@ -103,6 +160,14 @@ func TestUploadReservesQuotaVerifiesAndIsIdempotent(t *testing.T) {
 	}
 	if record.Status != "ready" || record.SHA256 == "" || record.SizeBytes != int64(len(payload)) || !record.HasPreview || record.Width == nil || *record.Width != 4 || record.Height == nil || *record.Height != 3 {
 		t.Fatalf("unexpected record: %+v", record)
+	}
+	var objectPath, previewPath string
+	if err := db.QueryRow("SELECT object_path, preview_path FROM media WHERE id = ?", record.ID).Scan(&objectPath, &previewPath); err != nil {
+		t.Fatal(err)
+	}
+	wantOwnerSegment := "/" + remoteOwnerSegment(user.ID) + "/"
+	if !strings.Contains(objectPath, wantOwnerSegment) || !strings.Contains(previewPath, wantOwnerSegment) {
+		t.Fatalf("restricted-storage paths do not use compact owner segment: object=%q preview=%q", objectPath, previewPath)
 	}
 	usage, err := store.Usage(context.Background(), user.ID)
 	if err != nil {
