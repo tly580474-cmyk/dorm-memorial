@@ -169,6 +169,19 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	if profileBody.User.BedNo != "2" || profileBody.User.MemorialNote != "纪念寄语" {
 		t.Fatalf("updated profile=%+v", profileBody.User)
 	}
+	nicknameAccount := doJSON(t, server.URL+"/api/account", http.MethodPatch, map[string]any{
+		"username": "roommate", "email": "roommate@example.com", "nickname": "免密账号昵称", "current_password": "", "new_password": "",
+	}, memberCookie)
+	if nicknameAccount.StatusCode != http.StatusOK {
+		t.Fatalf("nickname-only account status=%d body=%s", nicknameAccount.StatusCode, readBody(nicknameAccount))
+	}
+	var nicknameAccountBody struct {
+		User identity.User `json:"user"`
+	}
+	decodeResponse(t, nicknameAccount, &nicknameAccountBody)
+	if nicknameAccountBody.User.Nickname != "免密账号昵称" {
+		t.Fatalf("nickname-only account=%+v", nicknameAccountBody.User)
+	}
 	wrongAccount := doJSON(t, server.URL+"/api/account", http.MethodPatch, map[string]any{
 		"username": "roommate-renamed", "email": "renamed@example.com", "nickname": "账号新昵称", "current_password": "wrong-password", "new_password": "",
 	}, memberCookie)

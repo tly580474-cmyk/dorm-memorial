@@ -116,6 +116,14 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	} else if ok {
 		return existing, nil
 	}
+	if mediaType == "video" && ext == ".mp4" {
+		prepared, cleanup, err := prepareMP4Upload(ctx, s.ffmpegPath, input)
+		if err != nil {
+			return Record{}, err
+		}
+		defer cleanup()
+		input = prepared
+	}
 
 	mediaID := newID()
 	objectPath := fmt.Sprintf("/originals/%s/%s/%s%s", remoteOwnerSegment(actor.ID), time.Now().UTC().Format("2006/01"), mediaID, ext)

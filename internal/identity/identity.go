@@ -459,22 +459,22 @@ func (s *Store) UpdateAccount(ctx context.Context, userID, currentSessionID stri
 	if length := len([]rune(input.Nickname)); length < 1 || length > 40 {
 		return User{}, errors.New("nickname must be 1-40 characters")
 	}
-	if input.CurrentPassword == "" {
-		return User{}, ErrInvalidCredentials
-	}
 	if input.NewPassword != "" && (len(input.NewPassword) < 10 || len(input.NewPassword) > 128) {
 		return User{}, errors.New("password must be 10-128 characters")
 	}
 
-	var passwordHash string
-	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ? AND status = 'active'`, userID).Scan(&passwordHash); err != nil {
+	var currentUsername, currentEmail, passwordHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT username, email, password_hash FROM users WHERE id = ? AND status = 'active'`, userID).Scan(&currentUsername, &currentEmail, &passwordHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
 		return User{}, err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(input.CurrentPassword)) != nil {
-		return User{}, ErrInvalidCredentials
+	sensitiveChange := input.Username != currentUsername || input.Email != currentEmail || input.NewPassword != ""
+	if sensitiveChange {
+		if input.CurrentPassword == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(input.CurrentPassword)) != nil {
+			return User{}, ErrInvalidCredentials
+		}
 	}
 	var conflict int
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id <> ? AND (username = ? COLLATE NOCASE OR email = ? COLLATE NOCASE))`, userID, input.Username, input.Email).Scan(&conflict); err != nil {

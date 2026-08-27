@@ -70,6 +70,10 @@ func TestUserCanUpdateOwnAccountAndRevokeOtherSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	nicknameOnly, err := store.UpdateAccount(ctx, user.ID, currentSessionID, AccountInput{Username: "admin", Email: "admin@example.test", Nickname: "免密新昵称"}, "127.0.0.1")
+	if err != nil || nicknameOnly.Nickname != "免密新昵称" || nicknameOnly.Username != "admin" || nicknameOnly.Email != "admin@example.test" {
+		t.Fatalf("nickname-only update=%+v err=%v", nicknameOnly, err)
+	}
 	if _, err := store.UpdateAccount(ctx, user.ID, currentSessionID, AccountInput{Username: "renamed-admin", Email: "renamed@example.test", Nickname: "新昵称", CurrentPassword: "wrong-password"}, "127.0.0.1"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("wrong current password err=%v", err)
 	}

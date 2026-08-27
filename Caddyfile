@@ -1,6 +1,9 @@
 {
 	https_port 13443
 	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
 }
 
 m3048.clical.xin {

@@ -52,6 +52,7 @@ const sourceLabel = computed(() => props.external ? '外链视频' : '上传视�
 .video-preview > button { position: relative; width: 100%; height: 100%; display: block; overflow: hidden; padding: 0; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; text-align: left; }
 .video-preview > button:focus-visible { outline: 3px solid #b85838; outline-offset: -3px; }
 .video-preview img, .video-preview video, .video-preview iframe { width: 100%; height: 100%; display: block; border: 0; object-fit: cover; }
+.video-preview.active video { object-fit: contain; }
 .fallback-art { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(circle at 72% 22%, #6e776e, transparent 36%), linear-gradient(145deg, #4b514b, #292d29); color: rgba(255,255,255,.82); }
 .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(13,16,14,.08) 30%, rgba(13,16,14,.82) 100%); }
 .source-badge { position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(255,255,255,.32); border-radius: 999px; background: rgba(23,27,24,.68); font-size: 12px; backdrop-filter: blur(7px); }

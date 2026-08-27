@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { highlighter as hljs } from './syntax'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, Info, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 import RichTextEditor from './components/RichTextEditor.vue'
@@ -40,6 +40,14 @@ const profileMessage = ref('')
 const accountBusy = ref(false)
 const accountMessage = ref('')
 const account = reactive({ username: '', email: '', nickname: '', current_password: '', new_password: '', confirm_password: '' })
+const accountSensitiveChanged = computed(() => Boolean(user.value) && (
+  account.username.trim() !== user.value?.username
+  || account.email.trim() !== user.value?.email
+  || Boolean(account.new_password)
+))
+const accountHasChanges = computed(() => Boolean(user.value) && (
+  accountSensitiveChanged.value || account.nickname.trim() !== user.value?.nickname
+))
 const avatarInput = ref<HTMLInputElement | null>(null)
 const avatarBusy = ref(false)
 const avatarProgress = ref(0)
@@ -376,9 +384,14 @@ async function saveAccount() {
     accountMessage.value = '两次输入的新密码不一致'
     return
   }
+  if (accountSensitiveChanged.value && !account.current_password) {
+    accountMessage.value = '更改用户名、邮箱或密码时，请输入当前密码'
+    return
+  }
   accountBusy.value = true
   try {
     const passwordChanged = Boolean(account.new_password)
+    const nicknameOnly = !accountSensitiveChanged.value && account.nickname.trim() !== user.value?.nickname
     applyUser((await api.updateAccount({
       username: account.username,
       email: account.email,
@@ -393,7 +406,7 @@ async function saveAccount() {
       sessions.value = (await api.sessions()).sessions
       sessionsExpanded.value = false
     }
-    accountMessage.value = passwordChanged ? '账号与密码已更新，其他设备已退出登录' : '账号信息已更新'
+    accountMessage.value = passwordChanged ? '账号与密码已更新，其他设备已退出登录' : nicknameOnly ? '昵称已更新' : '账号信息已更新'
     showTopNotice(accountMessage.value)
   } catch (error) {
     accountMessage.value = error instanceof ApiError && error.status === 401 ? '当前密码不正确' : error instanceof Error ? error.message : '账号信息保存失败'
@@ -1724,7 +1737,7 @@ async function copyInvites() {
             <h2 v-if="post.title" class="post-title">{{ post.title }}</h2>
             <p v-if="post.body" class="post-body">{{ post.body }}</p>
             <div v-if="post.media.length" class="post-media-grid">
-              <figure v-for="(item, mediaIndex) in post.media.slice(0, 4)" :key="item.id">
+              <figure v-for="(item, mediaIndex) in post.media.slice(0, 4)" :key="item.id" :class="{ 'video-media': item.media_type === 'video' }">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" aria-hidden="true" /><strong>远端媒体暂时不可用</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重新加载</button></div>
                 <img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" />
                 <VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" />
@@ -1764,7 +1777,7 @@ async function copyInvites() {
           <section v-if="detailMedia(detailPost).length || detailPost.external_video_url" class="detail-media-section" aria-labelledby="detail-media-title">
             <header><div><p class="eyebrow">照片与视频</p><h2 id="detail-media-title">这段回忆的媒体</h2></div><span>{{ detailMedia(detailPost).length + (detailPost.external_video_url ? 1 : 0) }} 项</span></header>
             <div class="detail-gallery">
-              <figure v-for="item in detailMedia(detailPost)" :key="item.id">
+              <figure v-for="item in detailMedia(detailPost)" :key="item.id" :class="{ 'detail-video-media': item.media_type === 'video' }">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div>
                 <a v-else-if="item.media_type === 'image'" :href="mediaContentURL(item.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.original_filename}`"><img :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /></a>
                 <VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" />
@@ -1789,7 +1802,7 @@ async function copyInvites() {
         <div v-if="timelineGroups.length === 0" class="content-empty"><Sparkles :size="34" aria-hidden="true" /><h2>时间线还是空的</h2><p>发布第一段回忆后，它会出现在这里。</p></div>
         <div v-else class="timeline-list">
           <section v-for="group in timelineGroups" :key="group.key" class="timeline-group"><header><span></span><h2>{{ group.label }}</h2><small>{{ group.posts.length }} 条</small></header><div>
-            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><button class="text-profile-link" type="button" @click="showPublicProfile(post.author.id)">{{ post.author.nickname }}</button><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length || post.external_video_url" class="timeline-media"><template v-for="item in post.media.slice(0, post.external_video_url ? 3 : 4)" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" square /></template><VideoPreview v-if="post.external_video_url" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" square /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div><button v-if="post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(post)"><FileEdit :size="15" />编辑这条回忆</button></div></article>
+            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><button class="text-profile-link" type="button" @click="showPublicProfile(post.author.id)">{{ post.author.nickname }}</button><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length || post.external_video_url" class="timeline-media"><template v-for="item in post.media.slice(0, post.external_video_url ? 3 : 4)" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else class="timeline-video" :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="post.external_video_url" class="timeline-video" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div><button v-if="post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(post)"><FileEdit :size="15" />编辑这条回忆</button></div></article>
           </div></section>
         </div>
         <div v-if="timelineVisibleCount < feedPosts.length || feedNextCursor || feedLoadingMore" ref="contentLoadSentinel" class="scroll-load-sentinel" role="status"><span v-if="feedLoadingMore" class="loader"></span><span>{{ feedLoadingMore ? '正在展开时间线…' : '继续向下滑动查看更多' }}</span></div>
@@ -1956,7 +1969,7 @@ async function copyInvites() {
               <article v-for="entry in guestbookEntries" :key="entry.id" class="guestbook-entry">
                 <header><span class="mini-avatar"><img v-if="avatarVisible(entry.author.avatar_path)" :src="avatarURL(entry.author.avatar_path)" alt="" @error="markAvatarBroken(entry.author.avatar_path)" /><span v-else>{{ entry.author.nickname.slice(0, 1) }}</span></span><div><strong>{{ entry.author.nickname }}</strong><span>{{ entry.recipient ? `写给 ${entry.recipient.nickname}` : '写给整个宿舍' }}</span></div></header>
                 <p v-if="entry.body">{{ entry.body }}</p>
-                <div v-if="entry.media.length || entry.external_video_url" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="entry.external_video_url" :src="entry.external_video_url" :poster="externalVideoThumbnail(entry.external_video_url)" :title="entry.body || '留言中的外链视频'" external :embedded="isEmbeddedPlayer(entry.external_video_url)" /></div>
+                <div v-if="entry.media.length || entry.external_video_url" class="guestbook-entry-media"><template v-for="item in entry.media" :key="item.id"><div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div><img v-else-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else class="guestbook-video" :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="entry.external_video_url" class="guestbook-video" :src="entry.external_video_url" :poster="externalVideoThumbnail(entry.external_video_url)" :title="entry.body || '留言中的外链视频'" external :embedded="isEmbeddedPlayer(entry.external_video_url)" /></div>
                 <footer><time :datetime="entry.created_at">{{ new Date(entry.created_at).toLocaleString('zh-CN') }}</time><div><button v-if="guestbookStatus === 'hidden'" type="button" @click="restoreGuestbookEntry(entry)"><ArchiveRestore :size="17" />恢复显示</button><button v-else-if="user.role === 'admin' || entry.recipient?.id === user.id" type="button" @click="hideGuestbookEntry(entry)">隐藏</button><button v-if="entry.author.id === user.id || user.role === 'admin'" class="danger-link" type="button" @click="deleteGuestbookEntry(entry)">删除</button></div></footer>
               </article>
             </section>
@@ -1982,7 +1995,17 @@ async function copyInvites() {
             <div v-if="editorMedia.length" class="media-queue">
               <article v-for="item in editorMedia" :key="item.key" :data-status="item.status">
                 <span class="media-kind"><Image v-if="item.kind === 'image'" :size="20" aria-hidden="true" /><Film v-else :size="20" aria-hidden="true" /></span>
-                <div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待保存' : item.status === 'uploading' ? `正在上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress></div>
+                <div>
+                  <strong>{{ item.name }}</strong>
+                  <span class="media-upload-status">
+                    <small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待保存' : item.status === 'uploading' ? `正在上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small>
+                    <button v-if="item.status === 'uploading'" class="upload-speed-hint" type="button" :aria-describedby="`upload-speed-tip-${item.key}`" aria-label="查看上传速度说明">
+                      <Info :size="15" aria-hidden="true" />
+                      <span :id="`upload-speed-tip-${item.key}`" class="upload-speed-tooltip" role="tooltip">上传速度先慢后快，稍安勿躁，这是TCP的特性</span>
+                    </button>
+                  </span>
+                  <progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress>
+                </div>
                 <button v-if="item.status === 'error'" type="button" aria-label="下次保存时重试上传" title="下次保存时重试" @click="retryEditorMedia(item)"><RotateCcw :size="18" /></button>
                 <button v-else type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
               </article>
@@ -2020,12 +2043,12 @@ async function copyInvites() {
           </template>
         </section>
         <form class="account-form" @submit.prevent="saveAccount">
-          <div><p class="eyebrow">登录信息</p><h3>修改账号</h3><small>用户名、邮箱、昵称或密码发生变化时，需要输入当前密码确认。</small></div>
+          <div><p class="eyebrow">登录信息</p><h3>修改账号</h3><small>昵称可直接修改；更改用户名、邮箱或密码时才需要当前密码。</small></div>
           <div class="field-grid"><div class="field"><label for="account-username">用户名</label><input id="account-username" v-model.trim="account.username" autocomplete="username" minlength="3" maxlength="24" required /></div><div class="field"><label for="account-email">邮箱</label><input id="account-email" v-model.trim="account.email" type="email" autocomplete="email" required /></div></div>
           <div class="field"><label for="account-nickname">昵称</label><input id="account-nickname" v-model.trim="account.nickname" maxlength="40" required /></div>
-          <div class="field"><label for="account-current-password">当前密码</label><input id="account-current-password" v-model="account.current_password" type="password" autocomplete="current-password" minlength="10" maxlength="128" required /></div>
+          <div class="field"><label for="account-current-password">当前密码{{ accountSensitiveChanged ? '（必填）' : '（可选）' }}</label><input id="account-current-password" v-model="account.current_password" type="password" autocomplete="current-password" minlength="10" maxlength="128" :required="accountSensitiveChanged" :aria-describedby="accountSensitiveChanged ? 'account-password-help' : undefined" /><small id="account-password-help">{{ accountSensitiveChanged ? '你正在更改用户名、邮箱或密码，请验证当前密码。' : '仅修改昵称时可以留空。' }}</small></div>
           <div class="field-grid"><div class="field"><label for="account-new-password">新密码（可选）</label><input id="account-new-password" v-model="account.new_password" type="password" autocomplete="new-password" minlength="10" maxlength="128" placeholder="至少 10 个字符" /></div><div class="field"><label for="account-confirm-password">确认新密码</label><input id="account-confirm-password" v-model="account.confirm_password" type="password" autocomplete="new-password" :required="Boolean(account.new_password)" /></div></div>
-          <p v-if="accountMessage" class="form-message" role="status">{{ accountMessage }}</p><button class="primary-button" type="submit" :disabled="accountBusy || !account.current_password">{{ accountBusy ? '保存中…' : '保存账号信息' }}</button>
+          <p v-if="accountMessage" class="form-message" role="status">{{ accountMessage }}</p><button class="primary-button" type="submit" :disabled="accountBusy || !accountHasChanges || (accountSensitiveChanged && !account.current_password)">{{ accountBusy ? '保存中…' : '保存账号信息' }}</button>
         </form>
         <form @submit.prevent="saveProfile">
           <div><p class="eyebrow">公开资料</p><h3>纪念册资料</h3></div>

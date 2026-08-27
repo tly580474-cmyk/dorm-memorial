@@ -77,6 +77,48 @@ func TestBuildVideoPreviewWithFFmpeg(t *testing.T) {
 	}
 }
 
+func TestPrepareMP4UploadMovesMetadataBeforeMedia(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	sourcePath := filepath.Join(t.TempDir(), "source.mp4")
+	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "2", "-pix_fmt", "yuv420p", "-y", sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create test video: %v: %s", err, output)
+	}
+	fastStart, err := MP4FastStart(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fastStart {
+		t.Fatal("test source unexpectedly already uses fast start")
+	}
+	payload, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, cleanup, err := prepareMP4Upload(context.Background(), ffmpegPath, UploadInput{Body: bytes.NewReader(payload), Size: int64(len(payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	file, ok := prepared.Body.(*os.File)
+	if !ok {
+		t.Fatalf("prepared body type = %T, want *os.File", prepared.Body)
+	}
+	fastStart, err = MP4FastStart(file.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fastStart {
+		t.Fatal("prepared video is not fast start")
+	}
+	if prepared.Size <= 0 {
+		t.Fatalf("prepared size = %d", prepared.Size)
+	}
+}
+
 type memoryObjects struct {
 	mu       sync.Mutex
 	objects  map[string][]byte
