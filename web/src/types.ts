@@ -72,7 +72,9 @@ export interface MediaUsage {
 export interface Post {
   id: string
   author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+  title: string
   body: string
+  body_html: string
   status: PostStatus
   visibility: 'members' | 'private'
   content_date: string | null

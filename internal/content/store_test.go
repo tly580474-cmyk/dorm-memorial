@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,11 +36,11 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStore(db)
-	draft, err := store.Create(ctx, member, WriteInput{Body: "第一段宿舍回忆", ContentDate: "2024-09-01", Visibility: "members", Tags: []string{"开学", " 开学 "}}, "127.0.0.1")
+	draft, err := store.Create(ctx, member, WriteInput{Title: "入住第一天", Body: "第一段宿舍回忆", BodyHTML: `<h2>入住第一天</h2><p><strong>第一段</strong>宿舍回忆<script>alert(1)</script></p><pre><code class="language-go">fmt.Println("hi")</code></pre>`, ContentDate: "2024-09-01", Visibility: "members", Tags: []string{"开学", " 开学 "}}, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if draft.Status != "draft" || len(draft.Tags) != 1 {
+	if draft.Status != "draft" || draft.Title != "入住第一天" || !strings.Contains(draft.BodyHTML, "<strong>第一段</strong>") || !strings.Contains(draft.BodyHTML, `class="language-go"`) || strings.Contains(draft.BodyHTML, "script") || len(draft.Tags) != 1 {
 		t.Fatalf("draft=%+v", draft)
 	}
 	if _, err := store.Get(ctx, admin, draft.ID); err != nil {

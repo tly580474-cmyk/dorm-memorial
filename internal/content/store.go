@@ -17,6 +17,7 @@ import (
 
 	"dorm-memorial/internal/identity"
 	"dorm-memorial/internal/messaging"
+	"github.com/microcosm-cc/bluemonday"
 )
 
 var (
@@ -24,7 +25,20 @@ var (
 	ErrForbidden = errors.New("content access forbidden")
 	ErrConflict  = errors.New("content state conflict")
 	iframeSource = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))`)
+	richTextHTML = newRichTextPolicy()
 )
+
+func newRichTextPolicy() *bluemonday.Policy {
+	policy := bluemonday.UGCPolicy()
+	policy.AllowElements("h2", "h3", "s", "table", "thead", "tbody", "tr", "th", "td", "pre", "code")
+	policy.AllowAttrs("colspan", "rowspan").Matching(regexp.MustCompile(`^[1-9][0-9]?$`)).OnElements("th", "td")
+	policy.AllowAttrs("src", "alt", "title", "loading").OnElements("img")
+	policy.AllowAttrs("class").Matching(regexp.MustCompile(`^language-[a-zA-Z0-9_+#.-]+$`)).OnElements("code")
+	policy.AllowRelativeURLs(true)
+	policy.RequireNoFollowOnLinks(true)
+	policy.AddTargetBlankToFullyQualifiedLinks(true)
+	return policy
+}
 
 type Author struct {
 	ID         string `json:"id"`
@@ -37,6 +51,8 @@ type Post struct {
 	ID               string     `json:"id"`
 	Author           Author     `json:"author"`
 	Body             string     `json:"body"`
+	Title            string     `json:"title"`
+	BodyHTML         string     `json:"body_html"`
 	Status           string     `json:"status"`
 	Visibility       string     `json:"visibility"`
 	ContentDate      *time.Time `json:"content_date"`
@@ -100,6 +116,8 @@ type GuestbookPage struct {
 
 type WriteInput struct {
 	Body             string   `json:"body"`
+	Title            string   `json:"title"`
+	BodyHTML         string   `json:"body_html"`
 	ContentDate      string   `json:"content_date"`
 	Visibility       string   `json:"visibility"`
 	Tags             []string `json:"tags"`
@@ -153,8 +171,8 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 	if status == "published" {
 		published = submitted
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO posts(id, author_id, body, status, visibility, content_date, submitted_at, published_at, external_video_url, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Body, status, input.Visibility, nullableDate(contentDate), submitted, published, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	_, err = tx.ExecContext(ctx, `INSERT INTO posts(id, author_id, title, body, body_html, status, visibility, content_date, submitted_at, published_at, external_video_url, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Title, input.Body, input.BodyHTML, status, input.Visibility, nullableDate(contentDate), submitted, published, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return Post{}, err
 	}
@@ -209,7 +227,7 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 	if nextStatus == "published" {
 		published = nowText()
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE posts SET body = ?, visibility = ?, content_date = ?, status = ?, submitted_at = COALESCE(?, submitted_at), published_at = COALESCE(published_at, ?), external_video_url = ?, moderation_note = '', updated_at = ? WHERE id = ? AND status IN ('draft', 'published')`, input.Body, input.Visibility, nullableDate(contentDate), nextStatus, submitted, published, input.ExternalVideoURL, nowText(), id)
+	result, err := tx.ExecContext(ctx, `UPDATE posts SET title = ?, body = ?, body_html = ?, visibility = ?, content_date = ?, status = ?, submitted_at = COALESCE(?, submitted_at), published_at = COALESCE(published_at, ?), external_video_url = ?, moderation_note = '', updated_at = ? WHERE id = ? AND status IN ('draft', 'published')`, input.Title, input.Body, input.BodyHTML, input.Visibility, nullableDate(contentDate), nextStatus, submitted, published, input.ExternalVideoURL, nowText(), id)
 	if err != nil {
 		return Post{}, err
 	}
@@ -693,7 +711,7 @@ func (s *Store) scanOne(ctx context.Context, viewerID, where string, args ...any
 }
 
 func postSelect() string {
-	return `SELECT p.id, p.body, p.status, p.visibility, p.content_date, p.moderation_note,
+	return `SELECT p.id, p.title, p.body, p.body_html, p.status, p.visibility, p.content_date, p.moderation_note,
 		p.submitted_at, p.published_at, p.created_at, p.updated_at, p.external_video_url,
 		u.id, u.username, pr.nickname, pr.avatar_path,
 		(SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'visible'),
@@ -706,7 +724,7 @@ func scanPost(row scanner) (Post, error) {
 	var post Post
 	var contentDate, submittedAt, publishedAt sql.NullString
 	var createdAt, updatedAt string
-	err := row.Scan(&post.ID, &post.Body, &post.Status, &post.Visibility, &contentDate, &post.ModerationNote,
+	err := row.Scan(&post.ID, &post.Title, &post.Body, &post.BodyHTML, &post.Status, &post.Visibility, &contentDate, &post.ModerationNote,
 		&submittedAt, &publishedAt, &createdAt, &updatedAt, &post.ExternalVideoURL,
 		&post.Author.ID, &post.Author.Username, &post.Author.Nickname, &post.Author.AvatarPath,
 		&post.CommentCount, &post.LikeCount, &post.LikedByMe)
@@ -923,7 +941,9 @@ func validateGuestbookInput(input GuestbookInput) (GuestbookInput, error) {
 }
 
 func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
+	input.Title = strings.TrimSpace(bluemonday.StrictPolicy().Sanitize(input.Title))
 	input.Body = strings.TrimSpace(input.Body)
+	input.BodyHTML = strings.TrimSpace(richTextHTML.Sanitize(input.BodyHTML))
 	externalVideoURL, err := normalizeExternalVideo(input.ExternalVideoURL)
 	if err != nil {
 		return input, nil, err
@@ -931,6 +951,12 @@ func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	input.ExternalVideoURL = externalVideoURL
 	if len([]rune(input.Body)) > 10000 {
 		return input, nil, errors.New("content body is too long")
+	}
+	if len([]rune(input.Title)) > 120 {
+		return input, nil, errors.New("content title is too long")
+	}
+	if len(input.BodyHTML) > 100000 {
+		return input, nil, errors.New("rich text body is too long")
 	}
 	if input.Submit && input.Body == "" && len(input.MediaIDs) == 0 && input.ExternalVideoURL == "" {
 		return input, nil, errors.New("content body is required before submission")

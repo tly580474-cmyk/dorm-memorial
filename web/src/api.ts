@@ -91,9 +91,9 @@ export const api = {
     return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)
   },
   post: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`),
-  createPost: (body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
+  createPost: (body: { title: string; body: string; body_html: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
     request<{ post: Post }>('/api/posts', { method: 'POST', body: JSON.stringify(body) }),
-  updatePost: (id: string, body: { body: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
+  updatePost: (id: string, body: { title: string; body: string; body_html: string; content_date: string; visibility: 'members' | 'private'; tags: string[]; media_ids: string[]; submit: boolean; external_video_url: string }) =>
     request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   submitPost: (id: string) => request<{ post: Post }>(`/api/posts/${encodeURIComponent(id)}/submit`, { method: 'POST', body: '{}' }),
   moderatePost: (id: string, action: 'approve' | 'hide', note = '') =>

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { highlighter as hljs } from './syntax'
 import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
+import RichTextEditor from './components/RichTextEditor.vue'
 import VideoPreview from './components/VideoPreview.vue'
 
 type EditorMedia = {
@@ -100,15 +102,19 @@ const composerError = ref('')
 const editingPostID = ref('')
 let composerInitialState = ''
 let dialogBackdropArmed = false
-const editor = reactive({ body: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '', external_video_url: '' })
+const editor = reactive({ title: '', body: '', body_html: '', content_date: '', visibility: 'members' as 'members' | 'private', tags: '', external_video_url: '' })
 const editorMedia = ref<EditorMedia[]>([])
 const removedMediaIDs = ref<string[]>([])
 const mediaInput = ref<HTMLInputElement | null>(null)
+const richImageInput = ref<HTMLInputElement | null>(null)
+const richTextEditor = ref<InstanceType<typeof RichTextEditor> | null>(null)
 const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const publicProfile = ref<Member | null>(null)
 const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
+const composerSaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+let composerAutosaveTimer = 0
 let detailTrigger: HTMLElement | null = null
 const detailPost = ref<Post | null>(null)
 const detailComments = ref<Comment[]>([])
@@ -244,6 +250,7 @@ onBeforeUnmount(() => {
   contentObserver?.disconnect()
   if (topNoticeTimer) window.clearTimeout(topNoticeTimer)
   if (messageHighlightTimer) window.clearTimeout(messageHighlightTimer)
+  if (composerAutosaveTimer) window.clearTimeout(composerAutosaveTimer)
 })
 
 function applyUser(next: User) {
@@ -541,7 +548,9 @@ function closeDetail() {
 
 function replacePost(next: Post) {
   feedPosts.value = feedPosts.value.map((post) => post.id === next.id ? next : post)
-  myPosts.value = myPosts.value.map((post) => post.id === next.id ? next : post)
+  myPosts.value = myPosts.value.some((post) => post.id === next.id)
+    ? myPosts.value.map((post) => post.id === next.id ? next : post)
+    : [next, ...myPosts.value]
   if (detailPost.value?.id === next.id) detailPost.value = next
 }
 
@@ -916,7 +925,9 @@ function consumeDialogBackdrop(event: MouseEvent) {
 
 function composerState() {
   return JSON.stringify({
+    title: editor.title,
     body: editor.body,
+    bodyHTML: editor.body_html,
     contentDate: editor.content_date,
     visibility: editor.visibility,
     tags: editor.tags,
@@ -927,13 +938,55 @@ function composerState() {
 }
 
 function composerHasContent() {
-  return Boolean(editor.body.trim() || editor.external_video_url.trim() || editorMedia.value.length)
+  return Boolean(editor.title.trim() || editor.body.trim() || editor.external_video_url.trim() || editorMedia.value.length)
+}
+
+function plainTextToHTML(value: string) {
+  if (!value) return ''
+  const container = document.createElement('div')
+  return value.split(/\n{2,}/).map((paragraph) => {
+    const node = document.createElement('p')
+    node.textContent = paragraph
+    return node.outerHTML.replace(/\n/g, '<br>')
+  }).join('')
+}
+
+function postTitle(post: Post) {
+  return post.title || (post.body ? (post.body.split('\n')[0] ?? '').slice(0, 48) : `${post.author.nickname}的回忆`)
+}
+
+function postRichHTML(post: Post) {
+  const source = post.body_html || plainTextToHTML(post.body)
+  if (!source) return ''
+  const parsed = new DOMParser().parseFromString(source, 'text/html')
+  parsed.querySelectorAll('pre code').forEach((code) => {
+    const language = [...code.classList].find((name) => name.startsWith('language-'))?.slice(9) ?? ''
+    const content = code.textContent ?? ''
+    try {
+      const highlighted = language && hljs.getLanguage(language)
+        ? hljs.highlight(content, { language })
+        : hljs.highlightAuto(content)
+      code.innerHTML = highlighted.value
+      code.classList.add('hljs')
+      code.setAttribute('data-language', language || highlighted.language || 'code')
+    } catch {
+      code.setAttribute('data-language', language || 'code')
+    }
+  })
+  return parsed.body.innerHTML
+}
+
+function detailMedia(post: Post) {
+  if (!post.body_html) return post.media
+  return post.media.filter((item) => !post.body_html.includes(`/api/media/${item.id}/content`))
 }
 
 async function openComposer(post?: Post) {
   composerTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   editingPostID.value = post?.id ?? ''
+  editor.title = post?.title ?? ''
   editor.body = post?.body ?? ''
+  editor.body_html = post ? postRichHTML(post) : ''
   editor.content_date = post?.content_date?.slice(0, 10) ?? ''
   editor.visibility = post?.visibility ?? 'members'
   editor.tags = post?.tags.join('、') ?? ''
@@ -942,10 +995,11 @@ async function openComposer(post?: Post) {
   removedMediaIDs.value = []
   mediaSelectionError.value = ''
   composerError.value = ''
+  composerSaveState.value = 'idle'
   composerInitialState = composerState()
   composerOpen.value = true
   await nextTick()
-  composerDialog.value?.querySelector<HTMLElement>('textarea, input, button')?.focus()
+  composerDialog.value?.querySelector<HTMLElement>('input, [contenteditable="true"], textarea, button')?.focus()
 }
 
 async function closeComposer() {
@@ -969,7 +1023,7 @@ function trapComposerFocus(event: KeyboardEvent) {
     return
   }
   if (event.key !== 'Tab' || !composerDialog.value) return
-  const items = [...composerDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled)')]
+  const items = [...composerDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), [contenteditable="true"], textarea:not(:disabled), select:not(:disabled)')]
   if (items.length === 0) return
   const first = items[0]
   const last = items[items.length - 1]
@@ -982,15 +1036,20 @@ function trapComposerFocus(event: KeyboardEvent) {
   }
 }
 
-async function savePost(submit: boolean, automatic = false) {
+async function savePost(submit: boolean, automatic = false, keepOpen = false) {
+  if (composerBusy.value) return
   composerBusy.value = true
+  if (automatic) composerSaveState.value = 'saving'
   composerError.value = ''
   try {
     for (const item of editorMedia.value) {
       if (item.status === 'pending' || item.status === 'error') await uploadEditorMedia(item)
     }
+    const savingState = composerState()
     const body = {
+      title: editor.title,
       body: editor.body,
+      body_html: editor.body_html,
       content_date: editor.content_date,
       visibility: editor.visibility,
       tags: editor.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean),
@@ -999,17 +1058,58 @@ async function savePost(submit: boolean, automatic = false) {
       external_video_url: editor.external_video_url,
     }
     const wasEditing = Boolean(editingPostID.value)
-    if (wasEditing) await api.updatePost(editingPostID.value, body)
-    else await api.createPost(body)
+    const saved = wasEditing ? await api.updatePost(editingPostID.value, body) : await api.createPost(body)
+    editingPostID.value = saved.post.id
     await Promise.allSettled(removedMediaIDs.value.map((id) => api.deleteMedia(id)))
-    composerOpen.value = false
-    await loadContent()
-    showTopNotice(automatic ? (wasEditing ? '编辑内容已自动保存' : '已自动保存到草稿') : (submit ? '回忆已发布' : '草稿已保存'))
-    await nextTick(() => composerTrigger?.focus())
+    removedMediaIDs.value = []
+    composerInitialState = savingState
+    composerSaveState.value = 'saved'
+    if (keepOpen) {
+      replacePost(saved.post)
+      if (composerState() !== composerInitialState) scheduleComposerAutosave()
+    } else {
+      composerOpen.value = false
+      await loadContent()
+      showTopNotice(automatic ? (wasEditing ? '编辑内容已自动保存' : '已自动保存到草稿') : (submit ? '回忆已发布' : '草稿已保存'))
+      await nextTick(() => composerTrigger?.focus())
+    }
   } catch (error) {
     composerError.value = error instanceof Error ? error.message : '保存失败'
+    composerSaveState.value = 'error'
   } finally {
     composerBusy.value = false
+  }
+}
+
+function scheduleComposerAutosave() {
+  if (!composerOpen.value) return
+  if (composerAutosaveTimer) window.clearTimeout(composerAutosaveTimer)
+  composerSaveState.value = 'idle'
+  composerAutosaveTimer = window.setTimeout(() => {
+    if (composerState() === composerInitialState || (!composerHasContent() && !editingPostID.value)) return
+    void savePost(false, true, true)
+  }, 1800)
+}
+
+watch([() => editor.title, () => editor.body_html, () => editor.content_date, () => editor.visibility, () => editor.tags, () => editor.external_video_url, editorMedia], scheduleComposerAutosave, { deep: true })
+
+async function handleRichImageInput(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  if (!file.type.startsWith('image/') || file.size <= 0 || file.size > 25 * 1024 ** 2) {
+    composerError.value = '请选择不超过 25 MiB 的图片。'
+    return
+  }
+  const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'image', status: 'pending', progress: 0, error: '', persisted: false }
+  editorMedia.value.push(item)
+  try {
+    await uploadEditorMedia(item)
+    if (!item.media) return
+    richTextEditor.value?.insertImage(mediaContentURL(item.media.id), item.name)
+  } catch {
+    composerError.value = item.error || '正文图片上传失败'
   }
 }
 
@@ -1621,7 +1721,8 @@ async function copyInvites() {
           <div v-else-if="feedPosts.length === 0" class="content-empty"><BookHeart :size="34" aria-hidden="true" /><h2>第一段回忆，等你来写</h2><p>发布后，会立即出现在所有室友的首页。</p><button class="secondary-button" type="button" @click="openComposer()">开始记录</button></div>
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
             <header><button class="profile-summary" type="button" @click="showPublicProfile(post.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(post.author.avatar_path)" :src="avatarURL(post.author.avatar_path)" alt="" @error="markAvatarBroken(post.author.avatar_path)" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ post.author.nickname }}</strong><small>{{ displayDate(post.published_at) }}</small></span></button></header>
-            <p class="post-body">{{ post.body }}</p>
+            <h2 v-if="post.title" class="post-title">{{ post.title }}</h2>
+            <p v-if="post.body" class="post-body">{{ post.body }}</p>
             <div v-if="post.media.length" class="post-media-grid">
               <figure v-for="(item, mediaIndex) in post.media.slice(0, 4)" :key="item.id">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" aria-hidden="true" /><strong>远端媒体暂时不可用</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重新加载</button></div>
@@ -1631,7 +1732,7 @@ async function copyInvites() {
                 <figcaption><span>{{ item.original_filename }}</span><small>{{ formatBytes(item.size_bytes) }}</small></figcaption>
               </figure>
             </div>
-            <VideoPreview v-if="post.external_video_url" class="external-video-frame" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" />
+            <VideoPreview v-if="post.external_video_url" class="external-video-frame" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="postTitle(post)" external :embedded="isEmbeddedPlayer(post.external_video_url)" />
             <div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div>
             <footer><span v-if="post.content_date"><CalendarDays :size="17" />记录于 {{ displayDate(post.content_date) }}</span><button type="button" :class="{ liked: post.liked_by_me }" :aria-label="post.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(post)"><Heart :size="17" :fill="post.liked_by_me ? 'currentColor' : 'none'" />{{ post.like_count }}</button><button type="button" @click="openDetail(post)"><MessageCircle :size="17" />{{ post.comment_count }} 条评论</button><button v-if="post.author.id === user.id || user.role === 'admin'" type="button" @click="openComposer(post)"><FileEdit :size="17" />编辑</button><button v-if="post.author.id === user.id || user.role === 'admin'" class="post-delete-link" type="button" :aria-label="`删除${post.author.nickname}的回忆`" @click="deletePost(post)"><Trash2 :size="17" />删除</button><button type="button" class="detail-link" @click="openDetail(post)">查看详情</button></footer>
           </article>
@@ -1639,7 +1740,7 @@ async function copyInvites() {
         </div>
 
         <aside class="content-rail" aria-label="我的投稿">
-          <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与回忆</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有内容</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft' && post.status !== 'published'" @click="(post.status === 'draft' || post.status === 'published') && openComposer(post)"><span>{{ post.body || '无标题回忆' }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
+          <section class="rail-card"><header><div><p class="eyebrow">我的内容</p><h2>草稿与回忆</h2></div><span>{{ myPosts.length }}</span></header><div v-if="myPosts.length === 0" class="rail-empty">还没有内容</div><button v-for="post in myPosts.slice(0, 6)" :key="post.id" class="draft-row" type="button" :disabled="post.status !== 'draft' && post.status !== 'published'" @click="(post.status === 'draft' || post.status === 'published') && openComposer(post)"><span>{{ postTitle(post) }}</span><small :data-status="post.status">{{ statusLabel(post.status) }}</small></button></section>
         </aside>
       </section>
       </template>
@@ -1650,29 +1751,29 @@ async function copyInvites() {
             <button class="detail-back" type="button" @click="closeDetail"><ChevronLeft :size="20" aria-hidden="true" />返回上一页</button>
             <div class="detail-heading-copy">
               <p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p>
-              <h1 id="detail-title" tabindex="-1">{{ detailPost.author.nickname }}的回忆</h1>
+              <h1 id="detail-title" tabindex="-1">{{ postTitle(detailPost) }}</h1>
               <button class="detail-author" type="button" @click="showPublicProfile(detailPost.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ detailPost.author.nickname }}</strong><small>发布于 {{ displayDate(detailPost.published_at) }}</small></span></button>
             </div>
             <div class="detail-page-tools"><button type="button" :class="{ liked: detailPost.liked_by_me }" :aria-label="detailPost.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.like_count }}</button><button v-if="detailPost.author.id === user.id || user.role === 'admin'" type="button" @click="openComposer(detailPost)"><FileEdit :size="18" />编辑</button></div>
           </header>
 
-          <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
+          <div v-if="detailPost.body_html || detailPost.body" class="detail-body rich-text-display" v-html="postRichHTML(detailPost)"></div>
           <div v-if="detailPost.tags.length" class="tag-row detail-tags"><span v-for="tag in detailPost.tags" :key="tag">#{{ tag }}</span></div>
           <p v-if="detailError" class="form-error content-alert" role="alert">{{ detailError }}</p>
 
-          <section v-if="detailPost.media.length || detailPost.external_video_url" class="detail-media-section" aria-labelledby="detail-media-title">
-            <header><div><p class="eyebrow">照片与视频</p><h2 id="detail-media-title">这段回忆的媒体</h2></div><span>{{ detailPost.media.length + (detailPost.external_video_url ? 1 : 0) }} 项</span></header>
+          <section v-if="detailMedia(detailPost).length || detailPost.external_video_url" class="detail-media-section" aria-labelledby="detail-media-title">
+            <header><div><p class="eyebrow">照片与视频</p><h2 id="detail-media-title">这段回忆的媒体</h2></div><span>{{ detailMedia(detailPost).length + (detailPost.external_video_url ? 1 : 0) }} 项</span></header>
             <div class="detail-gallery">
-              <figure v-for="item in detailPost.media" :key="item.id">
+              <figure v-for="item in detailMedia(detailPost)" :key="item.id">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div>
                 <a v-else-if="item.media_type === 'image'" :href="mediaContentURL(item.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.original_filename}`"><img :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /></a>
                 <VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" />
                 <figcaption><span :title="item.original_filename">{{ item.original_filename }}</span><small>{{ formatBytes(item.size_bytes) }}</small></figcaption>
               </figure>
-              <figure v-if="detailPost.external_video_url" class="detail-external-video"><VideoPreview :src="detailPost.external_video_url" :poster="externalVideoThumbnail(detailPost.external_video_url)" :title="detailPost.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(detailPost.external_video_url)" /><figcaption><span>外链视频</span><small>播放时从原网站加载</small></figcaption></figure>
+              <figure v-if="detailPost.external_video_url" class="detail-external-video"><VideoPreview :src="detailPost.external_video_url" :poster="externalVideoThumbnail(detailPost.external_video_url)" :title="postTitle(detailPost)" external :embedded="isEmbeddedPlayer(detailPost.external_video_url)" /><figcaption><span>外链视频</span><small>播放时从原网站加载</small></figcaption></figure>
             </div>
           </section>
-          <section v-else class="detail-media-empty"><Camera :size="30" aria-hidden="true" /><div><strong>这段回忆没有媒体</strong><span>文字也值得被完整保存。</span></div></section>
+          <section v-else-if="detailPost.media.length === 0" class="detail-media-empty"><Camera :size="30" aria-hidden="true" /><div><strong>这段回忆没有媒体</strong><span>文字也值得被完整保存。</span></div></section>
 
           <section class="comments-section detail-comments" aria-labelledby="comments-title">
             <header><div><p class="eyebrow">室友回应</p><h2 id="comments-title">评论</h2></div><span><MessageCircle :size="18" />{{ detailPost.comment_count }} 条</span></header>
@@ -1871,7 +1972,8 @@ async function copyInvites() {
       <section ref="composerDialog" class="composer-dialog" role="dialog" aria-modal="true" aria-labelledby="composer-title" @keydown="trapComposerFocus">
         <header><div><p class="eyebrow">{{ editingPostID ? '编辑回忆' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
         <form @submit.prevent="savePost(true)">
-          <div class="field"><label for="post-body">正文</label><textarea id="post-body" v-model="editor.body" rows="8" maxlength="10000" autofocus placeholder="那天发生了什么？也可以只上传照片或视频。"></textarea><small>{{ editor.body.length }} / 10000</small></div>
+          <div class="field"><label for="post-title">标题</label><input id="post-title" v-model="editor.title" maxlength="120" autofocus placeholder="给这段回忆起个名字（可选）" /><small>{{ editor.title.length }} / 120</small></div>
+          <div class="field rich-editor-field"><div class="rich-editor-label"><label>正文</label><span class="autosave-state" role="status" aria-live="polite">{{ composerSaveState === 'saving' ? '正在自动保存…' : composerSaveState === 'saved' ? '已自动保存' : composerSaveState === 'error' ? '自动保存失败' : '停顿后自动保存' }}</span></div><RichTextEditor ref="richTextEditor" v-model="editor.body_html" :disabled="composerBusy" @update:text="editor.body = $event" @request-image="richImageInput?.click()" /><input ref="richImageInput" class="visually-hidden" type="file" accept="image/*" @change="handleRichImageInput" /><small>{{ editor.body.length }} / 10000</small></div>
           <section class="media-editor" aria-labelledby="media-editor-title">
             <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后会在保存投稿时上传，不会暂存在生产服务器。</small></div><span>{{ editorMedia.length }} / 20</span></header>
             <input ref="mediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleMediaInput" />
