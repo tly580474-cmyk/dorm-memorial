@@ -59,6 +59,8 @@ const avatarCropStyle = computed(() => {
   }
 })
 const sessions = ref<Session[]>([])
+const sessionsExpanded = ref(false)
+const visibleSessions = computed(() => sessionsExpanded.value ? sessions.value : sessions.value.slice(0, 3))
 const inviteCodes = ref<string[]>([])
 const inviteCount = ref(5)
 const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
@@ -107,8 +109,6 @@ const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const publicProfile = ref<Member | null>(null)
 const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
-const detailOpen = ref(false)
-const detailDialog = ref<HTMLElement | null>(null)
 let detailTrigger: HTMLElement | null = null
 const detailPost = ref<Post | null>(null)
 const detailComments = ref<Comment[]>([])
@@ -160,7 +160,12 @@ let messageLoadingRequest = 0
 let messageHighlightTimer = 0
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
 const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
-const activeView = ref<'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management'>('home')
+type ActiveView = 'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management' | 'detail'
+type NavigationView = Exclude<ActiveView, 'detail'>
+
+const activeView = ref<ActiveView>('home')
+let detailReturnView: NavigationView = 'home'
+let detailReturnScrollY = 0
 const wallItems = computed(() => feedPosts.value.flatMap((post) => [
   ...post.media.map((media) => ({ key: `media-${media.id}`, post, media, externalVideoURL: '' })),
   ...(post.external_video_url ? [{ key: `external-${post.id}`, post, media: null, externalVideoURL: post.external_video_url }] : []),
@@ -198,7 +203,7 @@ const nav = [
   { id: 'messages' as const, label: '消息', icon: MessageCircle, available: true },
 ]
 
-async function setView(view: 'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management') {
+async function setView(view: NavigationView) {
   if (view === 'management' && user.value?.role !== 'admin') return
   activeView.value = view
   mobileMenuOpen.value = false
@@ -295,6 +300,7 @@ async function logout() {
 async function openProfile() {
 	profileTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   profileOpen.value = true
+  sessionsExpanded.value = false
   profileMessage.value = ''
   accountMessage.value = ''
   account.current_password = ''
@@ -317,10 +323,6 @@ function closeProfile() {
 
 function closeProfileFromBackdrop(event: MouseEvent) {
   if (consumeDialogBackdrop(event)) closeProfile()
-}
-
-function closeDetailFromBackdrop(event: MouseEvent) {
-  if (consumeDialogBackdrop(event)) closeDetail()
 }
 
 function closePublicProfileFromBackdrop(event: MouseEvent) {
@@ -380,7 +382,10 @@ async function saveAccount() {
     account.current_password = ''
     account.new_password = ''
     account.confirm_password = ''
-    if (passwordChanged) sessions.value = (await api.sessions()).sessions
+    if (passwordChanged) {
+      sessions.value = (await api.sessions()).sessions
+      sessionsExpanded.value = false
+    }
     accountMessage.value = passwordChanged ? '账号与密码已更新，其他设备已退出登录' : '账号信息已更新'
     showTopNotice(accountMessage.value)
   } catch (error) {
@@ -502,14 +507,19 @@ async function clearAvatar() {
 
 async function openDetail(post: Post) {
   detailTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  if (activeView.value !== 'detail') {
+    detailReturnView = activeView.value
+    detailReturnScrollY = window.scrollY
+  }
   detailPost.value = post
   detailComments.value = []
   detailError.value = ''
   commentBody.value = ''
-  detailOpen.value = true
+  activeView.value = 'detail'
   detailLoading.value = true
   await nextTick()
-  detailDialog.value?.querySelector<HTMLElement>('button, textarea, [href]')?.focus()
+  window.scrollTo({ top: 0 })
+  document.querySelector<HTMLElement>('#detail-title')?.focus()
   try {
     const [fresh, comments] = await Promise.all([api.post(post.id), api.comments(post.id)])
     detailPost.value = fresh.post
@@ -522,19 +532,11 @@ async function openDetail(post: Post) {
 }
 
 function closeDetail() {
-  detailOpen.value = false
-  nextTick(() => detailTrigger?.focus())
-}
-
-function trapDetailFocus(event: KeyboardEvent) {
-  if (event.key === 'Escape') { event.preventDefault(); closeDetail(); return }
-  if (event.key !== 'Tab' || !detailDialog.value) return
-  const items = [...detailDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled), textarea:not(:disabled), [href]')]
-  if (!items.length) return
-  const first = items[0]
-  const last = items[items.length - 1]
-  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
-  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+  activeView.value = detailReturnView
+  nextTick(() => {
+    window.scrollTo({ top: detailReturnScrollY })
+    detailTrigger?.focus({ preventScroll: true })
+  })
 }
 
 function replacePost(next: Post) {
@@ -707,6 +709,7 @@ async function revoke(session: Session) {
     profileOpen.value = false
   } else {
     sessions.value = sessions.value.filter((item) => item.id !== session.id)
+    if (sessions.value.length <= 3) sessionsExpanded.value = false
   }
 }
 
@@ -1641,6 +1644,45 @@ async function copyInvites() {
       </section>
       </template>
 
+      <template v-else-if="activeView === 'detail' && detailPost">
+        <article class="detail-page" aria-labelledby="detail-title">
+          <header class="detail-page-header">
+            <button class="detail-back" type="button" @click="closeDetail"><ChevronLeft :size="20" aria-hidden="true" />返回上一页</button>
+            <div class="detail-heading-copy">
+              <p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p>
+              <h1 id="detail-title" tabindex="-1">{{ detailPost.author.nickname }}的回忆</h1>
+              <button class="detail-author" type="button" @click="showPublicProfile(detailPost.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ detailPost.author.nickname }}</strong><small>发布于 {{ displayDate(detailPost.published_at) }}</small></span></button>
+            </div>
+            <div class="detail-page-tools"><button type="button" :class="{ liked: detailPost.liked_by_me }" :aria-label="detailPost.liked_by_me ? '取消点赞' : '点赞'" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.like_count }}</button><button v-if="detailPost.author.id === user.id || user.role === 'admin'" type="button" @click="openComposer(detailPost)"><FileEdit :size="18" />编辑</button></div>
+          </header>
+
+          <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
+          <div v-if="detailPost.tags.length" class="tag-row detail-tags"><span v-for="tag in detailPost.tags" :key="tag">#{{ tag }}</span></div>
+          <p v-if="detailError" class="form-error content-alert" role="alert">{{ detailError }}</p>
+
+          <section v-if="detailPost.media.length || detailPost.external_video_url" class="detail-media-section" aria-labelledby="detail-media-title">
+            <header><div><p class="eyebrow">照片与视频</p><h2 id="detail-media-title">这段回忆的媒体</h2></div><span>{{ detailPost.media.length + (detailPost.external_video_url ? 1 : 0) }} 项</span></header>
+            <div class="detail-gallery">
+              <figure v-for="item in detailPost.media" :key="item.id">
+                <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div>
+                <a v-else-if="item.media_type === 'image'" :href="mediaContentURL(item.id)" target="_blank" rel="noopener" :aria-label="`查看原图：${item.original_filename}`"><img :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /></a>
+                <VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" />
+                <figcaption><span :title="item.original_filename">{{ item.original_filename }}</span><small>{{ formatBytes(item.size_bytes) }}</small></figcaption>
+              </figure>
+              <figure v-if="detailPost.external_video_url" class="detail-external-video"><VideoPreview :src="detailPost.external_video_url" :poster="externalVideoThumbnail(detailPost.external_video_url)" :title="detailPost.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(detailPost.external_video_url)" /><figcaption><span>外链视频</span><small>播放时从原网站加载</small></figcaption></figure>
+            </div>
+          </section>
+          <section v-else class="detail-media-empty"><Camera :size="30" aria-hidden="true" /><div><strong>这段回忆没有媒体</strong><span>文字也值得被完整保存。</span></div></section>
+
+          <section class="comments-section detail-comments" aria-labelledby="comments-title">
+            <header><div><p class="eyebrow">室友回应</p><h2 id="comments-title">评论</h2></div><span><MessageCircle :size="18" />{{ detailPost.comment_count }} 条</span></header>
+            <div v-if="detailLoading" class="comment-empty" role="status"><span class="loader"></span><span>正在读取评论…</span></div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div>
+            <article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="avatarVisible(comment.author.avatar_path)" :src="avatarURL(comment.author.avatar_path)" alt="" @error="markAvatarBroken(comment.author.avatar_path)" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article>
+            <form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="4" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form>
+          </section>
+        </article>
+      </template>
+
       <template v-else-if="activeView === 'timeline'">
         <header class="page-heading"><div><p class="eyebrow">按发生日期整理</p><h1 tabindex="-1">我们的时间线</h1><p>没有填写内容日期的回忆，会按照发布日期归档。</p></div><button class="primary-button compact" type="button" @click="openComposer()"><Plus :size="19" />补一段回忆</button></header>
         <div v-if="timelineGroups.length === 0" class="content-empty"><Sparkles :size="34" aria-hidden="true" /><h2>时间线还是空的</h2><p>发布第一段回忆后，它会出现在这里。</p></div>
@@ -1890,7 +1932,11 @@ async function copyInvites() {
           <div class="field"><label for="memorial-note">纪念寄语</label><textarea id="memorial-note" v-model="profile.memorial_note" maxlength="500" rows="3"></textarea></div>
           <p v-if="profileMessage" class="form-message" role="status">{{ profileMessage }}</p><button class="primary-button" type="submit" :disabled="profileBusy">{{ profileBusy ? '保存中…' : '保存资料' }}</button>
         </form>
-        <div class="session-section"><h3>登录设备</h3><div v-for="session in sessions" :key="session.id" class="session-row"><div><strong>{{ session.current ? '当前设备' : '其他设备' }}</strong><span>{{ session.user_agent || '未知浏览器' }}</span><small>{{ session.ip_address }} · {{ new Date(session.last_seen_at).toLocaleString('zh-CN') }}</small></div><button class="text-danger" type="button" @click="revoke(session)">{{ session.current ? '退出此设备' : '注销' }}</button></div></div>
+        <div class="session-section">
+          <div class="session-heading"><div><h3>登录设备</h3><p>默认显示最近活跃的 3 条记录。</p></div><span>{{ sessions.length }} 条</span></div>
+          <div v-for="session in visibleSessions" :key="session.id" class="session-row"><div><strong>{{ session.current ? '当前设备' : '其他设备' }}</strong><span>{{ session.user_agent || '未知浏览器' }}</span><small>{{ session.ip_address }} · {{ new Date(session.last_seen_at).toLocaleString('zh-CN') }}</small></div><button class="text-danger" type="button" @click="revoke(session)">{{ session.current ? '退出此设备' : '注销' }}</button></div>
+          <button v-if="sessions.length > 3" class="session-toggle" type="button" :aria-expanded="sessionsExpanded" @click="sessionsExpanded = !sessionsExpanded"><span>{{ sessionsExpanded ? '收起登录记录' : `展开其余 ${sessions.length - 3} 条记录` }}</span><ChevronLeft :size="18" aria-hidden="true" /></button>
+        </div>
         <button class="logout-button" type="button" @click="logout"><LogOut :size="18" />退出登录</button>
       </section>
     </div>
@@ -1904,15 +1950,5 @@ async function copyInvites() {
       </section>
     </div>
 
-    <div v-if="detailOpen && detailPost" class="dialog-layer" role="presentation" @pointerdown="armDialogBackdrop" @click.self="closeDetailFromBackdrop">
-      <section ref="detailDialog" class="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title" @keydown="trapDetailFocus">
-        <header><div><p class="eyebrow">{{ displayDate(detailPost.content_date || detailPost.published_at) }}</p><h2 id="detail-title">{{ detailPost.author.nickname }}的回忆</h2></div><button class="icon-button" type="button" aria-label="关闭详情" @click="closeDetail"><X /></button></header>
-        <button class="detail-author" type="button" @click="showPublicProfile(detailPost.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(detailPost.author.avatar_path)" :src="avatarURL(detailPost.author.avatar_path)" alt="" @error="markAvatarBroken(detailPost.author.avatar_path)" /><span v-else>{{ detailPost.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ detailPost.author.nickname }}</strong><small>{{ displayDate(detailPost.published_at) }}</small></span></button>
-        <p v-if="detailPost.body" class="detail-body">{{ detailPost.body }}</p>
-        <div v-if="detailPost.media.length" class="detail-media"><template v-for="item in detailPost.media" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id)" :alt="item.original_filename" /><VideoPreview v-else :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template></div><VideoPreview v-if="detailPost.external_video_url" class="external-video-frame" :src="detailPost.external_video_url" :poster="externalVideoThumbnail(detailPost.external_video_url)" :title="detailPost.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(detailPost.external_video_url)" />
-        <div class="detail-actions"><button type="button" :class="{ liked: detailPost.liked_by_me }" @click="togglePostLike(detailPost)"><Heart :size="19" :fill="detailPost.liked_by_me ? 'currentColor' : 'none'" />{{ detailPost.liked_by_me ? '已点赞' : '点赞' }} · {{ detailPost.like_count }}</button><span><MessageCircle :size="19" />{{ detailPost.comment_count }} 条评论</span><button v-if="detailPost.author.id === user.id || user.role === 'admin'" type="button" @click="closeDetail(); openComposer(detailPost)"><FileEdit :size="18" />编辑</button></div>
-        <section class="comments-section" aria-labelledby="comments-title"><h3 id="comments-title">评论</h3><p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p><div v-if="detailLoading" class="comment-empty" role="status">正在读取评论…</div><div v-else-if="detailComments.length === 0" class="comment-empty">还没有评论，来留下第一句话吧。</div><article v-for="comment in detailComments" :key="comment.id" class="comment-row"><span class="mini-avatar"><img v-if="avatarVisible(comment.author.avatar_path)" :src="avatarURL(comment.author.avatar_path)" alt="" @error="markAvatarBroken(comment.author.avatar_path)" /><span v-else>{{ comment.author.nickname.slice(0, 1) }}</span></span><div><header><strong>{{ comment.author.nickname }}</strong><time :datetime="comment.created_at">{{ new Date(comment.created_at).toLocaleString('zh-CN') }}</time></header><p>{{ comment.body }}</p></div><button v-if="comment.author.id === user.id || user.role === 'admin'" type="button" :aria-label="`删除${comment.author.nickname}的评论`" @click="removeComment(comment)"><Trash2 :size="17" /></button></article><form class="comment-form" @submit.prevent="submitComment"><label for="comment-body">写评论</label><textarea id="comment-body" v-model="commentBody" rows="3" maxlength="2000" required placeholder="说点什么…"></textarea><div><small>{{ commentBody.length }} / 2000</small><button class="primary-button compact" type="submit" :disabled="commentBusy || !commentBody.trim()"><Send :size="17" />{{ commentBusy ? '发送中…' : '发表评论' }}</button></div></form></section>
-      </section>
-    </div>
   </div>
 </template>

@@ -17,6 +17,7 @@ coverage/
 
 # Local AList runtime and application state
 /alist.exe
+/exports/
 /data/
 /backups/
 
