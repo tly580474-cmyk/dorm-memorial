@@ -173,6 +173,13 @@ func TestPostDraftModerationAndFeedPermissions(t *testing.T) {
 	if err != nil || len(feed.Posts) != 0 {
 		t.Fatalf("feed after delete=%+v err=%v", feed, err)
 	}
+	withdrawn, err := store.List(ctx, admin, ListOptions{Scope: "admin", Status: "deleted"})
+	if err != nil || len(withdrawn.Posts) != 1 || withdrawn.Posts[0].ID != draft.ID || withdrawn.Posts[0].Status != "deleted" {
+		t.Fatalf("admin withdrawn posts=%+v err=%v", withdrawn, err)
+	}
+	if _, err := store.List(ctx, member, ListOptions{Scope: "admin"}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("member admin post list err=%v", err)
+	}
 }
 
 func TestNormalizeExternalVideoEmbed(t *testing.T) {

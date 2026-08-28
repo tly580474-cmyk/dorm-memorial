@@ -32,6 +32,7 @@ export interface AdminMedia extends Media {
   owner_username: string
   owner_nickname: string
   reference_count: number
+  withdrawn: boolean
   created_at: string
 }
 

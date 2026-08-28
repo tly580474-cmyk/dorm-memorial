@@ -84,8 +84,9 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<{ media: AdminMedia[]; count: number }>(`/api/admin/media${params.size ? `?${params}` : ''}`)
   },
+  purgeAdminMedia: (id: string, force = false) => request<void>(`/api/admin/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: JSON.stringify({ force }) }),
   exportBackup: () => download('/api/admin/backup', { method: 'POST' }),
-  posts: (query: { scope?: 'feed' | 'mine' | 'pending'; status?: string; cursor?: string; limit?: number } = {}) => {
+  posts: (query: { scope?: 'feed' | 'mine' | 'pending' | 'admin'; status?: string; cursor?: string; limit?: number } = {}) => {
     const params = new URLSearchParams()
     Object.entries(query).forEach(([key, value]) => { if (value !== undefined && value !== '') params.set(key, String(value)) })
     return request<PostPage>(`/api/posts${params.size ? `?${params}` : ''}`)

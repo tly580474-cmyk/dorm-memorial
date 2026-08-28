@@ -408,6 +408,90 @@ func TestAdminMediaListReportsReferences(t *testing.T) {
 	if err != nil || len(items) != 1 || items[0].ReferenceCount != 1 || items[0].OwnerNickname != admin.Nickname {
 		t.Fatalf("admin media=%+v err=%v", items, err)
 	}
+	withdrawnMediaID := "abababababababababababababababab"
+	withdrawnPostID := "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES(?, ?, '/test/withdrawn-post.jpg', '撤下帖子照片.jpg', 'image', 'image/jpeg', 128, ?, 'ready', ?, ?)`, withdrawnMediaID, admin.ID, withdrawnMediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO posts(id, author_id, body, status, visibility, created_at, updated_at, deleted_at)
+		VALUES(?, ?, '已经撤下的回忆', 'deleted', 'members', ?, ?, ?)`, withdrawnPostID, admin.ID, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO post_media(post_id, media_id, position) VALUES(?, ?, 0)`, withdrawnPostID, withdrawnMediaID); err != nil {
+		t.Fatal(err)
+	}
+	withdrawn, err := NewStore(db, nil).ListAdmin(ctx, admin, "", "", "deleted", 20)
+	if err != nil || len(withdrawn) != 1 || withdrawn[0].ID != withdrawnMediaID || !withdrawn[0].Withdrawn || withdrawn[0].Status != "ready" {
+		t.Fatalf("withdrawn media=%+v err=%v", withdrawn, err)
+	}
+	ready, err := NewStore(db, nil).ListAdmin(ctx, admin, "", "", "ready", 20)
+	if err != nil || len(ready) != 1 || ready[0].ID != mediaID || ready[0].Withdrawn {
+		t.Fatalf("ready media=%+v err=%v", ready, err)
+	}
+}
+
+func TestAdminPurgeRequiresConfirmationAndRemovesReferences(t *testing.T) {
+	db, admin := mediaTestUser(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mediaID := "ffffffffffffffffffffffffffffffff"
+	objectPath := "/test/displayed.jpg"
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES(?, ?, ?, '正在展示.jpg', 'image', 'image/jpeg', 7, ?, 'ready', ?, ?)`, mediaID, admin.ID, objectPath, mediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE profiles SET avatar_path = ? WHERE user_id = ?`, mediaID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	objects := newMemoryObjects()
+	objects.objects[objectPath] = []byte("content")
+	store := NewStore(db, objects)
+	if err := store.Purge(ctx, admin, mediaID, false, "127.0.0.1"); !errors.Is(err, ErrConfirmationNeeded) {
+		t.Fatalf("purge without confirmation err=%v", err)
+	}
+	if err := store.Purge(ctx, admin, mediaID, true, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	var mediaCount, avatarCount, auditCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE id = ?`, mediaID).Scan(&mediaCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM profiles WHERE avatar_path = ?`, mediaID).Scan(&avatarCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE action = 'media.purge' AND target_id = ?`, mediaID).Scan(&auditCount); err != nil {
+		t.Fatal(err)
+	}
+	if mediaCount != 0 || avatarCount != 0 || auditCount != 1 {
+		t.Fatalf("media=%d avatar references=%d audit=%d", mediaCount, avatarCount, auditCount)
+	}
+	if _, ok := objects.objects[objectPath]; ok {
+		t.Fatal("purged object still exists")
+	}
+}
+
+func TestAdminCanListAndPurgeWithdrawnMedia(t *testing.T) {
+	db, admin := mediaTestUser(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mediaID := "dddddddddddddddddddddddddddddddd"
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at, deleted_at)
+		VALUES(?, ?, '/test/withdrawn.jpg', '已撤下.jpg', 'image', 'image/jpeg', 7, ?, 'deleted', ?, ?, ?)`, mediaID, admin.ID, mediaID, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db, nil)
+	items, err := store.ListAdmin(ctx, admin, "", "", "deleted", 20)
+	if err != nil || len(items) != 1 || items[0].ID != mediaID || items[0].Status != "deleted" {
+		t.Fatalf("withdrawn media=%+v err=%v", items, err)
+	}
+	if err := store.Purge(ctx, admin, mediaID, false, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE id = ?`, mediaID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("remaining media=%d err=%v", count, err)
+	}
 }
 
 func registerMediaUser(t *testing.T, identities *identity.Store, admin identity.User, username, email string) identity.User {

@@ -28,6 +28,7 @@ var (
 	ErrForbidden          = errors.New("media access forbidden")
 	ErrInvalid            = errors.New("invalid media upload")
 	ErrConflict           = errors.New("upload request conflict")
+	ErrConfirmationNeeded = errors.New("media purge confirmation required")
 	ErrQuotaExceeded      = errors.New("media quota exceeded")
 	ErrStorageUnavailable = errors.New("media storage unavailable")
 	requestIDPattern      = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,96}$`)
@@ -54,6 +55,7 @@ type AdminRecord struct {
 	OwnerUsername  string `json:"owner_username"`
 	OwnerNickname  string `json:"owner_nickname"`
 	ReferenceCount int    `json:"reference_count"`
+	Withdrawn      bool   `json:"withdrawn"`
 }
 
 type UploadInput struct {
@@ -260,13 +262,20 @@ func (s *Store) ListAdmin(ctx context.Context, actor identity.User, search, medi
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
+	const withdrawnExpression = `(m.status = 'deleted' OR (
+		EXISTS(SELECT 1 FROM post_media withdrawn_pm JOIN posts withdrawn_post ON withdrawn_post.id = withdrawn_pm.post_id WHERE withdrawn_pm.media_id = m.id AND withdrawn_post.status = 'deleted')
+		AND NOT EXISTS(SELECT 1 FROM post_media active_pm JOIN posts active_post ON active_post.id = active_pm.post_id WHERE active_pm.media_id = m.id AND active_post.status <> 'deleted')
+		AND NOT EXISTS(SELECT 1 FROM guestbook_media withdrawn_gm WHERE withdrawn_gm.media_id = m.id)
+		AND NOT EXISTS(SELECT 1 FROM message_media withdrawn_mm WHERE withdrawn_mm.media_id = m.id)
+		AND NOT EXISTS(SELECT 1 FROM profiles withdrawn_profile WHERE withdrawn_profile.avatar_path = m.id)
+	))`
 	query := `SELECT m.id, m.owner_id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.sha256, m.status,
 		m.width, m.height, m.duration_ms, m.preview_path <> '', m.created_at, u.username, p.nickname,
 		(SELECT COUNT(*) FROM post_media pm WHERE pm.media_id = m.id)
 		+ (SELECT COUNT(*) FROM guestbook_media gm WHERE gm.media_id = m.id)
 		+ (SELECT COUNT(*) FROM message_media mm WHERE mm.media_id = m.id)
-		+ (SELECT COUNT(*) FROM profiles profile WHERE profile.avatar_path = m.id)
-		FROM media m JOIN users u ON u.id = m.owner_id JOIN profiles p ON p.user_id = u.id WHERE m.status <> 'deleted'`
+		+ (SELECT COUNT(*) FROM profiles profile WHERE profile.avatar_path = m.id), ` + withdrawnExpression + `
+		FROM media m JOIN users u ON u.id = m.owner_id JOIN profiles p ON p.user_id = u.id WHERE 1 = 1`
 	args := []any{}
 	if search = strings.TrimSpace(search); search != "" {
 		needle := "%" + search + "%"
@@ -277,7 +286,11 @@ func (s *Store) ListAdmin(ctx context.Context, actor identity.User, search, medi
 		query += ` AND m.media_type = ?`
 		args = append(args, mediaType)
 	}
-	if status == "uploading" || status == "ready" || status == "unavailable" {
+	if status == "deleted" {
+		query += ` AND ` + withdrawnExpression
+	} else if status == "ready" {
+		query += ` AND m.status = 'ready' AND NOT ` + withdrawnExpression
+	} else if status == "uploading" || status == "unavailable" {
 		query += ` AND m.status = ?`
 		args = append(args, status)
 	}
@@ -293,7 +306,7 @@ func (s *Store) ListAdmin(ctx context.Context, actor identity.User, search, medi
 		var item AdminRecord
 		var width, height, duration sql.NullInt64
 		var created string
-		if err := rows.Scan(&item.ID, &item.OwnerID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.SHA256, &item.Status, &width, &height, &duration, &item.HasPreview, &created, &item.OwnerUsername, &item.OwnerNickname, &item.ReferenceCount); err != nil {
+		if err := rows.Scan(&item.ID, &item.OwnerID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.SHA256, &item.Status, &width, &height, &duration, &item.HasPreview, &created, &item.OwnerUsername, &item.OwnerNickname, &item.ReferenceCount, &item.Withdrawn); err != nil {
 			return nil, err
 		}
 		if width.Valid {
@@ -356,6 +369,72 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 	}
 	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'media.delete', 'media', ?, ?, ?)`, actor.ID, id, ip, nowText(now))
 	return nil
+}
+
+// Purge permanently removes an administrator-selected media record and all of
+// its references. Referenced media that is still active requires an explicit
+// force flag so an accidental request cannot silently remove displayed files.
+func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force bool, ip string) error {
+	if actor.Role != "admin" {
+		return ErrForbidden
+	}
+	var objectPath, previewPath, status string
+	var attached int
+	err := s.db.QueryRowContext(ctx, `SELECT m.object_path, m.preview_path, m.status,
+		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM guestbook_media gm WHERE gm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id)
+		OR EXISTS(SELECT 1 FROM profiles p WHERE p.avatar_path = m.id)
+		FROM media m WHERE m.id = ?`, id).Scan(&objectPath, &previewPath, &status, &attached)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != "deleted" && attached != 0 && !force {
+		return ErrConfirmationNeeded
+	}
+	if status != "deleted" {
+		if s.objects == nil {
+			return ErrStorageUnavailable
+		}
+		if err := s.objects.Delete(ctx, objectPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("purge object: %w", errors.Join(ErrStorageUnavailable, err))
+		}
+		if previewPath != "" {
+			if err := s.objects.Delete(ctx, previewPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
+				return fmt.Errorf("purge preview object: %w", errors.Join(ErrStorageUnavailable, err))
+			}
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`DELETE FROM post_media WHERE media_id = ?`,
+		`DELETE FROM guestbook_media WHERE media_id = ?`,
+		`DELETE FROM message_media WHERE media_id = ?`,
+		`UPDATE profiles SET avatar_path = '' WHERE avatar_path = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
+			return err
+		}
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM media WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'media.purge', 'media', ?, ?, ?)`, actor.ID, id, ip, nowText(time.Now().UTC())); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {

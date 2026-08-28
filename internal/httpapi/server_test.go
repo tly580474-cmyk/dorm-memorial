@@ -549,6 +549,20 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 		t.Fatalf("attached media deletion status=%d body=%s", deleteResponse.StatusCode, readBody(deleteResponse))
 	}
 	deleteResponse.Body.Close()
+	unsafePurgeResponse := doJSON(t, server.URL+"/api/admin/media/"+uploaded.Media.ID, http.MethodDelete, map[string]any{"force": false}, cookie)
+	if unsafePurgeResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("unconfirmed media purge status=%d body=%s", unsafePurgeResponse.StatusCode, readBody(unsafePurgeResponse))
+	}
+	unsafePurgeResponse.Body.Close()
+	purgeResponse := doJSON(t, server.URL+"/api/admin/media/"+uploaded.Media.ID, http.MethodDelete, map[string]any{"force": true}, cookie)
+	if purgeResponse.StatusCode != http.StatusNoContent {
+		t.Fatalf("confirmed media purge status=%d body=%s", purgeResponse.StatusCode, readBody(purgeResponse))
+	}
+	purgeResponse.Body.Close()
+	var remainingReferences int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM post_media WHERE media_id = ?`, uploaded.Media.ID).Scan(&remainingReferences); err != nil || remainingReferences != 0 {
+		t.Fatalf("remaining media references=%d err=%v", remainingReferences, err)
+	}
 	clearAvatarResponse := doJSON(t, server.URL+"/api/profile/avatar", http.MethodDelete, nil, cookie)
 	if clearAvatarResponse.StatusCode != http.StatusOK {
 		t.Fatalf("clear avatar status=%d body=%s", clearAvatarResponse.StatusCode, readBody(clearAvatarResponse))

@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import MarkdownIt from 'markdown-it'
 import { highlighter as hljs } from './syntax'
-import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, Info, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
+import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, ChevronUp, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, Info, LogOut, MailPlus, Menu, MessageCircle, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 import RichTextEditor from './components/RichTextEditor.vue'
 import VideoPreview from './components/VideoPreview.vue'
+
+const markdownRenderer = new MarkdownIt({ html: false, linkify: true, typographer: false })
 
 type EditorMedia = {
   key: string
@@ -77,8 +80,9 @@ const inviteCountOptions = Array.from({ length: 20 }, (_, index) => index + 1)
 const inviteCopyStatus = ref<'idle' | 'copied' | 'error'>('idle')
 const inviteBusy = ref(false)
 const managementMessage = ref('')
-const managementTab = ref<'invites' | 'users' | 'messages' | 'media' | 'backup'>('users')
+const managementTab = ref<'invites' | 'users' | 'posts' | 'messages' | 'media' | 'backup'>('users')
 const adminUsers = ref<AdminUser[]>([])
+const adminPosts = ref<Post[]>([])
 const adminMessages = ref<AdminMessage[]>([])
 const adminMedia = ref<AdminMedia[]>([])
 const adminLoading = ref(false)
@@ -86,6 +90,7 @@ const adminActionID = ref('')
 const backupBusy = ref(false)
 const adminFeedback = ref('')
 const adminUserFilters = reactive({ search: '', role: '', status: '' })
+const adminPostFilters = reactive({ status: '' })
 const adminMessageFilters = reactive({ search: '', status: 'sent' })
 const adminMediaFilters = reactive({ search: '', type: '', status: '' })
 const profile = reactive({ nickname: '', bio: '', bed_no: '', memorial_note: '' })
@@ -94,11 +99,13 @@ const myPosts = ref<Post[]>([])
 const pendingPosts = ref<Post[]>([])
 const contentLoading = ref(false)
 const contentError = ref('')
+const pageRefreshBusy = ref(false)
 const feedNextCursor = ref('')
 const feedLoadingMore = ref(false)
 const contentLoadSentinel = ref<HTMLElement | null>(null)
 const timelineVisibleCount = ref(8)
 const wallVisibleCount = ref(12)
+const expandedPostIDs = ref(new Set<string>())
 let contentObserver: IntersectionObserver | null = null
 const topNotice = ref('')
 let topNoticeTimer = 0
@@ -559,6 +566,41 @@ function closeDetail() {
   })
 }
 
+async function refreshCurrentView() {
+  if (pageRefreshBusy.value) return
+  pageRefreshBusy.value = true
+  try {
+    if (activeView.value === 'detail' && detailPost.value) {
+      const [fresh, comments] = await Promise.all([api.post(detailPost.value.id), api.comments(detailPost.value.id)])
+      detailPost.value = fresh.post
+      detailComments.value = comments.comments
+    } else if (activeView.value === 'guestbook') {
+      await loadGuestbook(true)
+    } else if (activeView.value === 'messages') {
+      await loadMessageCenter()
+      if (selectedConversationID.value) await loadMessages(true, true)
+    } else if (activeView.value === 'management') {
+      await loadManagementSection()
+    } else {
+      await loadContent()
+    }
+    showTopNotice('页面已刷新')
+  } catch (error) {
+    showTopNotice(error instanceof Error ? error.message : '刷新失败')
+  } finally {
+    pageRefreshBusy.value = false
+  }
+}
+
+function scrollCurrentViewToTop() {
+  if (activeView.value === 'messages') {
+    const scrollable = messageThreadOpen.value ? messageScroll.value : document.querySelector<HTMLElement>('.conversation-panel')
+    scrollable?.scrollTo({ top: 0, behavior: 'smooth' })
+    return
+  }
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
 function replacePost(next: Post) {
   feedPosts.value = feedPosts.value.map((post) => post.id === next.id ? next : post)
   myPosts.value = myPosts.value.some((post) => post.id === next.id)
@@ -763,6 +805,8 @@ async function loadManagementSection() {
   try {
     if (managementTab.value === 'users') {
       adminUsers.value = (await api.adminUsers(adminUserFilters)).users
+    } else if (managementTab.value === 'posts') {
+      adminPosts.value = (await api.posts({ scope: 'admin', status: adminPostFilters.status, limit: 50 })).posts
     } else if (managementTab.value === 'messages') {
       adminMessages.value = (await api.adminMessages({ ...adminMessageFilters, limit: 100 })).messages
     } else {
@@ -834,14 +878,23 @@ async function removeAdminMessage(item: AdminMessage) {
 }
 
 async function removeAdminMedia(item: AdminMedia) {
-  if (item.reference_count > 0) return
-  if (!window.confirm(`确定永久删除“${item.original_filename}”吗？远端存储中的文件也会被删除，且无法恢复。`)) return
+  const isSoftDeleted = item.status === 'deleted'
+  const isWithdrawn = item.withdrawn
+  const isDisplayed = !isWithdrawn && item.reference_count > 0
+  const warning = isDisplayed
+    ? `“${item.original_filename}”仍被 ${item.reference_count} 处内容引用并正在展示。永久删除后，这些内容中的媒体会立即消失，远端文件也会被删除，且无法恢复。确定继续吗？`
+    : isSoftDeleted
+      ? `确定彻底清除已撤下的“${item.original_filename}”吗？数据库记录将被永久删除，且无法恢复。`
+      : isWithdrawn
+        ? `“${item.original_filename}”只被已撤下帖子引用。确定永久删除远端文件、媒体记录和残留引用吗？此操作无法恢复。`
+      : `确定永久删除“${item.original_filename}”吗？远端存储中的文件和数据库记录都会被删除，且无法恢复。`
+  if (!window.confirm(warning)) return
   adminActionID.value = item.id
   adminFeedback.value = ''
   try {
-    await api.deleteMedia(item.id)
+    await api.purgeAdminMedia(item.id, !isSoftDeleted && item.reference_count > 0)
     adminMedia.value = adminMedia.value.filter((candidate) => candidate.id !== item.id)
-    adminFeedback.value = '未被引用的媒体已删除'
+    adminFeedback.value = isDisplayed ? '媒体已永久删除，相关内容中的引用已清理' : '媒体已永久删除'
   } catch (error) {
     adminFeedback.value = error instanceof Error ? error.message : '媒体删除失败'
   } finally {
@@ -955,13 +1008,7 @@ function composerHasContent() {
 }
 
 function plainTextToHTML(value: string) {
-  if (!value) return ''
-  const container = document.createElement('div')
-  return value.split(/\n{2,}/).map((paragraph) => {
-    const node = document.createElement('p')
-    node.textContent = paragraph
-    return node.outerHTML.replace(/\n/g, '<br>')
-  }).join('')
+  return value ? markdownRenderer.render(value) : ''
 }
 
 function postTitle(post: Post) {
@@ -987,6 +1034,23 @@ function postRichHTML(post: Post) {
     }
   })
   return parsed.body.innerHTML
+}
+
+function postRichTextLength(post: Post) {
+  const source = post.body_html || post.body
+  if (!source) return 0
+  return new DOMParser().parseFromString(source, 'text/html').body.textContent?.trim().length ?? 0
+}
+
+function isPostExpanded(post: Post) {
+  return expandedPostIDs.value.has(post.id)
+}
+
+function togglePostExpanded(post: Post) {
+  const next = new Set(expandedPostIDs.value)
+  if (next.has(post.id)) next.delete(post.id)
+  else next.add(post.id)
+  expandedPostIDs.value = next
 }
 
 function detailMedia(post: Post) {
@@ -1480,14 +1544,17 @@ async function loadConversations(quiet = false) {
 
 async function loadMessageCenter() {
   messageError.value = ''
-  if (messageMembers.value.length === 0) {
-    try {
-      messageMembers.value = (await api.members()).members.filter((member) => member.id !== user.value?.id)
-    } catch (error) {
-      messageError.value = error instanceof Error ? error.message : '无法读取成员'
-    }
+  try {
+    messageMembers.value = (await api.members()).members.filter((member) => member.id !== user.value?.id)
+  } catch (error) {
+    messageError.value = error instanceof Error ? error.message : '无法读取成员'
   }
   await loadConversations()
+  if (selectedConversationID.value && !conversations.value.some((item) => item.id === selectedConversationID.value)) {
+    selectedConversationID.value = ''
+    chatMessages.value = []
+    messageThreadOpen.value = false
+  }
   if (!selectedConversationID.value && conversations.value.length) selectedConversationID.value = conversations.value[0]?.id ?? ''
   if (selectedConversationID.value) await loadMessages(true)
 }
@@ -1644,7 +1711,7 @@ function displayDate(value: string | null | undefined) {
 }
 
 function statusLabel(status: Post['status']) {
-  return { draft: '草稿', pending: '待审核', published: '已发布', hidden: '已隐藏', deleted: '已删除' }[status]
+  return { draft: '草稿', pending: '待审核', published: '已发布', hidden: '已隐藏', deleted: '已撤下' }[status]
 }
 
 async function copyInvites() {
@@ -1735,7 +1802,8 @@ async function copyInvites() {
           <article v-for="post in feedPosts" v-else :key="post.id" class="post-card">
             <header><button class="profile-summary" type="button" @click="showPublicProfile(post.author.id)"><span class="mini-avatar"><img v-if="avatarVisible(post.author.avatar_path)" :src="avatarURL(post.author.avatar_path)" alt="" @error="markAvatarBroken(post.author.avatar_path)" /><span v-else>{{ post.author.nickname.slice(0, 1) }}</span></span><span><strong>{{ post.author.nickname }}</strong><small>{{ displayDate(post.published_at) }}</small></span></button></header>
             <h2 v-if="post.title" class="post-title">{{ post.title }}</h2>
-            <p v-if="post.body" class="post-body">{{ post.body }}</p>
+            <div v-if="post.body_html || post.body" class="post-body rich-text-display" :class="{ collapsed: postRichTextLength(post) > 320 && !isPostExpanded(post) }" v-html="postRichHTML(post)"></div>
+            <button v-if="postRichTextLength(post) > 320" class="post-expand" type="button" :aria-expanded="isPostExpanded(post)" @click="togglePostExpanded(post)">{{ isPostExpanded(post) ? '收起' : '展开全文' }}</button>
             <div v-if="post.media.length" class="post-media-grid">
               <figure v-for="(item, mediaIndex) in post.media.slice(0, 4)" :key="item.id" :class="{ 'video-media': item.media_type === 'video' }">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" aria-hidden="true" /><strong>远端媒体暂时不可用</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重新加载</button></div>
@@ -1774,8 +1842,7 @@ async function copyInvites() {
           <div v-if="detailPost.tags.length" class="tag-row detail-tags"><span v-for="tag in detailPost.tags" :key="tag">#{{ tag }}</span></div>
           <p v-if="detailError" class="form-error content-alert" role="alert">{{ detailError }}</p>
 
-          <section v-if="detailMedia(detailPost).length || detailPost.external_video_url" class="detail-media-section" aria-labelledby="detail-media-title">
-            <header><div><p class="eyebrow">照片与视频</p><h2 id="detail-media-title">这段回忆的媒体</h2></div><span>{{ detailMedia(detailPost).length + (detailPost.external_video_url ? 1 : 0) }} 项</span></header>
+          <section v-if="detailMedia(detailPost).length || detailPost.external_video_url" class="detail-media-section" aria-label="这段回忆的媒体">
             <div class="detail-gallery">
               <figure v-for="item in detailMedia(detailPost)" :key="item.id" :class="{ 'detail-video-media': item.media_type === 'video' }">
                 <div v-if="mediaLoadErrors.has(item.id)" class="media-unavailable"><AlertCircle :size="24" /><strong>暂时无法读取</strong><button type="button" @click="retryMediaLoad(item.id)"><RotateCcw :size="17" />重试</button></div>
@@ -1802,7 +1869,7 @@ async function copyInvites() {
         <div v-if="timelineGroups.length === 0" class="content-empty"><Sparkles :size="34" aria-hidden="true" /><h2>时间线还是空的</h2><p>发布第一段回忆后，它会出现在这里。</p></div>
         <div v-else class="timeline-list">
           <section v-for="group in timelineGroups" :key="group.key" class="timeline-group"><header><span></span><h2>{{ group.label }}</h2><small>{{ group.posts.length }} 条</small></header><div>
-            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><button class="text-profile-link" type="button" @click="showPublicProfile(post.author.id)">{{ post.author.nickname }}</button><p>{{ post.body || '分享了媒体回忆' }}</p><div v-if="post.media.length || post.external_video_url" class="timeline-media"><template v-for="item in post.media.slice(0, post.external_video_url ? 3 : 4)" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else class="timeline-video" :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="post.external_video_url" class="timeline-video" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div><button v-if="post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(post)"><FileEdit :size="15" />编辑这条回忆</button></div></article>
+            <article v-for="post in group.posts" :key="post.id" class="timeline-entry"><time :datetime="(post.content_date || post.published_at || post.created_at)">{{ displayDate(post.content_date || post.published_at || post.created_at) }}</time><div><button class="text-profile-link" type="button" @click="showPublicProfile(post.author.id)">{{ post.author.nickname }}</button><div v-if="post.body_html || post.body" class="timeline-body rich-text-display" :class="{ collapsed: postRichTextLength(post) > 320 && !isPostExpanded(post) }" v-html="postRichHTML(post)"></div><p v-else class="timeline-empty-body">分享了媒体回忆</p><button v-if="postRichTextLength(post) > 320" class="timeline-expand" type="button" :aria-expanded="isPostExpanded(post)" @click="togglePostExpanded(post)">{{ isPostExpanded(post) ? '收起' : '展开全文' }}</button><div v-if="post.media.length || post.external_video_url" class="timeline-media"><template v-for="item in post.media.slice(0, post.external_video_url ? 3 : 4)" :key="item.id"><img v-if="item.media_type === 'image'" :src="mediaContentURL(item.id, item.has_preview)" :alt="item.original_filename" loading="lazy" @error="markMediaLoadError(item.id)" /><VideoPreview v-else class="timeline-video" :src="mediaContentURL(item.id)" :poster="mediaContentURL(item.id, true)" :title="item.original_filename" /></template><VideoPreview v-if="post.external_video_url" class="timeline-video" :src="post.external_video_url" :poster="externalVideoThumbnail(post.external_video_url)" :title="post.body || '分享的外链视频'" external :embedded="isEmbeddedPlayer(post.external_video_url)" /></div><div v-if="post.tags.length" class="tag-row"><span v-for="tag in post.tags" :key="tag">#{{ tag }}</span></div><div class="timeline-actions"><button class="timeline-detail-link" type="button" @click="openDetail(post)"><Eye :size="16" />查看详情</button><button v-if="post.author.id === user.id || user.role === 'admin'" class="inline-edit" type="button" @click="openComposer(post)"><FileEdit :size="15" />编辑这条回忆</button></div></div></article>
           </div></section>
         </div>
         <div v-if="timelineVisibleCount < feedPosts.length || feedNextCursor || feedLoadingMore" ref="contentLoadSentinel" class="scroll-load-sentinel" role="status"><span v-if="feedLoadingMore" class="loader"></span><span>{{ feedLoadingMore ? '正在展开时间线…' : '继续向下滑动查看更多' }}</span></div>
@@ -1824,7 +1891,6 @@ async function copyInvites() {
       </template>
 
       <template v-else-if="activeView === 'messages'">
-        <header class="page-heading"><div><p class="eyebrow">只在室友之间</p><h1 tabindex="-1">消息</h1><p>宿舍群聊和一对一私信都会保存在这里。</p></div></header>
         <p v-if="messageError" class="form-error content-alert" role="alert">{{ messageError }}</p>
         <div class="message-layout" :class="{ 'thread-open': messageThreadOpen }">
           <aside class="conversation-panel" aria-label="会话列表">
@@ -1842,9 +1908,10 @@ async function copyInvites() {
       </template>
 
       <template v-else-if="activeView === 'management'">
-        <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>管理室友账号、公共群聊与远端媒体；私信始终只对会话双方可见。</p></div></header>
+        <header class="page-heading"><div><p class="eyebrow">仅管理员可见</p><h1 tabindex="-1">管理中心</h1><p>管理室友账号、帖子、公共群聊与远端媒体；私信始终只对会话双方可见。</p></div></header>
         <nav class="management-tabs" aria-label="管理功能">
           <button type="button" :class="{ active: managementTab === 'users' }" :aria-current="managementTab === 'users' ? 'page' : undefined" @click="selectManagementTab('users')"><Users :size="19" />用户 <span>{{ adminUsers.length || '' }}</span></button>
+          <button type="button" :class="{ active: managementTab === 'posts' }" :aria-current="managementTab === 'posts' ? 'page' : undefined" @click="selectManagementTab('posts')"><FileEdit :size="19" />帖子 <span>{{ adminPosts.length || '' }}</span></button>
           <button type="button" :class="{ active: managementTab === 'messages' }" :aria-current="managementTab === 'messages' ? 'page' : undefined" @click="selectManagementTab('messages')"><MessageCircle :size="19" />群聊消息 <span>{{ adminMessages.length || '' }}</span></button>
           <button type="button" :class="{ active: managementTab === 'media' }" :aria-current="managementTab === 'media' ? 'page' : undefined" @click="selectManagementTab('media')"><Image :size="19" />媒体 <span>{{ adminMedia.length || '' }}</span></button>
           <button type="button" :class="{ active: managementTab === 'invites' }" :aria-current="managementTab === 'invites' ? 'page' : undefined" @click="selectManagementTab('invites')"><MailPlus :size="19" />邀请码</button>
@@ -1865,7 +1932,7 @@ async function copyInvites() {
 
         <section v-else class="management-panel" :aria-labelledby="`management-${managementTab}-title`">
           <header class="management-panel-head">
-            <div><p class="eyebrow">{{ managementTab === 'users' ? '账号与权限' : managementTab === 'messages' ? '仅公共群聊' : managementTab === 'media' ? '存储与引用' : '数据安全' }}</p><h2 :id="`management-${managementTab}-title`">{{ managementTab === 'users' ? '用户管理' : managementTab === 'messages' ? '消息管理' : managementTab === 'media' ? '媒体管理' : '导出备份' }}</h2><p>{{ managementTab === 'users' ? '调整角色与账号状态；停用账号会撤销其全部登录会话。' : managementTab === 'messages' ? '只显示 3048 宿舍群聊，管理员无法读取任何私信。' : managementTab === 'media' ? '显示媒体元数据与引用状态；只有未被引用的文件可以永久删除。' : '生成经过 SQLite 完整性校验的业务数据快照，并下载到管理员设备。' }}</p></div>
+            <div><p class="eyebrow">{{ managementTab === 'users' ? '账号与权限' : managementTab === 'posts' ? '内容与状态' : managementTab === 'messages' ? '仅公共群聊' : managementTab === 'media' ? '存储与引用' : '数据安全' }}</p><h2 :id="`management-${managementTab}-title`">{{ managementTab === 'users' ? '用户管理' : managementTab === 'posts' ? '帖子管理' : managementTab === 'messages' ? '消息管理' : managementTab === 'media' ? '媒体管理' : '导出备份' }}</h2><p>{{ managementTab === 'users' ? '调整角色与账号状态；停用账号会撤销其全部登录会话。' : managementTab === 'posts' ? '显示全部帖子及其当前状态；已经删除的帖子保留记录并标记为“已撤下”。' : managementTab === 'messages' ? '只显示 3048 宿舍群聊，管理员无法读取任何私信。' : managementTab === 'media' ? '可永久清理已撤下媒体；仍在展示的媒体会在确认后删除并清理引用。' : '生成经过 SQLite 完整性校验的业务数据快照，并下载到管理员设备。' }}</p></div>
             <button v-if="managementTab !== 'backup'" class="icon-button" type="button" :disabled="adminLoading" aria-label="刷新当前管理数据" @click="loadManagementSection"><RefreshCw :size="20" /></button>
           </header>
 
@@ -1873,6 +1940,10 @@ async function copyInvites() {
             <label><span>搜索用户</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminUserFilters.search" type="search" placeholder="昵称、用户名或邮箱" /></span></label>
             <label><span>角色</span><select v-model="adminUserFilters.role"><option value="">全部角色</option><option value="admin">管理员</option><option value="member">成员</option></select></label>
             <label><span>状态</span><select v-model="adminUserFilters.status"><option value="">全部状态</option><option value="active">启用</option><option value="disabled">已停用</option></select></label>
+            <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
+          </form>
+          <form v-else-if="managementTab === 'posts'" class="management-filters compact-filters" role="search" @submit.prevent="loadManagementSection">
+            <label><span>状态</span><select v-model="adminPostFilters.status"><option value="">全部状态</option><option value="published">已发布</option><option value="draft">草稿</option><option value="pending">待审核</option><option value="hidden">已隐藏</option><option value="deleted">已撤下</option></select></label>
             <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
           </form>
           <form v-else-if="managementTab === 'messages'" class="management-filters compact-filters" role="search" @submit.prevent="loadManagementSection">
@@ -1883,7 +1954,7 @@ async function copyInvites() {
           <form v-else-if="managementTab === 'media'" class="management-filters" role="search" @submit.prevent="loadManagementSection">
             <label><span>搜索媒体</span><span class="search-field"><Search :size="18" /><input v-model.trim="adminMediaFilters.search" type="search" placeholder="文件名或上传者" /></span></label>
             <label><span>类型</span><select v-model="adminMediaFilters.type"><option value="">全部类型</option><option value="image">图片</option><option value="video">视频</option><option value="audio">音频</option></select></label>
-            <label><span>状态</span><select v-model="adminMediaFilters.status"><option value="">全部状态</option><option value="ready">可用</option><option value="uploading">上传中</option><option value="unavailable">不可用</option></select></label>
+            <label><span>状态</span><select v-model="adminMediaFilters.status"><option value="">全部状态</option><option value="ready">可用</option><option value="uploading">上传中</option><option value="unavailable">不可用</option><option value="deleted">已撤下</option></select></label>
             <button class="secondary-button" type="submit" :disabled="adminLoading"><Search :size="17" />查询</button>
           </form>
 
@@ -1896,6 +1967,14 @@ async function copyInvites() {
               <label><span>角色</span><select v-model="item.role" :disabled="item.id === user.id || adminActionID === item.id"><option value="admin">管理员</option><option value="member">成员</option></select></label>
               <label><span>状态</span><select v-model="item.status" :disabled="item.id === user.id || adminActionID === item.id"><option value="active">启用</option><option value="disabled">停用</option></select></label>
               <button class="secondary-button row-action" type="button" :disabled="item.id === user.id || adminActionID === item.id" @click="saveAdminUser(item)">{{ adminActionID === item.id ? '保存中…' : '保存' }}</button>
+            </article>
+          </div>
+          <div v-else-if="managementTab === 'posts'" class="management-list">
+            <p v-if="adminPosts.length === 0" class="management-empty">没有符合条件的帖子。</p>
+            <article v-for="item in adminPosts" v-else :key="item.id" class="management-row post-management-row">
+              <span class="media-admin-icon"><FileEdit :size="21" aria-hidden="true" /></span>
+              <div class="management-row-copy"><strong :title="postTitle(item)">{{ postTitle(item) }}</strong><small>{{ item.author.nickname }} (@{{ item.author.username }})</small><small>更新于 {{ new Date(item.updated_at).toLocaleString('zh-CN') }}</small></div>
+              <span class="status-badge" :data-status="item.status">{{ statusLabel(item.status) }}</span>
             </article>
           </div>
           <div v-else-if="managementTab === 'messages'" class="management-list">
@@ -1911,9 +1990,9 @@ async function copyInvites() {
             <p v-if="adminMedia.length === 0" class="management-empty">没有符合条件的媒体。</p>
             <article v-for="item in adminMedia" v-else :key="item.id" class="management-row media-management-row">
               <span class="media-admin-icon"><Image v-if="item.media_type === 'image'" :size="21" /><Film v-else-if="item.media_type === 'video'" :size="21" /><Music v-else :size="21" /></span>
-              <div class="management-row-copy"><strong :title="item.original_filename">{{ item.original_filename }}</strong><small>{{ adminMediaTypeLabel(item.media_type) }} · {{ formatBytes(item.size_bytes) }} · {{ item.owner_nickname }} (@{{ item.owner_username }})</small><small>上传于 {{ new Date(item.created_at).toLocaleString('zh-CN') }} · {{ item.reference_count ? `被 ${item.reference_count} 处内容引用` : '未被引用' }}</small></div>
-              <span class="status-badge" :data-status="item.status">{{ item.status === 'ready' ? '可用' : item.status === 'uploading' ? '上传中' : '不可用' }}</span>
-              <button class="danger-action" type="button" :disabled="item.reference_count > 0 || adminActionID === item.id" :title="item.reference_count > 0 ? '请先移除引用该文件的内容' : '永久删除未被引用的媒体'" @click="removeAdminMedia(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '删除中…' : '删除' }}</button>
+              <div class="management-row-copy"><strong :title="item.original_filename">{{ item.original_filename }}</strong><small>{{ adminMediaTypeLabel(item.media_type) }} · {{ formatBytes(item.size_bytes) }} · {{ item.owner_nickname }} (@{{ item.owner_username }})</small><small>上传于 {{ new Date(item.created_at).toLocaleString('zh-CN') }} · {{ item.withdrawn && item.reference_count ? '仅被已撤下内容引用' : item.reference_count ? `被 ${item.reference_count} 处内容引用` : '未被引用' }}</small></div>
+              <span class="status-badge" :data-status="item.withdrawn ? 'deleted' : item.status">{{ item.withdrawn ? '已撤下' : item.status === 'ready' ? '可用' : item.status === 'uploading' ? '上传中' : '不可用' }}</span>
+              <button class="danger-action" type="button" :disabled="adminActionID === item.id" :title="item.status === 'deleted' ? '永久清除已撤下媒体' : item.reference_count > 0 ? '删除前会提示正在展示的引用数量' : '永久删除媒体'" @click="removeAdminMedia(item)"><Trash2 :size="17" />{{ adminActionID === item.id ? '删除中…' : '永久删除' }}</button>
             </article>
           </div>
           <div v-else class="backup-section">
@@ -1978,6 +2057,11 @@ async function copyInvites() {
         </div>
       </template>
     </main>
+
+    <div class="floating-page-actions" :class="{ 'messages-floating': activeView === 'messages' }" aria-label="页面操作">
+      <button type="button" aria-label="刷新当前页面" :disabled="pageRefreshBusy" @click="refreshCurrentView"><RefreshCw :class="{ spinning: pageRefreshBusy }" :size="20" aria-hidden="true" /><span>{{ pageRefreshBusy ? '刷新中' : '刷新' }}</span></button>
+      <button type="button" aria-label="返回顶部" @click="scrollCurrentViewToTop"><ChevronUp :size="20" aria-hidden="true" /><span>顶部</span></button>
+    </div>
 
     <nav class="bottom-nav" aria-label="移动端导航"><button type="button" class="nav-item" :class="{ active: activeView === 'home' }" @click="setView('home')"><Home /><span>首页</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'wall' }" @click="setView('wall')"><Camera /><span>照片</span></button><button type="button" class="create-nav" aria-label="发布回忆" @click="openComposer()"><Plus /></button><button type="button" class="nav-item" :class="{ active: activeView === 'guestbook' }" @click="setView('guestbook')"><BookHeart /><span>留言</span></button><button type="button" class="nav-item" :class="{ active: activeView === 'messages' }" @click="setView('messages')"><MessageCircle /><span>消息</span><small v-if="totalMessageUnread">{{ totalMessageUnread > 9 ? '9+' : totalMessageUnread }}</small></button></nav>
 

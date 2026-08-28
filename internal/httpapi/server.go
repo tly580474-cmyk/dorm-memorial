@@ -88,6 +88,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("GET /api/admin/messages", s.requireAuth(http.HandlerFunc(s.listAdminMessages)))
 	mux.Handle("DELETE /api/admin/messages/{id}", s.requireAuth(http.HandlerFunc(s.deleteAdminMessage)))
 	mux.Handle("GET /api/admin/media", s.requireAuth(http.HandlerFunc(s.listAdminMedia)))
+	mux.Handle("DELETE /api/admin/media/{id}", s.requireAuth(http.HandlerFunc(s.purgeAdminMedia)))
 	mux.Handle("POST /api/admin/backup", s.requireAuth(http.HandlerFunc(s.exportAdminBackup)))
 	mux.Handle("GET /api/posts", s.requireAuth(http.HandlerFunc(s.listPosts)))
 	mux.Handle("POST /api/posts", s.requireAuth(http.HandlerFunc(s.createPost)))
@@ -508,6 +509,21 @@ func (s *Server) listAdminMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"media": items, "count": len(items)})
+}
+
+func (s *Server) purgeAdminMedia(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Force bool `json:"force"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "删除请求无效")
+		return
+	}
+	if err := s.media.Purge(r.Context(), mustPrincipal(r).User, r.PathValue("id"), input.Force, remoteIP(r)); err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) exportAdminBackup(w http.ResponseWriter, r *http.Request) {
@@ -973,6 +989,8 @@ func writeMediaError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "媒体不存在")
 	case errors.Is(err, mediastore.ErrForbidden):
 		writeError(w, http.StatusForbidden, "无权访问该媒体")
+	case errors.Is(err, mediastore.ErrConfirmationNeeded):
+		writeError(w, http.StatusConflict, "该媒体仍在内容中展示，必须明确确认后才能永久删除")
 	case errors.Is(err, mediastore.ErrConflict):
 		writeError(w, http.StatusConflict, "上传任务或媒体状态已变化")
 	case errors.Is(err, mediastore.ErrQuotaExceeded):

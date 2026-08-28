@@ -115,7 +115,12 @@ func (s *Store) ListConversations(ctx context.Context, actor identity.User) ([]C
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.type, c.title
 		FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id
-		WHERE cm.user_id = ? ORDER BY c.updated_at DESC, c.id DESC`, actor.ID)
+		WHERE cm.user_id = ?
+			AND (c.type = 'group' OR EXISTS(
+				SELECT 1 FROM conversation_members peer_cm JOIN users peer ON peer.id = peer_cm.user_id
+				WHERE peer_cm.conversation_id = c.id AND peer_cm.user_id <> ? AND peer.status = 'active'
+			))
+		ORDER BY c.updated_at DESC, c.id DESC`, actor.ID, actor.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -574,7 +579,7 @@ func (s *Store) directPeer(ctx context.Context, conversationID, actorID string) 
 	var peer Person
 	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path FROM conversation_members cm
 		JOIN users u ON u.id = cm.user_id JOIN profiles p ON p.user_id = u.id
-		WHERE cm.conversation_id = ? AND cm.user_id <> ? LIMIT 1`, conversationID, actorID).Scan(&peer.ID, &peer.Username, &peer.Nickname, &peer.AvatarPath)
+		WHERE cm.conversation_id = ? AND cm.user_id <> ? AND u.status = 'active' LIMIT 1`, conversationID, actorID).Scan(&peer.ID, &peer.Username, &peer.Nickname, &peer.AvatarPath)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Person{}, ErrNotFound
 	}

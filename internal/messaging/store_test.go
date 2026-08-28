@@ -135,6 +135,45 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 	}
 }
 
+func TestDisabledDirectPeerIsHiddenFromConversations(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "disabled-direct-peer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := registerMessagingUser(t, identities, admin, "alice-hidden", "alice-hidden@example.test", "小爱")
+	bob := registerMessagingUser(t, identities, admin, "bob-hidden", "bob-hidden@example.test", "小博")
+	store := NewStore(db)
+	direct, err := store.StartDirect(ctx, alice, bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identities.UpdateAdminUser(ctx, admin, bob.ID, identity.AdminUserUpdate{Role: "member", Status: "disabled"}, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	conversations, err := store.ListConversations(ctx, alice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range conversations {
+		if item.ID == direct.ID {
+			t.Fatalf("disabled direct peer must not be displayed: %+v", item)
+		}
+	}
+	if _, err := store.StartDirect(ctx, alice, bob.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("disabled peer can still receive direct messages: %v", err)
+	}
+}
+
 func TestAdminMessageManagementOnlyIncludesGroupChat(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "admin-messages.db"))

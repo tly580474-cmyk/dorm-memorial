@@ -619,6 +619,12 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 		where = "WHERE p.author_id = ? AND p.status != 'deleted'"
 		args = append(args, actor.ID)
 		sortExpr = "p.updated_at"
+	case "admin":
+		if actor.Role != "admin" {
+			return Page{}, ErrForbidden
+		}
+		where = "WHERE 1 = 1"
+		sortExpr = "p.updated_at"
 	case "pending":
 		if actor.Role != "admin" {
 			return Page{}, ErrForbidden
@@ -628,8 +634,8 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 	default:
 		return Page{}, errors.New("invalid list scope")
 	}
-	if options.Status != "" && options.Scope == "mine" {
-		if !validStatus(options.Status) || options.Status == "deleted" {
+	if options.Status != "" && (options.Scope == "mine" || options.Scope == "admin") {
+		if !validStatus(options.Status) || (options.Scope == "mine" && options.Status == "deleted") {
 			return Page{}, errors.New("invalid status filter")
 		}
 		where += " AND p.status = ?"
@@ -677,7 +683,7 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 		last := posts[options.Limit-1]
 		page.Posts = posts[:options.Limit]
 		sortTime := last.PublishedAt
-		if options.Scope == "mine" {
+		if options.Scope == "mine" || options.Scope == "admin" {
 			sortTime = &last.UpdatedAt
 		} else if options.Scope == "pending" {
 			sortTime = last.SubmittedAt
