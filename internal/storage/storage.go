@@ -43,3 +43,10 @@ type RangeStorage interface {
 type DirectoryRefresher interface {
 	RefreshDirectory(ctx context.Context, objectPath string) error
 }
+
+// CacheWarmer is implemented by storage decorators that can populate a local
+// cache without tying completion to a browser's short-lived Range request.
+type CacheWarmer interface {
+	IsCached(objectPath string) bool
+	Warm(ctx context.Context, objectPath string) error
+}

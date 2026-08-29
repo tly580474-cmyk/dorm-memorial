@@ -76,6 +76,9 @@ func main() {
 	}
 
 	api := httpapi.New(cfg, db, identities, logger, objects)
+	if err := api.StartMediaMaintenance(ctx); err != nil {
+		logger.Warn("media_maintenance_start_failed", "error", err)
+	}
 	server := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           api.Handler(),

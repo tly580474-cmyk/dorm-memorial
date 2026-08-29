@@ -18,12 +18,40 @@ import (
 const (
 	maxPreviewPixels = 24_000_000
 	previewLongEdge  = 960
+	displayLongEdge  = 2048
 )
 
 type imageDetails struct {
 	width       int
 	height      int
 	previewPath string
+}
+
+func buildImageDisplay(ctx context.Context, objects storage.ObjectStorage, objectPath, ownerID, mediaID, createdText string) (string, string, int64) {
+	body, err := objects.Open(ctx, objectPath)
+	if err != nil {
+		return "", "", 0
+	}
+	source, _, err := image.Decode(body)
+	body.Close()
+	if err != nil {
+		return "", "", 0
+	}
+	bounds := source.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 || int64(bounds.Dx())*int64(bounds.Dy()) > maxPreviewPixels {
+		return "", "", 0
+	}
+	display := scaleToFit(source, displayLongEdge)
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, display, &jpeg.Options{Quality: 88}); err != nil {
+		return "", "", 0
+	}
+	createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
+	displayPath := "/display/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
+	if err := objects.Put(ctx, displayPath, bytes.NewReader(encoded.Bytes()), int64(encoded.Len())); err != nil {
+		return "", "", 0
+	}
+	return displayPath, "image/jpeg", int64(encoded.Len())
 }
 
 func buildImagePreview(ctx context.Context, objects storage.ObjectStorage, objectPath, ownerID, mediaID string, createdAt time.Time) imageDetails {

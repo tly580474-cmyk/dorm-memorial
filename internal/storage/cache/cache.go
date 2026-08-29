@@ -91,8 +91,10 @@ func (c *Storage) Put(ctx context.Context, objectPath string, body io.Reader, si
 func (c *Storage) Open(ctx context.Context, objectPath string) (io.ReadCloser, error) {
 	for {
 		if file, ok := c.openCached(objectPath); ok {
+			storage.Describe(ctx, "cache", "hit")
 			return file, nil
 		}
+		storage.Describe(ctx, "cache", "miss")
 		owner, current := c.beginFlight(objectPath)
 		if owner {
 			body, err := c.upstream.Open(ctx, objectPath)
@@ -113,6 +115,27 @@ func (c *Storage) Open(ctx context.Context, objectPath string) (io.ReadCloser, e
 		case <-current.done:
 		}
 	}
+}
+
+func (c *Storage) IsCached(objectPath string) bool {
+	file, ok := c.openCached(objectPath)
+	if ok {
+		file.Close()
+	}
+	return ok
+}
+
+func (c *Storage) Warm(ctx context.Context, objectPath string) error {
+	if c.IsCached(objectPath) {
+		return nil
+	}
+	body, err := c.Open(ctx, objectPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(io.Discard, body)
+	closeErr := body.Close()
+	return errors.Join(copyErr, closeErr)
 }
 
 func (c *Storage) Stat(ctx context.Context, objectPath string) (storage.ObjectInfo, error) {
@@ -150,6 +173,7 @@ func (c *Storage) RefreshDirectory(ctx context.Context, objectPath string) error
 
 func (c *Storage) OpenRange(ctx context.Context, objectPath, byteRange string) (*http.Response, error) {
 	if file, ok := c.openCached(objectPath); ok {
+		storage.Describe(ctx, "cache", "hit")
 		info, err := file.Stat()
 		if err != nil {
 			file.Close()
@@ -169,6 +193,7 @@ func (c *Storage) OpenRange(ctx context.Context, objectPath, byteRange string) (
 		}
 		return &http.Response{StatusCode: status, Header: header, Body: body, ContentLength: length}, nil
 	}
+	storage.Describe(ctx, "cache", "miss")
 	if ranged, ok := c.upstream.(storage.RangeStorage); ok {
 		response, err := ranged.OpenRange(ctx, objectPath, byteRange)
 		if err != nil {

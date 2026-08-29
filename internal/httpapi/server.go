@@ -117,6 +117,10 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 
 func (s *Server) Handler() http.Handler { return s.handler }
 
+func (s *Server) StartMediaMaintenance(ctx context.Context) error {
+	return s.media.StartMaintenance(ctx)
+}
+
 func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
 	members, err := s.identity.ListMembers(r.Context())
 	if err != nil {
@@ -854,23 +858,38 @@ func (s *Server) deleteMedia(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
-	content, err := s.media.OpenContent(r.Context(), mustPrincipal(r).User, r.PathValue("id"), r.Header.Get("Range"), r.URL.Query().Get("variant") == "preview")
+	trace := storage.NewTrace()
+	ctx := storage.WithTrace(r.Context(), trace)
+	descriptor, err := s.media.InspectContent(ctx, mustPrincipal(r).User, r.PathValue("id"))
 	if err != nil {
 		writeMediaError(w, err)
 		return
 	}
-	defer content.Body.Close()
-	variant := "original"
-	if r.URL.Query().Get("variant") == "preview" {
-		variant = "preview"
+	variant := strings.TrimSpace(r.URL.Query().Get("variant"))
+	if variant == "" {
+		variant = "original"
+	}
+	if variant != "original" && variant != "preview" && variant != "display" && variant != "playback" {
+		writeError(w, http.StatusBadRequest, "不支持的媒体版本")
+		return
 	}
 	etag := `"media-` + r.PathValue("id") + `-` + variant + `"`
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "private, max-age=86400, immutable")
+	w.Header().Set("Cache-Control", "private, max-age=604800, immutable")
 	if r.Header.Get("Range") == "" && r.Header.Get("If-None-Match") == etag {
+		w.Header().Set("Server-Timing", trace.ServerTiming())
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
+	content, err := s.media.OpenDescriptor(ctx, descriptor, r.Header.Get("Range"), variant)
+	if err != nil {
+		w.Header().Del("ETag")
+		w.Header().Set("Cache-Control", "no-store")
+		writeMediaError(w, err)
+		return
+	}
+	defer content.Body.Close()
+	w.Header().Set("Server-Timing", trace.ServerTiming())
 	w.Header().Set("Content-Type", content.MimeType)
 	w.Header().Set("Content-Disposition", "inline")
 	if content.AcceptRanges != "" {
@@ -1018,6 +1037,9 @@ func writeMessagingError(w http.ResponseWriter, err error) {
 
 func writeMediaError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, mediastore.ErrPreviewPending):
+		w.Header().Set("Retry-After", "2")
+		writeError(w, http.StatusServiceUnavailable, "媒体版本正在生成，请稍后重试")
 	case errors.Is(err, mediastore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "媒体不存在")
 	case errors.Is(err, mediastore.ErrForbidden):

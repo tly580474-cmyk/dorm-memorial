@@ -155,6 +155,7 @@ func buildVideoPreview(ctx context.Context, objects storage.ObjectStorage, ffmpe
 		return ""
 	}
 	inputPath := input.Name()
+	defer input.Close()
 	defer os.Remove(inputPath)
 	defer input.Close()
 	if _, err = io.Copy(input, body); err != nil || input.Close() != nil {
@@ -210,4 +211,60 @@ func extractVideoFrame(ctx context.Context, ffmpegPath, inputPath, outputPath st
 		return fmt.Errorf("extract video frame: %w: %s", err, bytes.TrimSpace(output))
 	}
 	return nil
+}
+
+// buildVideoPlayback creates a broadly compatible, bounded-bitrate web
+// rendition while preserving the uploaded original for downloads.
+func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID, createdText string) (string, string, int64) {
+	body, err := objects.Open(ctx, objectPath)
+	if err != nil {
+		return "", "", 0
+	}
+	defer body.Close()
+	input, err := os.CreateTemp("", "dorm-video-playback-source-*.mp4")
+	if err != nil {
+		return "", "", 0
+	}
+	inputPath := input.Name()
+	defer os.Remove(inputPath)
+	if _, err = io.Copy(input, body); err != nil || input.Close() != nil {
+		return "", "", 0
+	}
+	output, err := os.CreateTemp("", "dorm-video-playback-*.mp4")
+	if err != nil {
+		return "", "", 0
+	}
+	outputPath := output.Name()
+	output.Close()
+	defer os.Remove(outputPath)
+
+	processCtx, cancel := context.WithTimeout(ctx, 90*time.Minute)
+	defer cancel()
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-i", inputPath,
+		"-map", "0:v:0", "-map", "0:a:0?",
+		"-vf", "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
+		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "6M", "-bufsize", "12M",
+		"-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+		"-movflags", "+faststart", "-y", outputPath,
+	}
+	if outputBytes, err := exec.CommandContext(processCtx, ffmpegPath, args...).CombinedOutput(); err != nil {
+		_ = outputBytes
+		return "", "", 0
+	}
+	file, err := os.Open(outputPath)
+	if err != nil {
+		return "", "", 0
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.Size() <= 0 {
+		return "", "", 0
+	}
+	createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
+	playbackPath := "/playback/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".mp4"
+	if err := objects.Put(ctx, playbackPath, file, info.Size()); err != nil {
+		return "", "", 0
+	}
+	return playbackPath, "video/mp4", info.Size()
 }

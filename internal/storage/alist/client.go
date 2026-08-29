@@ -35,7 +35,16 @@ type Client struct {
 	password string
 	root     string
 	http     *http.Client
+	urlMu    sync.Mutex
+	urlCache map[string]resolvedURL
 }
+
+type resolvedURL struct {
+	value     string
+	expiresAt time.Time
+}
+
+const resolvedURLTTL = 45 * time.Second
 
 type apiEnvelope struct {
 	Code    int             `json:"code"`
@@ -100,6 +109,7 @@ func New(cfg Config) (*Client, error) {
 		password: cfg.Password,
 		root:     root,
 		http:     httpClient,
+		urlCache: make(map[string]resolvedURL),
 	}, nil
 }
 
@@ -157,7 +167,11 @@ func (c *Client) Put(ctx context.Context, objectPath string, body io.Reader, siz
 	req.Header.Set("File-Path", url.PathEscape(remotePath))
 	c.authorize(req)
 
-	return c.doEnvelope(req, nil)
+	err = c.doEnvelope(req, nil)
+	if err == nil {
+		c.invalidateResolvedURL(objectPath)
+	}
+	return err
 }
 
 func (c *Client) Open(ctx context.Context, objectPath string) (io.ReadCloser, error) {
@@ -169,7 +183,27 @@ func (c *Client) Open(ctx context.Context, objectPath string) (io.ReadCloser, er
 }
 
 func (c *Client) OpenRange(ctx context.Context, objectPath, byteRange string) (*http.Response, error) {
-	rawURL, err := c.ResolveURL(ctx, objectPath)
+	resp, err := c.openRange(ctx, objectPath, byteRange, false)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone || resp.StatusCode >= 500 {
+		resp.Body.Close()
+		c.invalidateResolvedURL(objectPath)
+		resp, err = c.openRange(ctx, objectPath, byteRange, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		resp.Body.Close()
+		return nil, mapHTTPError(resp.StatusCode, "download object")
+	}
+	return resp, nil
+}
+
+func (c *Client) openRange(ctx context.Context, objectPath, byteRange string, refresh bool) (*http.Response, error) {
+	rawURL, err := c.resolveURL(ctx, objectPath, refresh)
 	if err != nil {
 		return nil, err
 	}
@@ -183,10 +217,6 @@ func (c *Client) OpenRange(ctx context.Context, objectPath, byteRange string) (*
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("download object: %w", errors.Join(storage.ErrUnavailable, err))
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		resp.Body.Close()
-		return nil, mapHTTPError(resp.StatusCode, "download object")
 	}
 	return resp, nil
 }
@@ -236,10 +266,14 @@ func (c *Client) Delete(ctx context.Context, objectPath string) error {
 	if remotePath == c.root {
 		return fmt.Errorf("refusing to delete storage root: %w", storage.ErrInvalidPath)
 	}
-	return c.postJSON(ctx, "/api/fs/remove", map[string]any{
+	err = c.postJSON(ctx, "/api/fs/remove", map[string]any{
 		"dir":   pathpkg.Dir(remotePath),
 		"names": []string{pathpkg.Base(remotePath)},
 	}, nil)
+	if err == nil {
+		c.invalidateResolvedURL(objectPath)
+	}
+	return err
 }
 
 func (c *Client) Move(ctx context.Context, from, to string) error {
@@ -275,16 +309,33 @@ func (c *Client) Move(ctx context.Context, from, to string) error {
 			return fmt.Errorf("file moved but rename failed: %w", err)
 		}
 	}
+	c.invalidateResolvedURL(from)
+	c.invalidateResolvedURL(to)
 	return nil
 }
 
 func (c *Client) ResolveURL(ctx context.Context, objectPath string) (string, error) {
+	return c.resolveURL(ctx, objectPath, false)
+}
+
+func (c *Client) resolveURL(ctx context.Context, objectPath string, refresh bool) (string, error) {
+	if !refresh {
+		c.urlMu.Lock()
+		cached, ok := c.urlCache[objectPath]
+		c.urlMu.Unlock()
+		if ok && time.Now().Before(cached.expiresAt) {
+			storage.Describe(ctx, "alist_url", "hit")
+			return cached.value, nil
+		}
+	}
+	storage.Describe(ctx, "alist_url", "miss")
+	defer storage.Time(ctx, "alist_resolve")()
 	remotePath, err := c.remotePath(objectPath)
 	if err != nil {
 		return "", err
 	}
 	var data fileData
-	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": "", "refresh": true}, &data); err != nil {
+	if err := c.postJSON(ctx, "/api/fs/get", map[string]any{"path": remotePath, "password": "", "refresh": refresh}, &data); err != nil {
 		return "", err
 	}
 	if strings.TrimSpace(data.RawURL) == "" {
@@ -298,7 +349,17 @@ func (c *Client) ResolveURL(ctx context.Context, objectPath string) (string, err
 		base, _ := url.Parse(c.baseURL + "/")
 		resolved = base.ResolveReference(resolved)
 	}
-	return resolved.String(), nil
+	value := resolved.String()
+	c.urlMu.Lock()
+	c.urlCache[objectPath] = resolvedURL{value: value, expiresAt: time.Now().Add(resolvedURLTTL)}
+	c.urlMu.Unlock()
+	return value, nil
+}
+
+func (c *Client) invalidateResolvedURL(objectPath string) {
+	c.urlMu.Lock()
+	delete(c.urlCache, objectPath)
+	c.urlMu.Unlock()
 }
 
 func (c *Client) postJSON(ctx context.Context, endpoint string, payload any, out any) error {

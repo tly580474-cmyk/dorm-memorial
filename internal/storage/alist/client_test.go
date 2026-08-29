@@ -103,6 +103,58 @@ func TestStatAndRangeDownload(t *testing.T) {
 	}
 }
 
+func TestRangeReusesResolvedURLAndRefreshesExpiredURL(t *testing.T) {
+	t.Parallel()
+	var resolves, oldReads, newReads int
+	server := httptest.NewServer(nil)
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/fs/get":
+			resolves++
+			var payload struct {
+				Refresh bool `json:"refresh"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			raw := server.URL + "/raw/old"
+			if payload.Refresh {
+				raw = server.URL + "/raw/new"
+			}
+			writeOK(w, map[string]any{"name": "clip.mp4", "size": 3, "raw_url": raw})
+		case "/raw/old":
+			oldReads++
+			if oldReads > 1 {
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			_, _ = io.WriteString(w, "old")
+		case "/raw/new":
+			newReads++
+			_, _ = io.WriteString(w, "new")
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	defer server.Close()
+
+	client := newTestClient(t, server.URL)
+	first, err := client.OpenRange(context.Background(), "/clip.mp4", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Body.Close()
+	second, err := client.OpenRange(context.Background(), "/clip.mp4", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(second.Body)
+	second.Body.Close()
+	if string(body) != "new" || resolves != 2 || oldReads != 2 || newReads != 1 {
+		t.Fatalf("body=%q resolves=%d old=%d new=%d", body, resolves, oldReads, newReads)
+	}
+}
+
 func TestMoveAndDeletePayloads(t *testing.T) {
 	t.Parallel()
 	var endpoints []string

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"dorm-memorial/internal/identity"
@@ -31,6 +32,7 @@ var (
 	ErrConfirmationNeeded = errors.New("media purge confirmation required")
 	ErrQuotaExceeded      = errors.New("media quota exceeded")
 	ErrStorageUnavailable = errors.New("media storage unavailable")
+	ErrPreviewPending     = errors.New("media preview is being prepared")
 	requestIDPattern      = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,96}$`)
 )
 
@@ -86,11 +88,35 @@ type Content struct {
 	AcceptRanges  string
 }
 
+type ContentDescriptor struct {
+	ID           string
+	OwnerID      string
+	ObjectPath   string
+	PreviewPath  string
+	Filename     string
+	MediaType    string
+	MimeType     string
+	Status       string
+	CreatedText  string
+	Size         int64
+	DurationMS   sql.NullInt64
+	DisplayPath  string
+	DisplayMIME  string
+	DisplaySize  int64
+	PlaybackPath string
+	PlaybackMIME string
+	PlaybackSize int64
+}
+
 type Store struct {
-	db           *sql.DB
-	objects      storage.ObjectStorage
-	ffmpegPath   string
-	verifyDelays []time.Duration
+	db              *sql.DB
+	objects         storage.ObjectStorage
+	ffmpegPath      string
+	verifyDelays    []time.Duration
+	jobMu           sync.Mutex
+	background      map[string]bool
+	videoTranscodes chan struct{}
+	imageRenders    chan struct{}
 }
 
 func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) *Store {
@@ -98,7 +124,36 @@ func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) 
 	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
 		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
 	}
-	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2)}
+}
+
+// StartMaintenance queues missing video posters and browser-compatible
+// playback renditions. Jobs are deduplicated and transcoding is serialized.
+func (s *Store) StartMaintenance(ctx context.Context) error {
+	if s.objects == nil {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.created_at, m.duration_ms,
+		COALESCE((SELECT object_path FROM media_variants WHERE media_id = m.id AND kind = 'playback'), '')
+		FROM media m WHERE m.media_type = 'video' AND m.status = 'ready'`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var descriptor ContentDescriptor
+		if err := rows.Scan(&descriptor.ID, &descriptor.OwnerID, &descriptor.ObjectPath, &descriptor.PreviewPath, &descriptor.Filename, &descriptor.MimeType, &descriptor.Size, &descriptor.CreatedText, &descriptor.DurationMS, &descriptor.PlaybackPath); err != nil {
+			return err
+		}
+		descriptor.MediaType = "video"
+		if descriptor.PreviewPath == "" {
+			s.scheduleVideoPreview(descriptor)
+		}
+		if descriptor.PlaybackPath == "" {
+			s.scheduleVideoPlayback(descriptor)
+		}
+	}
+	return rows.Err()
 }
 
 func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInput) (Record, error) {
@@ -202,6 +257,9 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	if err := tx.Commit(); err != nil {
 		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
 		return Record{}, err
+	}
+	if mediaType == "video" {
+		s.scheduleVideoPlayback(ContentDescriptor{ID: mediaID, OwnerID: actor.ID, ObjectPath: objectPath, Filename: input.Filename, MediaType: mediaType, MimeType: input.MimeType, Size: input.Size, CreatedText: nowText(now), DurationMS: sql.NullInt64{Int64: input.DurationMS, Valid: input.DurationMS > 0}})
 	}
 	return record, nil
 }
@@ -359,6 +417,9 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 			return fmt.Errorf("delete preview object: %w", errors.Join(ErrStorageUnavailable, err))
 		}
 	}
+	if err := s.deleteVariantObjects(ctx, id); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
 	result, err := s.db.ExecContext(ctx, `UPDATE media SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND status <> 'deleted'`, nowText(now), nowText(now), id)
 	if err != nil {
@@ -407,6 +468,9 @@ func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force
 				return fmt.Errorf("purge preview object: %w", errors.Join(ErrStorageUnavailable, err))
 			}
 		}
+		if err := s.deleteVariantObjects(ctx, id); err != nil {
+			return err
+		}
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -437,12 +501,47 @@ func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force
 	return tx.Commit()
 }
 
-func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {
+func (s *Store) deleteVariantObjects(ctx context.Context, mediaID string) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT object_path FROM media_variants WHERE media_id = ?`, mediaID)
+	if err != nil {
+		return err
+	}
+	var paths []string
+	for rows.Next() {
+		var objectPath string
+		if err := rows.Scan(&objectPath); err != nil {
+			rows.Close()
+			return err
+		}
+		paths = append(paths, objectPath)
+	}
+	err = rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, objectPath := range paths {
+		if err := s.objects.Delete(ctx, objectPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("delete media variant: %w", errors.Join(ErrStorageUnavailable, err))
+		}
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM media_variants WHERE media_id = ?`, mediaID)
+	return err
+}
+
+func (s *Store) InspectContent(ctx context.Context, actor identity.User, id string) (ContentDescriptor, error) {
+	defer storage.Time(ctx, "media_db")()
 	var ownerID, objectPath, previewPath, filename, mediaType, mimeType, status, createdText string
-	var size int64
+	var size, displaySize, playbackSize int64
+	var displayPath, displayMIME, playbackPath, playbackMIME string
 	var durationMS sql.NullInt64
 	var generallyReadable, messageAttached, messageReadable int
 	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.created_at, m.duration_ms,
+		COALESCE((SELECT object_path FROM media_variants WHERE media_id = m.id AND kind = 'display'), ''),
+		COALESCE((SELECT mime_type FROM media_variants WHERE media_id = m.id AND kind = 'display'), ''),
+		COALESCE((SELECT size_bytes FROM media_variants WHERE media_id = m.id AND kind = 'display'), 0),
+		COALESCE((SELECT object_path FROM media_variants WHERE media_id = m.id AND kind = 'playback'), ''),
+		COALESCE((SELECT mime_type FROM media_variants WHERE media_id = m.id AND kind = 'playback'), ''),
+		COALESCE((SELECT size_bytes FROM media_variants WHERE media_id = m.id AND kind = 'playback'), 0),
 		EXISTS(SELECT 1 FROM post_media pm JOIN posts p ON p.id = pm.post_id WHERE pm.media_id = m.id AND p.status = 'published' AND p.visibility = 'members')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'visible')
 		OR EXISTS(SELECT 1 FROM guestbook_media gm JOIN guestbook_entries g ON g.id = gm.entry_id WHERE gm.media_id = m.id AND g.status = 'hidden' AND g.recipient_id = ?)
@@ -451,30 +550,37 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 		EXISTS(SELECT 1 FROM message_media mm JOIN messages msg ON msg.id = mm.message_id
 			JOIN conversation_members cm ON cm.conversation_id = msg.conversation_id
 			WHERE mm.media_id = m.id AND cm.user_id = ?)
-		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mediaType, &mimeType, &size, &status, &createdText, &durationMS, &generallyReadable, &messageAttached, &messageReadable)
+		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mediaType, &mimeType, &size, &status, &createdText, &durationMS,
+		&displayPath, &displayMIME, &displaySize, &playbackPath, &playbackMIME, &playbackSize, &generallyReadable, &messageAttached, &messageReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
-		return Content{}, ErrNotFound
+		return ContentDescriptor{}, ErrNotFound
 	}
 	if err != nil {
-		return Content{}, err
+		return ContentDescriptor{}, err
 	}
 	if messageAttached != 0 && generallyReadable == 0 && messageReadable == 0 {
-		return Content{}, ErrForbidden
+		return ContentDescriptor{}, ErrForbidden
 	}
 	if actor.Role != "admin" && actor.ID != ownerID && generallyReadable == 0 && messageReadable == 0 {
-		return Content{}, ErrForbidden
+		return ContentDescriptor{}, ErrForbidden
 	}
 	if status != "ready" || s.objects == nil {
-		return Content{}, ErrStorageUnavailable
+		return ContentDescriptor{}, ErrStorageUnavailable
 	}
-	if preview && previewPath == "" && mediaType == "video" {
-		createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
-		previewPath = buildVideoPreview(ctx, s.objects, s.ffmpegPath, objectPath, ownerID, id, createdAt, durationMS.Int64)
-		if previewPath != "" {
-			_, _ = s.db.ExecContext(context.WithoutCancel(ctx), `UPDATE media SET preview_path = ?, updated_at = ? WHERE id = ? AND preview_path = ''`, previewPath, nowText(time.Now().UTC()), id)
-		}
+	return ContentDescriptor{ID: id, OwnerID: ownerID, ObjectPath: objectPath, PreviewPath: previewPath, Filename: filename, MediaType: mediaType, MimeType: mimeType, Status: status, CreatedText: createdText, Size: size, DurationMS: durationMS,
+		DisplayPath: displayPath, DisplayMIME: displayMIME, DisplaySize: displaySize, PlaybackPath: playbackPath, PlaybackMIME: playbackMIME, PlaybackSize: playbackSize}, nil
+}
+
+func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor, byteRange, variant string) (Content, error) {
+	defer storage.Time(ctx, "media_open")()
+	objectPath, previewPath := descriptor.ObjectPath, descriptor.PreviewPath
+	filename, mediaType, mimeType := descriptor.Filename, descriptor.MediaType, descriptor.MimeType
+	size := descriptor.Size
+	if variant == "preview" && previewPath == "" && mediaType == "video" {
+		s.scheduleVideoPreview(descriptor)
+		return Content{}, ErrPreviewPending
 	}
-	if preview && previewPath != "" {
+	if variant == "preview" && previewPath != "" {
 		body, err := s.objects.Open(ctx, previewPath)
 		if err == nil {
 			return Content{Body: body, StatusCode: http.StatusOK, MimeType: "image/jpeg", Filename: filename, ContentLength: -1}, nil
@@ -483,8 +589,28 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 		// raw URL becomes readable. The original remains a valid display source,
 		// so a transient preview failure must not leave avatars or cards broken.
 	}
-	if preview && mediaType == "video" {
+	if variant == "preview" && mediaType == "video" {
 		return Content{}, ErrStorageUnavailable
+	}
+	if variant == "playback" && mediaType == "video" {
+		if descriptor.PlaybackPath == "" {
+			s.scheduleVideoPlayback(descriptor)
+			return Content{}, ErrPreviewPending
+		}
+		objectPath, mimeType, size = descriptor.PlaybackPath, descriptor.PlaybackMIME, descriptor.PlaybackSize
+	}
+	if variant == "display" && mediaType == "image" {
+		if descriptor.DisplayPath == "" {
+			s.scheduleImageDisplay(descriptor)
+			return Content{}, ErrPreviewPending
+		}
+		objectPath, mimeType, size = descriptor.DisplayPath, descriptor.DisplayMIME, descriptor.DisplaySize
+	}
+	if variant == "playback" && mediaType != "video" || variant == "display" && mediaType != "image" {
+		return Content{}, ErrInvalid
+	}
+	if variant != "preview" && mediaType == "video" {
+		s.scheduleWarm(objectPath)
 	}
 	if byteRange != "" {
 		if ranged, ok := s.objects.(storage.RangeStorage); ok {
@@ -500,6 +626,98 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 		return Content{}, fmt.Errorf("open object: %w", errors.Join(ErrStorageUnavailable, err))
 	}
 	return Content{Body: body, StatusCode: http.StatusOK, MimeType: mimeType, Filename: filename, ContentLength: size, AcceptRanges: "bytes"}, nil
+}
+
+func (s *Store) scheduleWarm(objectPath string) {
+	warmer, ok := s.objects.(storage.CacheWarmer)
+	if !ok || warmer.IsCached(objectPath) {
+		return
+	}
+	s.runBackground("warm:"+objectPath, func(ctx context.Context) {
+		_ = warmer.Warm(ctx, objectPath)
+	})
+}
+
+func (s *Store) scheduleVideoPreview(descriptor ContentDescriptor) {
+	s.runBackground("preview:"+descriptor.ID, func(ctx context.Context) {
+		createdAt, _ := time.Parse(time.RFC3339Nano, descriptor.CreatedText)
+		previewPath := buildVideoPreview(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, createdAt, descriptor.DurationMS.Int64)
+		if previewPath != "" {
+			_, _ = s.db.ExecContext(ctx, `UPDATE media SET preview_path = ?, updated_at = ? WHERE id = ? AND preview_path = ''`, previewPath, nowText(time.Now().UTC()), descriptor.ID)
+		}
+	})
+}
+
+func (s *Store) scheduleVideoPlayback(descriptor ContentDescriptor) {
+	s.runBackground("playback:"+descriptor.ID, func(ctx context.Context) {
+		select {
+		case s.videoTranscodes <- struct{}{}:
+			defer func() { <-s.videoTranscodes }()
+		case <-ctx.Done():
+			return
+		}
+		path, mimeType, size := buildVideoPlayback(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText)
+		if path == "" || size <= 0 {
+			return
+		}
+		now := nowText(time.Now().UTC())
+		_, _ = s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
+			VALUES(?, 'playback', ?, ?, ?, ?, ?)
+			ON CONFLICT(media_id, kind) DO UPDATE SET object_path = excluded.object_path, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
+			descriptor.ID, path, mimeType, size, now, now)
+	})
+}
+
+func (s *Store) scheduleImageDisplay(descriptor ContentDescriptor) {
+	s.runBackground("display:"+descriptor.ID, func(ctx context.Context) {
+		select {
+		case s.imageRenders <- struct{}{}:
+			defer func() { <-s.imageRenders }()
+		case <-ctx.Done():
+			return
+		}
+		path, mimeType, size := buildImageDisplay(ctx, s.objects, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText)
+		if path == "" || size <= 0 {
+			return
+		}
+		now := nowText(time.Now().UTC())
+		_, _ = s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
+			VALUES(?, 'display', ?, ?, ?, ?, ?)
+			ON CONFLICT(media_id, kind) DO UPDATE SET object_path = excluded.object_path, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
+			descriptor.ID, path, mimeType, size, now, now)
+	})
+}
+
+func (s *Store) runBackground(key string, job func(context.Context)) {
+	s.jobMu.Lock()
+	if s.background[key] {
+		s.jobMu.Unlock()
+		return
+	}
+	s.background[key] = true
+	s.jobMu.Unlock()
+	go func() {
+		defer func() {
+			s.jobMu.Lock()
+			delete(s.background, key)
+			s.jobMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		job(ctx)
+	}()
+}
+
+func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRange string, preview bool) (Content, error) {
+	descriptor, err := s.InspectContent(ctx, actor, id)
+	if err != nil {
+		return Content{}, err
+	}
+	variant := "original"
+	if preview {
+		variant = "preview"
+	}
+	return s.OpenDescriptor(ctx, descriptor, byteRange, variant)
 }
 
 func (s *Store) existingRequest(ctx context.Context, userID, requestID string) (Record, bool, error) {

@@ -77,6 +77,54 @@ func TestBuildVideoPreviewWithFFmpeg(t *testing.T) {
 	}
 }
 
+func TestBuildVideoPlaybackCreatesCompatibleFastStartMP4(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	sourcePath := filepath.Join(t.TempDir(), "hevc-like-source.mp4")
+	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=60", "-t", "1", "-pix_fmt", "yuv420p", "-y", sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create source video: %v: %s", err, output)
+	}
+	payload, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	objects := newMemoryObjects()
+	objects.objects["/source.mp4"] = payload
+	created := time.Now().UTC().Format(time.RFC3339Nano)
+	playbackPath, mimeType, size := buildVideoPlayback(context.Background(), objects, ffmpegPath, "/source.mp4", "owner", "0123456789abcdef0123456789abcdef", created)
+	if playbackPath == "" || mimeType != "video/mp4" || size <= 0 {
+		t.Fatalf("path=%q mime=%q size=%d", playbackPath, mimeType, size)
+	}
+	outputPath := filepath.Join(t.TempDir(), "playback.mp4")
+	if err := os.WriteFile(outputPath, objects.objects[playbackPath], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if fast, err := MP4FastStart(outputPath); err != nil || !fast {
+		t.Fatalf("playback fast-start=%t err=%v", fast, err)
+	}
+}
+
+func TestBuildImageDisplayBoundsLongEdge(t *testing.T) {
+	var source bytes.Buffer
+	if err := png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 2400, 1200))); err != nil {
+		t.Fatal(err)
+	}
+	objects := newMemoryObjects()
+	objects.objects["/source.png"] = source.Bytes()
+	created := time.Now().UTC().Format(time.RFC3339Nano)
+	displayPath, mimeType, size := buildImageDisplay(context.Background(), objects, "/source.png", "owner", "0123456789abcdef0123456789abcdef", created)
+	if displayPath == "" || mimeType != "image/jpeg" || size <= 0 {
+		t.Fatalf("path=%q mime=%q size=%d", displayPath, mimeType, size)
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(objects.objects[displayPath]))
+	if err != nil || format != "jpeg" || config.Width != 2048 || config.Height != 1024 {
+		t.Fatalf("format=%q size=%dx%d err=%v", format, config.Width, config.Height, err)
+	}
+}
+
 func TestPrepareMP4UploadMovesMetadataBeforeMedia(t *testing.T) {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {

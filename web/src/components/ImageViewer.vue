@@ -5,6 +5,7 @@ export interface ViewerItem {
   id: string
   filename?: string
   size_bytes?: number
+  has_preview?: boolean
 }
 
 const props = defineProps<{
@@ -37,20 +38,62 @@ function formatBytes(value?: number) {
   return `${size >= 10 ? size.toFixed(0) : size.toFixed(1)} ${unit}`
 }
 
+const useOriginal = ref(false)
+const retryNonce = ref(0)
+const retryAttempt = ref(0)
+let retryTimer = 0
 const src = computed(() => {
   const item = props.items[index.value]
-  return item ? `/api/media/${encodeURIComponent(item.id)}/content` : ''
+  if (!item) return ''
+  const params = new URLSearchParams()
+  if (!useOriginal.value) params.set('variant', 'display')
+  if (retryNonce.value) params.set('retry', String(retryNonce.value))
+  const query = params.toString()
+  return `/api/media/${encodeURIComponent(item.id)}/content${query ? `?${query}` : ''}`
 })
 const current = computed(() => props.items[index.value] ?? null)
+const previewSrc = computed(() => current.value?.has_preview ? `/api/media/${encodeURIComponent(current.value.id)}/content?variant=preview` : '')
 
 const loaded = ref(false)
 const loadFailed = ref(false)
-function resetLoadState() {
+function resetLoadState(resetQuality = true) {
+	window.clearTimeout(retryTimer)
+	if (resetQuality) useOriginal.value = false
+	retryAttempt.value = 0
+	retryNonce.value = resetQuality ? 0 : retryNonce.value + 1
   loaded.value = false
   loadFailed.value = false
   resetTransform()
 }
-watch(src, resetLoadState)
+
+function onImageError() {
+	if (!useOriginal.value && retryAttempt.value < 5) {
+		retryAttempt.value += 1
+		const delay = Math.min(8000, 1000 * 2 ** (retryAttempt.value - 1))
+		retryTimer = window.setTimeout(() => { retryNonce.value += 1 }, delay)
+		return
+	}
+	loadFailed.value = true
+}
+
+function loadOriginal() {
+	if (useOriginal.value) return
+	window.clearTimeout(retryTimer)
+	useOriginal.value = true
+	loaded.value = false
+	loadFailed.value = false
+}
+
+function onImageLoaded() {
+	loaded.value = true
+	if (useOriginal.value) return
+	for (const nextIndex of [index.value - 1, index.value + 1]) {
+		const item = props.items[nextIndex]
+		if (!item) continue
+		const image = new Image()
+		image.src = `/api/media/${encodeURIComponent(item.id)}/content?variant=display&prefetch=1`
+	}
+}
 
 const scale = ref(1)
 const translateX = ref(0)
@@ -173,7 +216,10 @@ watch(
   },
 )
 
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+	window.clearTimeout(retryTimer)
+	window.removeEventListener('keydown', onKeydown)
+})
 </script>
 
 <template>
@@ -196,16 +242,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           @touchend.stop="onTouchEnd"
         >
           <figure class="image-viewer-figure" :style="{ transform: `translate(${translateX}px, ${translateY}px) scale(${scale})` }">
-            <img v-if="!loadFailed" :src="src" :alt="current?.filename ?? ''" draggable="false"
-              @load="loaded = true" @error="loadFailed = true"
-              :class="{ 'is-loaded': loaded }" />
+			<div class="image-viewer-stack">
+			  <img v-if="previewSrc" class="image-viewer-preview" :src="previewSrc" alt="" draggable="false" />
+			  <img v-if="!loadFailed" class="image-viewer-active" :src="src" :alt="current?.filename ?? ''" draggable="false"
+				@load="onImageLoaded" @error="onImageError"
+				:class="{ 'is-loaded': loaded }" />
+			  <div v-if="!loaded && !loadFailed" class="image-viewer-loading" role="status" aria-live="polite"><span></span><small>{{ useOriginal ? '正在加载原图…' : '正在准备清晰图片…' }}</small></div>
+			</div>
             <figcaption v-if="current" class="image-viewer-caption" @click.stop>
               <span :title="current.filename">{{ current.filename }}</span>
               <small v-if="current.size_bytes">{{ formatBytes(current.size_bytes) }}</small>
             </figcaption>
             <div v-if="loadFailed" class="image-viewer-error" role="status">
               <span>图片暂时无法读取</span>
-              <button type="button" @click.stop="resetLoadState">重新加载</button>
+			  <button type="button" @click.stop="resetLoadState(false)">重新加载</button>
             </div>
           </figure>
         </div>
@@ -216,6 +266,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <button type="button" :disabled="scale >= MAX_SCALE" aria-label="放大" @click="zoomBy(1.25)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M11 8v6M8 11h6" /></svg></button>
           <button type="button" :disabled="scale <= MIN_SCALE" aria-label="缩小" @click="zoomBy(1 / 1.25)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3M8 11h6" /></svg></button>
           <button type="button" aria-label="重置缩放" @click="resetTransform"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 1 0 2.6-6.4L3 8" /><path d="M3 3v5h5" /></svg></button>
+		  <button class="image-viewer-quality" type="button" :disabled="useOriginal" @click="loadOriginal">{{ useOriginal ? '原图' : '查看原图' }}</button>
           <template v-if="items.length > 1">
             <span class="image-viewer-separator" aria-hidden="true"></span>
             <button type="button" :disabled="index <= 0" aria-label="上一张" @click="step(-1)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6" /></svg></button>
@@ -263,17 +314,21 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   user-select: none;
   transition: transform 0.15s ease-out;
 }
-.image-viewer-figure img {
+.image-viewer-stack { display: grid; place-items: center; }
+.image-viewer-stack img {
+	grid-area: 1 / 1;
   display: block;
   max-width: 92vw;
   max-height: 84vh;
   object-fit: contain;
   border-radius: 6px;
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  transition: opacity 0.2s ease;
 }
-.image-viewer-figure img.is-loaded { opacity: 1; }
+.image-viewer-preview { opacity: .72; filter: blur(1px); }
+.image-viewer-active { opacity: 0; transition: opacity 0.2s ease; }
+.image-viewer-active.is-loaded { opacity: 1; }
+.image-viewer-loading { grid-area: 1 / 1; z-index: 1; align-self: end; display: inline-flex; align-items: center; gap: 7px; margin-bottom: 18px; padding: 7px 11px; border-radius: 999px; background: rgba(0,0,0,.58); color: rgba(255,255,255,.9); pointer-events: none; }
+.image-viewer-loading span { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: viewer-spin .8s linear infinite; }
 .image-viewer-caption {
   position: absolute;
   inset-inline: 0;
@@ -347,6 +402,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   color: rgba(255, 255, 255, 0.9);
   cursor: pointer;
 }
+.image-viewer-toolbar .image-viewer-quality { width: auto; min-width: 74px; padding: 0 12px; font-size: 12px; }
 .image-viewer-toolbar button:disabled { opacity: 0.35; cursor: default; }
 .image-viewer-toolbar button:not(:disabled):hover { background: rgba(255, 255, 255, 0.15); }
 .image-viewer-toolbar svg { width: 1.1rem; height: 1.1rem; }
@@ -368,4 +424,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 }
 .viewer-fade-enter-active, .viewer-fade-leave-active { transition: opacity 0.18s ease; }
 .viewer-fade-enter-from, .viewer-fade-leave-to { opacity: 0; }
+@keyframes viewer-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+	.image-viewer-active, .viewer-fade-enter-active, .viewer-fade-leave-active { transition: none; }
+	.image-viewer-loading span { animation: none; border-color: rgba(255,255,255,.7); }
+}
 </style>
