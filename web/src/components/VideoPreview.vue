@@ -20,6 +20,7 @@ const props = withDefaults(defineProps<{
 const active = ref(false)
 const videoFailed = ref(false)
 const videoRetry = ref(0)
+const useCompatible = ref(false)
 let videoRetryTimer = 0
 const posterFailed = ref(false)
 const posterRetry = ref(0)
@@ -39,8 +40,14 @@ function onPosterError() {
 	}, delay)
 }
 function onVideoError() {
+	if (!props.external && !useCompatible.value) {
+		useCompatible.value = true
+		videoFailed.value = false
+		videoRetry.value = 0
+		return
+	}
 	videoFailed.value = true
-	if (props.external || videoRetry.value >= 12) return
+	if (props.external || videoRetry.value >= 36) return
 	const delay = Math.min(10000, 1500 * 2 ** Math.min(videoRetry.value, 3))
 	videoRetryTimer = window.setTimeout(() => {
 		videoRetry.value += 1
@@ -53,9 +60,20 @@ onBeforeUnmount(() => {
 })
 const sourceLabel = computed(() => props.external ? '外链视频' : '上传视频')
 const playbackSrc = computed(() => {
-	const base = props.external || props.src.includes('variant=') ? props.src : `${props.src}${props.src.includes('?') ? '&' : '?'}variant=playback`
+	const base = props.external || !useCompatible.value || props.src.includes('variant=') ? props.src : `${props.src}${props.src.includes('?') ? '&' : '?'}variant=playback`
 	return videoRetry.value ? `${base}${base.includes('?') ? '&' : '?'}playback_retry=${videoRetry.value}` : base
 })
+function retryVideo() {
+	window.clearTimeout(videoRetryTimer)
+	videoRetry.value += 1
+	videoFailed.value = false
+}
+function retryOriginal() {
+	window.clearTimeout(videoRetryTimer)
+	useCompatible.value = false
+	videoRetry.value = 0
+	videoFailed.value = false
+}
 </script>
 
 <template>
@@ -70,8 +88,8 @@ const playbackSrc = computed(() => {
         allowfullscreen
       ></iframe>
 	  <template v-else>
-		<video v-show="!videoFailed" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline :aria-label="title" @error="onVideoError"></video>
-		<div v-if="videoFailed" class="video-preparing" role="status" aria-live="polite"><span></span><strong>{{ external || videoRetry >= 12 ? '视频暂时无法播放' : '正在准备兼容播放版本…' }}</strong><small>{{ external || videoRetry >= 12 ? '请稍后重新打开' : '首次处理可能需要一些时间' }}</small></div>
+		<video v-show="!videoFailed" :key="playbackSrc" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline :aria-label="title" @error="onVideoError"></video>
+		<div v-if="videoFailed" class="video-preparing" :role="external || videoRetry >= 36 ? 'alert' : 'status'" aria-live="polite"><span v-if="!external && videoRetry < 36"></span><strong>{{ external || videoRetry >= 36 ? '视频暂时无法播放' : '正在准备兼容播放版本…' }}</strong><small>{{ external ? '请检查原网站后重新尝试' : videoRetry >= 36 ? '可以重试，或尝试播放原文件' : '原文件不兼容，首次处理可能需要一些时间' }}</small><div v-if="external || videoRetry >= 36" class="video-recovery"><button type="button" @click="retryVideo">重新尝试</button><button v-if="!external" type="button" @click="retryOriginal">尝试原文件</button></div></div>
 	  </template>
     </template>
     <button v-else type="button" :aria-label="`播放${sourceLabel}：${title}`" @click="active = true">
@@ -96,6 +114,10 @@ const playbackSrc = computed(() => {
 .video-preparing { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 7px; padding: 20px; background: #292d29; color: rgba(255,255,255,.9); text-align: center; }
 .video-preparing span { width: 24px; height: 24px; border: 3px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: video-spin .9s linear infinite; }
 .video-preparing small { color: rgba(255,255,255,.68); }
+.video-recovery { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 8px; }
+.video-recovery button { min-height: 44px; padding: 8px 14px; border: 1px solid rgba(255,255,255,.42); border-radius: 999px; background: rgba(255,255,255,.12); color: #fff; cursor: pointer; }
+.video-recovery button:hover { background: rgba(255,255,255,.2); }
+.video-recovery button:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
 .shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(13,16,14,.08) 30%, rgba(13,16,14,.82) 100%); }
 .source-badge { position: absolute; top: 10px; left: 10px; display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid rgba(255,255,255,.32); border-radius: 999px; background: rgba(23,27,24,.68); font-size: 12px; backdrop-filter: blur(7px); }
 .play-mark { position: absolute; inset: 50% auto auto 50%; width: 58px; height: 58px; display: grid; place-items: center; border: 1px solid rgba(255,255,255,.55); border-radius: 50%; background: rgba(255,255,255,.92); color: #354139; transform: translate(-50%, -50%); box-shadow: 0 8px 24px rgba(0,0,0,.22); transition: transform 160ms ease; }

@@ -1,6 +1,9 @@
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, GuestbookPage, Media, MediaUsage, Member, MessagePage, NotificationPage, Post, PostPage, Session, User } from './types'
 
 type ApiErrorBody = { error?: { message?: string } }
+export type MediaProcessingPhase = 'staged' | 'transcoding' | 'uploading' | 'verifying' | 'completed' | 'failed'
+export type MediaProcessingStep = 'encoding' | 'finalizing' | ''
+export type MediaProcessingJob = { id: string; media_id: string; phase: MediaProcessingPhase; step: MediaProcessingStep; encoder: string; error_code: string; media?: Media }
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -29,6 +32,37 @@ async function download(path: string, options: RequestInit = {}) {
   const disposition = response.headers.get('Content-Disposition') ?? ''
   const filename = disposition.match(/filename="([^"]+)"/)?.[1] ?? 'dorm-memorial-backup.db'
   return { blob: await response.blob(), filename }
+}
+
+const processingErrorLabels: Record<string, string> = {
+  staging_missing: '服务器暂存文件丢失，请重新上传',
+  transcode_failed: '视频转码失败，请检查文件是否完整',
+  transcode_output_invalid: '转码结果无效，请重新上传',
+  original_upload_failed: '原文件保存到媒体存储失败',
+  playback_upload_failed: '兼容播放版本保存失败',
+  storage_verify_failed: '媒体存储校验失败',
+  database_failed: '处理结果保存失败',
+}
+
+async function waitForMediaProcessing(jobID: string, onPhase: (job: MediaProcessingJob) => void) {
+  let consecutiveErrors = 0
+  for (;;) {
+    let response: { job: MediaProcessingJob; usage: MediaUsage }
+    try {
+      response = await request<{ job: MediaProcessingJob; usage: MediaUsage }>(`/api/media-upload-jobs/${encodeURIComponent(jobID)}`)
+      consecutiveErrors = 0
+    } catch (error) {
+      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) throw error
+      consecutiveErrors += 1
+      if (consecutiveErrors >= 20) throw error
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+      continue
+    }
+    onPhase(response.job)
+    if (response.job.phase === 'completed' && response.job.media) return { media: response.job.media, usage: response.usage }
+    if (response.job.phase === 'failed') throw new ApiError(processingErrorLabels[response.job.error_code] ?? '视频处理失败，请重新上传', 500)
+    await new Promise((resolve) => window.setTimeout(resolve, 1500))
+  }
 }
 
 export const api = {
@@ -118,7 +152,7 @@ export const api = {
   clearAvatar: () => request<{ user: User }>('/api/profile/avatar', { method: 'DELETE' }),
   mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),
   deleteMedia: (id: string) => request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
-  uploadMedia: (file: File, uploadID: string, metadata: { width?: number; height?: number; duration_ms?: number }, onProgress: (percent: number) => void) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
+  uploadMedia: (file: File, uploadID: string, metadata: { width?: number; height?: number; duration_ms?: number }, onProgress: (percent: number) => void, onProcessing: (job: MediaProcessingJob) => void = () => undefined) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/media/uploads')
     xhr.withCredentials = true
@@ -132,8 +166,11 @@ export const api = {
       if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100))
     })
     xhr.addEventListener('load', () => {
-      const body = (() => { try { return JSON.parse(xhr.responseText) as ApiErrorBody & { media: Media; usage: MediaUsage } } catch { return {} as ApiErrorBody & { media: Media; usage: MediaUsage } } })()
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body)
+      const body = (() => { try { return JSON.parse(xhr.responseText) as ApiErrorBody & { media?: Media; usage: MediaUsage; job?: MediaProcessingJob } } catch { return {} as ApiErrorBody & { media?: Media; usage: MediaUsage; job?: MediaProcessingJob } } })()
+      if (xhr.status === 202 && body.job) {
+        onProcessing(body.job)
+        void waitForMediaProcessing(body.job.id, onProcessing).then(resolve, reject)
+      } else if (xhr.status >= 200 && xhr.status < 300 && body.media) resolve({ media: body.media, usage: body.usage })
       else reject(new ApiError(body.error?.message ?? `上传失败（${xhr.status}）`, xhr.status))
     })
     xhr.addEventListener('error', () => reject(new ApiError('网络中断，文件尚未上传完成', 0)))

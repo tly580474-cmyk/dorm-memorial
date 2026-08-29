@@ -29,6 +29,8 @@ type Config struct {
 	AListRoot           string
 	MediaCacheDir       string
 	MediaCacheMaxBytes  int64
+	MediaStagingDir     string
+	VideoEncoder        string
 	MaxVideoUploadBytes int64
 	MaxImageUploadBytes int64
 	FFmpegPath          string
@@ -55,6 +57,8 @@ func Load() (Config, error) {
 		AListToken:        strings.TrimSpace(env(fileValues, "ALIST_TOKEN", "")),
 		AListRoot:         strings.TrimSpace(env(fileValues, "ALIST_ROOT", "/")),
 		MediaCacheDir:     strings.TrimSpace(env(fileValues, "APP_MEDIA_CACHE_DIR", "data/media-cache")),
+		MediaStagingDir:   strings.TrimSpace(env(fileValues, "APP_MEDIA_STAGING_DIR", "data/media-staging")),
+		VideoEncoder:      strings.ToLower(strings.TrimSpace(env(fileValues, "APP_VIDEO_ENCODER", "auto"))),
 		FFmpegPath:        strings.TrimSpace(env(fileValues, "APP_FFMPEG_PATH", "ffmpeg")),
 	}
 	cacheMaxBytes, err := strconv.ParseInt(env(fileValues, "APP_MEDIA_CACHE_MAX_BYTES", "2147483648"), 10, 64)
@@ -90,8 +94,11 @@ func Load() (Config, error) {
 	if cfg.Environment == "production" && !cfg.CookieSecure {
 		return Config{}, errors.New("APP_COOKIE_SECURE must be true in production")
 	}
-	if cfg.DatabasePath == "" || cfg.Address == "" || cfg.FFmpegPath == "" || (cfg.MediaCacheMaxBytes > 0 && cfg.MediaCacheDir == "") {
+	if cfg.DatabasePath == "" || cfg.Address == "" || cfg.FFmpegPath == "" || cfg.MediaStagingDir == "" || (cfg.MediaCacheMaxBytes > 0 && cfg.MediaCacheDir == "") {
 		return Config{}, errors.New("APP_DATABASE_PATH, APP_ADDRESS, and enabled cache directory are required")
+	}
+	if cfg.VideoEncoder != "auto" && cfg.VideoEncoder != "cpu" && cfg.VideoEncoder != "nvenc" && cfg.VideoEncoder != "qsv" && cfg.VideoEncoder != "amf" {
+		return Config{}, errors.New("APP_VIDEO_ENCODER must be auto, cpu, nvenc, qsv, or amf")
 	}
 	bootstrapSet := cfg.BootstrapUsername != "" || cfg.BootstrapEmail != "" || cfg.BootstrapPassword != ""
 	if bootstrapSet && (cfg.BootstrapUsername == "" || cfg.BootstrapEmail == "" || len(cfg.BootstrapPassword) < 12) {

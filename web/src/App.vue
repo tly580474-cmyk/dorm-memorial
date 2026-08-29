@@ -4,6 +4,7 @@ import MarkdownIt from 'markdown-it'
 import { highlighter as hljs } from './syntax'
 import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, ChevronUp, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, Info, LogOut, MailPlus, Menu, MessageCircle, Mic, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
+import type { MediaProcessingPhase, MediaProcessingStep } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 import RichTextEditor from './components/RichTextEditor.vue'
 import VideoPreview from './components/VideoPreview.vue'
@@ -48,14 +49,18 @@ type EditorMedia = {
   name: string
   size: number
   kind: 'image' | 'video' | 'audio'
-  status: 'pending' | 'uploading' | 'ready' | 'error'
+  status: 'pending' | 'uploading' | 'processing' | 'ready' | 'error'
   progress: number
+  processingPhase?: MediaProcessingPhase
+  processingStep?: MediaProcessingStep
+  encoder?: string
   error: string
   persisted: boolean
   width?: number
   height?: number
   duration_ms?: number
   metadataPromise?: Promise<void>
+  uploadPromise?: Promise<void>
 }
 
 const user = ref<User | null>(null)
@@ -162,7 +167,8 @@ const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const publicProfile = ref<Member | null>(null)
-const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading'))
+const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading' || item.status === 'processing'))
+const editorMediaSaveSignature = computed(() => editorMedia.value.map((item) => item.media?.id ?? item.key).join('|'))
 const composerSaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 let composerAutosaveTimer = 0
 let detailTrigger: HTMLElement | null = null
@@ -185,7 +191,7 @@ const guestbookError = ref('')
 const guestbookNextCursor = ref('')
 const guestbookStatus = ref<'visible' | 'hidden'>('visible')
 let guestbookRequest = 0
-const guestbookMediaUploading = computed(() => guestbookMedia.value.some((item) => item.status === 'uploading'))
+const guestbookMediaUploading = computed(() => guestbookMedia.value.some((item) => item.status === 'uploading' || item.status === 'processing'))
 const selectedGuestbookMember = computed(() => guestbookMembers.value.find((member) => member.id === guestbookRecipientID.value) ?? null)
 const canViewHiddenGuestbook = computed(() => user.value?.role === 'admin' || Boolean(user.value && guestbookRecipientID.value === user.value.id))
 const notificationsOpen = ref(false)
@@ -217,7 +223,7 @@ const messageError = ref('')
 const messageNextCursor = ref('')
 const messageThreadOpen = ref(false)
 const messageScroll = ref<HTMLElement | null>(null)
-const messageMediaUploading = computed(() => messageMedia.value.some((item) => item.status === 'uploading'))
+const messageMediaUploading = computed(() => messageMedia.value.some((item) => item.status === 'uploading' || item.status === 'processing'))
 let activityTimer = 0
 let messageRequest = 0
 let messageLoadingRequest = 0
@@ -791,7 +797,7 @@ function addGuestbookMediaFiles(files: File[]) {
 }
 
 async function removeGuestbookMedia(item: EditorMedia) {
-  if (item.status === 'uploading') return
+  if (item.status === 'uploading' || item.status === 'processing') return
   guestbookMedia.value = guestbookMedia.value.filter((candidate) => candidate.key !== item.key)
   if (item.media) await api.deleteMedia(item.media.id).catch(() => undefined)
 }
@@ -1203,7 +1209,7 @@ async function savePost(submit: boolean, automatic = false, keepOpen = false) {
   composerError.value = ''
   try {
     for (const item of editorMedia.value) {
-      if (item.status === 'pending' || item.status === 'error') await uploadEditorMedia(item)
+      if (item.status !== 'ready') await uploadEditorMedia(item)
     }
     const savingState = composerState()
     const body = {
@@ -1246,12 +1252,15 @@ function scheduleComposerAutosave() {
   if (composerAutosaveTimer) window.clearTimeout(composerAutosaveTimer)
   composerSaveState.value = 'idle'
   composerAutosaveTimer = window.setTimeout(() => {
+    // 上传进度会频繁变化；媒体就绪后会通过 editorMediaSaveSignature 再次触发保存。
+    // 这里不等待上传，避免自动保存把富文本编辑器置为 disabled。
+    if (mediaUploading.value) return
     if (composerState() === composerInitialState || (!composerHasContent() && !editingPostID.value)) return
     void savePost(false, true, true)
   }, 1800)
 }
 
-watch([() => editor.title, () => editor.body_html, () => editor.content_date, () => editor.visibility, () => editor.tags, () => editor.external_video_url, editorMedia], scheduleComposerAutosave, { deep: true })
+watch([() => editor.title, () => editor.body_html, () => editor.content_date, () => editor.visibility, () => editor.tags, () => editor.external_video_url, editorMediaSaveSignature], scheduleComposerAutosave, { deep: true })
 
 async function handleRichImageInput(event: Event) {
   const input = event.target as HTMLInputElement
@@ -1302,27 +1311,67 @@ function addMediaFiles(files: File[]) {
       continue
     }
     const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
-    editorMedia.value.push(item)
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
+    editorMedia.value.push(item)
+    // 文件选择后立即在后台上传；错误由队列项就地展示，不打断正文输入。
+    void uploadEditorMedia(item).catch(() => undefined)
   }
 }
 
-async function uploadEditorMedia(item: EditorMedia) {
+function uploadEditorMedia(item: EditorMedia): Promise<void> {
+  if (item.status === 'ready' && item.media) return Promise.resolve()
+  if (item.uploadPromise) return item.uploadPromise
+
+  const promise = performEditorMediaUpload(item)
+  item.uploadPromise = promise
+  void promise.finally(() => {
+    if (item.uploadPromise === promise) item.uploadPromise = undefined
+  }).catch(() => undefined)
+  return promise
+}
+
+async function performEditorMediaUpload(item: EditorMedia) {
   if (!item.file) throw new Error(`${item.name} 无法重新读取，请移除后再次选择。`)
   await item.metadataPromise
   item.status = 'uploading'
   item.error = ''
   item.progress = 0
   try {
-    const response = await api.uploadMedia(item.file, crypto.randomUUID(), { width: item.width, height: item.height, duration_ms: item.duration_ms }, (percent) => { item.progress = percent })
+    const response = await api.uploadMedia(
+      item.file,
+      crypto.randomUUID(),
+      { width: item.width, height: item.height, duration_ms: item.duration_ms },
+      (percent) => { item.progress = percent },
+      (job) => {
+        item.status = job.phase === 'failed' ? 'error' : 'processing'
+        item.processingPhase = job.phase
+        item.processingStep = job.step
+        item.encoder = job.encoder
+      },
+    )
     item.media = response.media
     item.status = 'ready'
     item.progress = 100
+    item.processingPhase = 'completed'
     mediaUsage.value = response.usage
   } catch (error) {
     item.status = 'error'
     item.error = error instanceof Error ? error.message : '上传失败'
     throw error
+  }
+}
+
+function mediaProcessingLabel(item: EditorMedia) {
+  if (item.status !== 'processing') return ''
+  const accelerator = item.encoder === 'h264_nvenc' ? 'NVIDIA GPU' : item.encoder === 'h264_qsv' ? 'Intel GPU' : item.encoder === 'h264_amf' ? 'AMD GPU' : item.encoder === 'libx264' ? 'CPU' : ''
+  switch (item.processingPhase) {
+    case 'staged': return '已上传到服务器，等待转码'
+    case 'transcoding': return item.processingStep === 'finalizing'
+      ? `${accelerator || '视频'}编码已完成，正在执行 Fast Start 封装并生成封面`
+      : `正在${accelerator ? `使用 ${accelerator} ` : ''}编码为 H.264/AAC`
+    case 'uploading': return '转码完成，正在上传到 AList'
+    case 'verifying': return '正在校验 AList 中的文件'
+    default: return '服务器正在处理视频'
   }
 }
 
@@ -1373,7 +1422,7 @@ async function readAudioMetadata(item: EditorMedia) {
 }
 
 async function removeEditorMedia(item: EditorMedia) {
-  if (item.status === 'uploading') return
+  if (item.status === 'uploading' || item.status === 'processing') return
   editorMedia.value = editorMedia.value.filter((candidate) => candidate.key !== item.key)
   if (!item.media) return
   if (item.persisted) {
@@ -1409,6 +1458,7 @@ function retryEditorMedia(item: EditorMedia) {
   item.status = 'pending'
   item.error = ''
   item.progress = 0
+  void uploadEditorMedia(item).catch(() => undefined)
 }
 
 function mediaContentURL(id: string, preview = false) {
@@ -1755,7 +1805,7 @@ function addMessageMediaFiles(files: File[]) {
 }
 
 async function removeMessageMedia(item: EditorMedia) {
-  if (item.status === 'uploading') return
+  if (item.status === 'uploading' || item.status === 'processing') return
   messageMedia.value = messageMedia.value.filter((candidate) => candidate.key !== item.key)
   if (!item.media) return
   try {
@@ -2053,7 +2103,7 @@ async function copyInvites() {
           <section v-if="selectedConversation" class="message-thread" :aria-labelledby="`conversation-${selectedConversation.id}`">
             <header><button class="icon-button thread-back" type="button" aria-label="返回会话列表" @click="closeMobileThread"><ChevronLeft /></button><span class="conversation-avatar"><Users v-if="selectedConversation.type === 'group'" :size="21" /><template v-else><img v-if="selectedConversation.peer && avatarVisible(selectedConversation.peer.avatar_path)" :src="avatarURL(selectedConversation.peer.avatar_path)" alt="" @error="selectedConversation.peer && markAvatarBroken(selectedConversation.peer.avatar_path)" /><span v-else>{{ selectedConversation.peer?.nickname.slice(0, 1) }}</span></template></span><div><strong :id="`conversation-${selectedConversation.id}`">{{ selectedConversation.title }}<em v-if="selectedConversation.peer?.deactivated" class="deactivated-name">已注销</em></strong><small>{{ selectedConversation.type === 'group' ? '所有室友可见' : '仅会话双方可见' }}</small></div></header>
             <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><button v-if="item.sender.id !== user.id" class="mini-avatar" type="button" :aria-label="`查看${item.sender.nickname}的资料`" @click="showPublicProfile(item.sender.id)"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></button><div><header><button v-if="item.sender.id !== user.id" class="message-author-link" type="button" @click="showPublicProfile(item.sender.id)">{{ item.sender.nickname }}<em v-if="item.sender.deactivated" class="deactivated-name">已注销</em></button><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><div v-if="item.status === 'sent' && (item.attachments ?? []).length" class="chat-attachments"><figure v-for="attachment in (item.attachments ?? [])" :key="attachment.id" class="chat-attachment" :class="attachment.media_type"><div v-if="mediaLoadErrors.has(attachment.id)" class="message-media-unavailable"><AlertCircle :size="21" /><span>附件暂时无法读取</span><button type="button" @click="retryMediaLoad(attachment.id)"><RotateCcw :size="15" />重试</button></div><button v-else-if="attachment.media_type === 'image'" class="viewer-image-button" type="button" :aria-label="`查看图片：${attachment.original_filename}`" @click="openImagesFromList(item.attachments ?? [], attachment.id)"><img :src="mediaContentURL(attachment.id, attachment.has_preview)" :alt="attachment.original_filename" loading="lazy" @error="markMediaLoadError(attachment.id)" /></button><VideoPreview v-else-if="attachment.media_type === 'video'" class="chat-video" :src="mediaContentURL(attachment.id)" :poster="mediaContentURL(attachment.id, true)" :title="attachment.original_filename" /><div v-else class="chat-audio"><audio :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></audio></div><figcaption><span :title="attachment.original_filename">{{ attachment.original_filename }}</span><small>{{ formatBytes(attachment.size_bytes) }}</small></figcaption></figure></div><p v-if="item.status === 'recalled' || item.body">{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
-            <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" accept="image/*,video/*,audio/*" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">上传中 {{ item.progress }}%</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><div v-if="voiceRecording" class="voice-recording-bar" role="status"><span class="recording-dot" aria-hidden="true"></span><strong>正在录音 {{ voiceTimer }}s</strong><small>最长 {{ MAX_VOICE_SECONDS }} 秒，点击「语音」结束并加入待发送队列</small></div><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="voice-button" type="button" :class="{ recording: voiceRecording }" :disabled="messageBusy || messageMedia.length >= 6" :aria-label="voiceRecording ? '停止录音' : '录制语音'" :title="voiceRecording ? `停止录音（已 ${voiceTimer}s）` : '录制语音，最长 60 秒'" @click="toggleVoiceRecording"><Mic :size="18" />{{ voiceRecording ? `停止 · ${voiceTimer}s` : '语音' }}</button><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
+            <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" accept="image/*,video/*,audio/*" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">上传中 {{ item.progress }}%</small><small v-else-if="item.status === 'processing'" role="status" aria-live="polite">{{ mediaProcessingLabel(item) }}</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><div v-if="voiceRecording" class="voice-recording-bar" role="status"><span class="recording-dot" aria-hidden="true"></span><strong>正在录音 {{ voiceTimer }}s</strong><small>最长 {{ MAX_VOICE_SECONDS }} 秒，点击「语音」结束并加入待发送队列</small></div><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="voice-button" type="button" :class="{ recording: voiceRecording }" :disabled="messageBusy || messageMedia.length >= 6" :aria-label="voiceRecording ? '停止录音' : '录制语音'" :title="voiceRecording ? `停止录音（已 ${voiceTimer}s）` : '录制语音，最长 60 秒'" @click="toggleVoiceRecording"><Mic :size="18" />{{ voiceRecording ? `停止 · ${voiceTimer}s` : '语音' }}</button><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
           </section>
           <section v-else class="message-welcome"><MessageCircle :size="38" /><h2>选择一个会话</h2><p>可以进入宿舍群聊，或从左侧选择一位室友开始私信。</p></section>
         </div>
@@ -2188,7 +2238,7 @@ async function copyInvites() {
               <div class="field guestbook-video-link"><label for="guestbook-video-url">外链视频（可选）</label><input id="guestbook-video-url" v-model.trim="guestbookExternalVideoURL" type="url" inputmode="url" maxlength="2000" placeholder="粘贴视频链接或播放器 iframe 代码" /><small>外链只在点击播放后从原网站加载，不占用本站视频流量。</small></div>
               <input ref="guestbookMediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleGuestbookMediaInput" />
               <div v-if="guestbookMedia.length" class="media-queue guestbook-media-queue">
-                <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? `上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress></div><button type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
+                <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? `上传 ${item.progress}%` : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></div><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
               </div>
               <p v-if="guestbookError" class="form-error" role="alert">{{ guestbookError }}</p>
               <footer><button class="secondary-button" type="button" :disabled="guestbookBusy || guestbookMedia.length >= 6" @click="guestbookMediaInput?.click()"><UploadCloud :size="18" />添加照片或视频</button><button class="primary-button compact" type="submit" :disabled="guestbookBusy || guestbookMediaUploading || (!guestbookBody.trim() && !guestbookExternalVideoURL.trim() && guestbookMedia.length === 0)"><Send :size="18" />{{ guestbookBusy ? '发布中…' : '留下这句话' }}</button></footer>
@@ -2224,9 +2274,9 @@ async function copyInvites() {
         <header><div><p class="eyebrow">{{ editingPostID ? '编辑回忆' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
         <form @submit.prevent="savePost(true)">
           <div class="field"><label for="post-title">标题</label><input id="post-title" v-model="editor.title" maxlength="120" autofocus placeholder="给这段回忆起个名字（可选）" /><small>{{ editor.title.length }} / 120</small></div>
-          <div class="field rich-editor-field"><div class="rich-editor-label"><label>正文</label><span class="autosave-state" role="status" aria-live="polite">{{ composerSaveState === 'saving' ? '正在自动保存…' : composerSaveState === 'saved' ? '已自动保存' : composerSaveState === 'error' ? '自动保存失败' : '停顿后自动保存' }}</span></div><RichTextEditor ref="richTextEditor" v-model="editor.body_html" :disabled="composerBusy" @update:text="editor.body = $event" @request-image="richImageInput?.click()" /><input ref="richImageInput" class="visually-hidden" type="file" accept="image/*" @change="handleRichImageInput" /><small>{{ editor.body.length }} / 10000</small></div>
+          <div class="field rich-editor-field"><div class="rich-editor-label"><label>正文</label><span class="autosave-state" role="status" aria-live="polite">{{ mediaUploading ? '媒体正在后台处理，可继续编辑' : composerSaveState === 'saving' ? '正在自动保存…' : composerSaveState === 'saved' ? '已自动保存' : composerSaveState === 'error' ? '自动保存失败' : '停顿后自动保存' }}</span></div><RichTextEditor ref="richTextEditor" v-model="editor.body_html" :disabled="composerBusy" @update:text="editor.body = $event" @request-image="richImageInput?.click()" /><input ref="richImageInput" class="visually-hidden" type="file" accept="image/*" @change="handleRichImageInput" /><small>{{ editor.body.length }} / 10000</small></div>
           <section class="media-editor" aria-labelledby="media-editor-title">
-            <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后会在保存投稿时上传，不会暂存在生产服务器。</small></div><span>{{ editorMedia.length }} / 20</span></header>
+            <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后立即在后台上传；上传和视频转码期间可以继续编辑正文。</small></div><span>{{ editorMedia.length }} / 20</span></header>
             <input ref="mediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleMediaInput" />
             <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>图片不超过 {{ MAX_IMAGE_BYTES / 1024 ** 2 }} MiB，视频不超过 {{ MAX_VIDEO_BYTES / 1024 ** 2 }} MiB</small></span></button>
             <p v-if="mediaSelectionError" class="field-error" role="alert"><AlertCircle :size="17" aria-hidden="true" />{{ mediaSelectionError }}</p>
@@ -2236,16 +2286,17 @@ async function copyInvites() {
                 <div>
                   <strong>{{ item.name }}</strong>
                   <span class="media-upload-status">
-                    <small>{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待保存' : item.status === 'uploading' ? `正在上传 ${item.progress}%` : item.status === 'ready' ? '已就绪' : item.error }}</small>
+                    <small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '正在读取文件信息' : item.status === 'uploading' ? `正在后台上传 ${item.progress}%` : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small>
                     <button v-if="item.status === 'uploading'" class="upload-speed-hint" type="button" :aria-describedby="`upload-speed-tip-${item.key}`" aria-label="查看上传速度说明">
                       <Info :size="15" aria-hidden="true" />
                       <span :id="`upload-speed-tip-${item.key}`" class="upload-speed-tooltip" role="tooltip">上传速度先慢后快，稍安勿躁，这是TCP的特性</span>
                     </button>
                   </span>
                   <progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress>
+                  <progress v-else-if="item.status === 'processing'" max="100">处理中</progress>
                 </div>
-                <button v-if="item.status === 'error'" type="button" aria-label="下次保存时重试上传" title="下次保存时重试" @click="retryEditorMedia(item)"><RotateCcw :size="18" /></button>
-                <button v-else type="button" :disabled="item.status === 'uploading'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
+                <button v-if="item.status === 'error'" type="button" aria-label="重新上传" title="重新上传" @click="retryEditorMedia(item)"><RotateCcw :size="18" /></button>
+                <button v-else type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
               </article>
             </div>
             <div v-if="mediaUsage" class="media-usage"><span>我的媒体空间</span><span>{{ formatBytes(mediaUsage.used_bytes + mediaUsage.reserved_bytes) }} / {{ formatBytes(mediaUsage.quota_bytes) }}</span><progress :value="usagePercent()" max="100">{{ usagePercent() }}%</progress></div>
@@ -2254,7 +2305,7 @@ async function copyInvites() {
           <div class="field"><label for="external-video-url">视频外链或嵌入代码（可选）</label><textarea id="external-video-url" v-model.trim="editor.external_video_url" rows="3" maxlength="5000" placeholder="粘贴视频直链，或 Bilibili / YouTube 提供的 &lt;iframe&gt; 嵌入代码"></textarea><small>嵌入代码只会提取播放器地址；目前允许 Bilibili、YouTube 和 YouTube NoCookie。</small></div>
           <div class="field"><label for="post-tags">标签</label><input id="post-tags" v-model="editor.tags" maxlength="320" placeholder="用逗号或顿号分隔，最多 10 个" /></div>
           <p v-if="composerError" class="form-error" role="alert">{{ composerError }}</p>
-          <footer><button class="secondary-button" type="button" :disabled="composerBusy" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || mediaUploading || (!editor.body.trim() && editorMedia.length === 0 && !editor.external_video_url)"><Send :size="18" />{{ composerBusy ? '上传并保存中…' : editingPostID ? '保存并发布' : '直接发布' }}</button></footer>
+          <footer><button class="secondary-button" type="button" :disabled="composerBusy || mediaUploading" @click="savePost(false)">保存草稿</button><button class="primary-button" type="submit" :disabled="composerBusy || mediaUploading || (!editor.body.trim() && editorMedia.length === 0 && !editor.external_video_url)"><Send :size="18" />{{ composerBusy ? '正在保存…' : mediaUploading ? '媒体后台处理中…' : editingPostID ? '保存并发布' : '直接发布' }}</button></footer>
         </form>
       </section>
     </div>

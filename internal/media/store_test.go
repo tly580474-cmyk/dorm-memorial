@@ -107,6 +107,104 @@ func TestBuildVideoPlaybackCreatesCompatibleFastStartMP4(t *testing.T) {
 	}
 }
 
+func TestTranscodeVideoFileUsesAvailableEncoderAndFastStart(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "source.mp4")
+	outputPath := filepath.Join(dir, "playback.mp4")
+	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "1", "-pix_fmt", "yuv420p", "-y", inputPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create source video: %v: %s", err, output)
+	}
+	var steps []string
+	encoder, err := transcodeVideoFileWithProgress(context.Background(), ffmpegPath, "auto", inputPath, outputPath, 1000, func(step, _ string) {
+		steps = append(steps, step)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if encoder == "" {
+		t.Fatal("transcode did not report its encoder")
+	}
+	if fast, err := MP4FastStart(outputPath); err != nil || !fast {
+		t.Fatalf("fast-start=%t err=%v", fast, err)
+	}
+	if len(steps) < 2 || steps[len(steps)-2] != "encoding" || steps[len(steps)-1] != "finalizing" {
+		t.Fatalf("processing steps=%v, want encoding followed by finalizing", steps)
+	}
+	t.Logf("video encoder: %s", encoder)
+}
+
+func TestStageVideoCompletesInBackground(t *testing.T) {
+	ffmpegPath, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg is not installed")
+	}
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.mp4")
+	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "1", "-pix_fmt", "yuv420p", "-y", sourcePath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create source video: %v: %s", err, output)
+	}
+	payload, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, user := mediaTestUser(t)
+	objects := newMemoryObjects()
+	store := NewStore(db, objects, ffmpegPath)
+	store.ConfigureVideoProcessing(filepath.Join(dir, "staging"), "cpu")
+	store.verifyDelays = []time.Duration{0}
+	job, err := store.StageVideo(context.Background(), user, UploadInput{ClientRequestID: "background-video-0001", Filename: "memory.mp4", MimeType: "video/mp4", Size: int64(len(payload)), Body: bytes.NewReader(payload), Width: 320, Height: 180, DurationMS: 1000})
+	if err != nil || job.Phase != "staged" {
+		t.Fatalf("stage job=%+v err=%v", job, err)
+	}
+	duplicate, err := store.StageVideo(context.Background(), user, UploadInput{ClientRequestID: "background-video-0002", Filename: "memory-copy.mp4", MimeType: "video/mp4", Size: int64(len(payload)), Body: bytes.NewReader(payload), Width: 320, Height: 180, DurationMS: 1000})
+	if err != nil || duplicate.ID != job.ID {
+		t.Fatalf("duplicate job=%+v original=%+v err=%v", duplicate, job, err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := store.ProcessingStatus(context.Background(), user, job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Phase == "completed" {
+			if status.Media == nil || status.Media.Status != "ready" || !status.Media.HasPreview || status.Encoder != "libx264" {
+				t.Fatalf("completed status=%+v", status)
+			}
+			break
+		}
+		if status.Phase == "failed" {
+			t.Fatalf("processing failed: %+v", status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("processing timed out in phase %q", status.Phase)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	if len(objects.objects) != 3 {
+		t.Fatalf("stored objects=%d, want original, playback, and poster", len(objects.objects))
+	}
+}
+
+func TestTargetVideoBitrateBoundsOutputGrowth(t *testing.T) {
+	if got := targetVideoBitrateKbps(116_809_613, 1_521_706); got != 793 {
+		t.Fatalf("target bitrate=%d kbps, want 793", got)
+	}
+	if got := targetVideoBitrateKbps(1, 10_000); got != 700 {
+		t.Fatalf("minimum bitrate=%d", got)
+	}
+	if got := targetVideoBitrateKbps(8<<30, 60_000); got != 4000 {
+		t.Fatalf("maximum bitrate=%d", got)
+	}
+}
+
 func TestBuildImageDisplayBoundsLongEdge(t *testing.T) {
 	var source bytes.Buffer
 	if err := png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 2400, 1200))); err != nil {

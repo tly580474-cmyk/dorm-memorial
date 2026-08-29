@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"dorm-memorial/internal/storage"
@@ -238,18 +239,7 @@ func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmp
 	output.Close()
 	defer os.Remove(outputPath)
 
-	processCtx, cancel := context.WithTimeout(ctx, 90*time.Minute)
-	defer cancel()
-	args := []string{
-		"-hide_banner", "-loglevel", "error", "-i", inputPath,
-		"-map", "0:v:0", "-map", "0:a:0?",
-		"-vf", "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
-		"-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-maxrate", "6M", "-bufsize", "12M",
-		"-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
-		"-movflags", "+faststart", "-y", outputPath,
-	}
-	if outputBytes, err := exec.CommandContext(processCtx, ffmpegPath, args...).CombinedOutput(); err != nil {
-		_ = outputBytes
+	if _, err := transcodeVideoFile(ctx, ffmpegPath, "cpu", inputPath, outputPath, 2000); err != nil {
 		return "", "", 0
 	}
 	file, err := os.Open(outputPath)
@@ -267,4 +257,146 @@ func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmp
 		return "", "", 0
 	}
 	return playbackPath, "video/mp4", info.Size()
+}
+
+// transcodeVideoFile prefers a supported GPU H.264 encoder and falls back to
+// libx264 if the driver rejects the hardware path. Audio is always normalized
+// to AAC and Fast Start keeps MP4 metadata at the front of the file.
+func transcodeVideoFile(ctx context.Context, ffmpegPath, preference, inputPath, outputPath string, targetKbps int) (string, error) {
+	return transcodeVideoFileWithProgress(ctx, ffmpegPath, preference, inputPath, outputPath, targetKbps, nil)
+}
+
+// transcodeVideoFileWithProgress separates hardware encoding from the
+// Fast Start remux. This lets callers stop reporting GPU activity as soon as
+// the encoder exits, while the file is still being finalized on disk.
+func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference, inputPath, outputPath string, targetKbps int, onStep func(step, encoder string)) (string, error) {
+	available := ffmpegEncoders(ctx, ffmpegPath)
+	candidates := videoEncoderCandidates(preference, available)
+	encodedPath := outputPath + ".encoded.mp4"
+	defer os.Remove(encodedPath)
+	var lastErr error
+	for _, encoder := range candidates {
+		_ = os.Remove(outputPath)
+		_ = os.Remove(encodedPath)
+		if onStep != nil {
+			onStep("encoding", encoder)
+		}
+		processCtx, cancel := context.WithTimeout(ctx, 90*time.Minute)
+		args := []string{
+			"-hide_banner", "-loglevel", "error", "-i", inputPath,
+			"-map", "0:v:0", "-map", "0:a:0?",
+			"-vf", videoFilter(targetKbps),
+		}
+		args = append(args, videoEncoderArgs(encoder, targetKbps)...)
+		args = append(args, "-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-y", encodedPath)
+		output, err := exec.CommandContext(processCtx, ffmpegPath, args...).CombinedOutput()
+		cancel()
+		if err != nil {
+			lastErr = fmt.Errorf("%s: %w: %s", encoder, err, bytes.TrimSpace(output))
+			continue
+		}
+		info, statErr := os.Stat(encodedPath)
+		if statErr != nil || info.Size() <= 0 {
+			lastErr = fmt.Errorf("%s produced an invalid MP4", encoder)
+			continue
+		}
+		if onStep != nil {
+			onStep("finalizing", encoder)
+		}
+		if err := RemuxMP4FastStart(ctx, ffmpegPath, encodedPath, outputPath); err != nil {
+			lastErr = fmt.Errorf("%s Fast Start remux: %w", encoder, err)
+			continue
+		}
+		info, statErr = os.Stat(outputPath)
+		fastStart, fastStartErr := MP4FastStart(outputPath)
+		if statErr != nil || info.Size() <= 0 || fastStartErr != nil || !fastStart {
+			lastErr = fmt.Errorf("%s produced an invalid fast-start MP4", encoder)
+			continue
+		}
+		return encoder, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no H.264 encoder is available")
+	}
+	return "", lastErr
+}
+
+func ffmpegEncoders(ctx context.Context, ffmpegPath string) string {
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(probeCtx, ffmpegPath, "-hide_banner", "-encoders").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(output)
+}
+
+func videoEncoderCandidates(preference, available string) []string {
+	hardware := map[string]string{"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf"}
+	preference = strings.ToLower(strings.TrimSpace(preference))
+	if preference == "cpu" {
+		return []string{"libx264"}
+	}
+	var result []string
+	if encoder := hardware[preference]; encoder != "" && strings.Contains(available, encoder) {
+		result = append(result, encoder)
+	}
+	if preference == "auto" || len(result) == 0 {
+		for _, encoder := range []string{"h264_nvenc", "h264_qsv", "h264_amf"} {
+			if strings.Contains(available, encoder) && !containsString(result, encoder) {
+				result = append(result, encoder)
+			}
+		}
+	}
+	return append(result, "libx264")
+}
+
+func videoEncoderArgs(encoder string, targetKbps int) []string {
+	if targetKbps <= 0 {
+		targetKbps = 2000
+	}
+	bitrate := strconv.Itoa(targetKbps) + "k"
+	maxrate := strconv.Itoa(targetKbps*5/4) + "k"
+	bufsize := strconv.Itoa(targetKbps*5/2) + "k"
+	switch encoder {
+	case "h264_nvenc":
+		return []string{"-c:v", encoder, "-preset", "p4", "-tune", "hq", "-rc", "vbr", "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize, "-spatial_aq", "1", "-temporal_aq", "1"}
+	case "h264_qsv":
+		return []string{"-c:v", encoder, "-preset", "veryfast", "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize}
+	case "h264_amf":
+		return []string{"-c:v", encoder, "-quality", "speed", "-rc", "vbr_peak", "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize}
+	default:
+		return []string{"-c:v", "libx264", "-preset", "veryfast", "-b:v", bitrate, "-maxrate", maxrate, "-bufsize", bufsize}
+	}
+}
+
+func targetVideoBitrateKbps(sizeBytes, durationMS int64) int {
+	if sizeBytes <= 0 || durationMS <= 0 {
+		return 2000
+	}
+	sourceTotalKbps := sizeBytes * 8 / durationMS
+	target := int(sourceTotalKbps*3/2) - 128
+	if target < 700 {
+		return 700
+	}
+	if target > 4000 {
+		return 4000
+	}
+	return target
+}
+
+func videoFilter(targetKbps int) string {
+	if targetKbps > 0 && targetKbps < 1500 {
+		return "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30"
+	}
+	return "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30"
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

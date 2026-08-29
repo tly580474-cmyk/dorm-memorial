@@ -55,7 +55,9 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	if len(objects) > 0 {
 		objectStore = objects[0]
 	}
-	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediastore.NewStore(db, objectStore, cfg.FFmpegPath), messaging: messaging.NewStore(db), logger: logger}
+	mediaStore := mediastore.NewStore(db, objectStore, cfg.FFmpegPath)
+	mediaStore.ConfigureVideoProcessing(cfg.MediaStagingDir, cfg.VideoEncoder)
+	s := &Server{cfg: cfg, db: db, identity: identities, content: content.NewStore(db), media: mediaStore, messaging: messaging.NewStore(db), logger: logger}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
@@ -107,6 +109,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/guestbook/{id}/restore", s.requireAuth(http.HandlerFunc(s.restoreGuestbookEntry)))
 	mux.Handle("DELETE /api/guestbook/{id}", s.requireAuth(http.HandlerFunc(s.deleteGuestbookEntry)))
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
+	mux.Handle("GET /api/media-upload-jobs/{id}", s.requireAuth(http.HandlerFunc(s.mediaUploadStatus)))
 	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
 	mux.Handle("DELETE /api/media/{id}", s.requireAuth(http.HandlerFunc(s.deleteMedia)))
 	mux.Handle("GET /api/media/{id}/content", s.requireAuth(http.HandlerFunc(s.mediaContent)))
@@ -812,7 +815,7 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFileSize)
-	record, err := s.media.Upload(r.Context(), mustPrincipal(r).User, mediastore.UploadInput{
+	input := mediastore.UploadInput{
 		ClientRequestID: r.Header.Get("X-Upload-ID"),
 		Filename:        filename,
 		MimeType:        r.Header.Get("Content-Type"),
@@ -822,7 +825,19 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		Width:           parsePositiveHeader(r.Header.Get("X-Media-Width")),
 		Height:          parsePositiveHeader(r.Header.Get("X-Media-Height")),
 		DurationMS:      int64(parsePositiveHeader(r.Header.Get("X-Media-Duration-MS"))),
-	})
+	}
+	if strings.HasPrefix(mimeType, "video/") {
+		job, err := s.media.StageVideo(r.Context(), mustPrincipal(r).User, input)
+		if err != nil {
+			s.logger.Warn("media_video_stage_failed", "user_id", mustPrincipal(r).User.ID, "error", err)
+			writeMediaError(w, err)
+			return
+		}
+		usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
+		writeJSON(w, http.StatusAccepted, map[string]any{"job": job, "usage": usage})
+		return
+	}
+	record, err := s.media.Upload(r.Context(), mustPrincipal(r).User, input)
 	if err != nil {
 		s.logger.Warn("media_upload_failed", "user_id", mustPrincipal(r).User.ID, "error", err)
 		writeMediaError(w, err)
@@ -830,6 +845,16 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"media": record, "usage": usage})
+}
+
+func (s *Server) mediaUploadStatus(w http.ResponseWriter, r *http.Request) {
+	job, err := s.media.ProcessingStatus(r.Context(), mustPrincipal(r).User, r.PathValue("id"))
+	if err != nil {
+		writeMediaError(w, err)
+		return
+	}
+	usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
+	writeJSON(w, http.StatusOK, map[string]any{"job": job, "usage": usage})
 }
 
 func parsePositiveHeader(value string) int {

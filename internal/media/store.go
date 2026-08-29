@@ -112,8 +112,11 @@ type Store struct {
 	db              *sql.DB
 	objects         storage.ObjectStorage
 	ffmpegPath      string
+	stagingDir      string
+	videoEncoder    string
 	verifyDelays    []time.Duration
 	jobMu           sync.Mutex
+	stageMu         sync.Mutex
 	background      map[string]bool
 	videoTranscodes chan struct{}
 	imageRenders    chan struct{}
@@ -124,36 +127,47 @@ func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) 
 	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
 		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
 	}
-	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2)}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2)}
 }
 
-// StartMaintenance queues missing video posters and browser-compatible
-// playback renditions. Jobs are deduplicated and transcoding is serialized.
+func (s *Store) ConfigureVideoProcessing(stagingDir, encoder string) {
+	if strings.TrimSpace(stagingDir) != "" {
+		s.stagingDir = strings.TrimSpace(stagingDir)
+	}
+	if strings.TrimSpace(encoder) != "" {
+		s.videoEncoder = strings.ToLower(strings.TrimSpace(encoder))
+	}
+}
+
+// StartMaintenance queues inexpensive missing video posters. Legacy playback
+// renditions are generated lazily when a browser actually needs one, so a
+// startup backlog cannot make the video a member clicked wait behind every
+// historical upload.
 func (s *Store) StartMaintenance(ctx context.Context) error {
 	if s.objects == nil {
 		return nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.created_at, m.duration_ms,
-		COALESCE((SELECT object_path FROM media_variants WHERE media_id = m.id AND kind = 'playback'), '')
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.created_at, m.duration_ms
 		FROM media m WHERE m.media_type = 'video' AND m.status = 'ready'`)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var descriptor ContentDescriptor
-		if err := rows.Scan(&descriptor.ID, &descriptor.OwnerID, &descriptor.ObjectPath, &descriptor.PreviewPath, &descriptor.Filename, &descriptor.MimeType, &descriptor.Size, &descriptor.CreatedText, &descriptor.DurationMS, &descriptor.PlaybackPath); err != nil {
+		if err := rows.Scan(&descriptor.ID, &descriptor.OwnerID, &descriptor.ObjectPath, &descriptor.PreviewPath, &descriptor.Filename, &descriptor.MimeType, &descriptor.Size, &descriptor.CreatedText, &descriptor.DurationMS); err != nil {
 			return err
 		}
 		descriptor.MediaType = "video"
 		if descriptor.PreviewPath == "" {
 			s.scheduleVideoPreview(descriptor)
 		}
-		if descriptor.PlaybackPath == "" {
-			s.scheduleVideoPlayback(descriptor)
-		}
 	}
-	return rows.Err()
+	rowErr := rows.Err()
+	rows.Close()
+	if rowErr != nil {
+		return rowErr
+	}
+	return s.resumeStagedVideos(ctx)
 }
 
 func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInput) (Record, error) {
