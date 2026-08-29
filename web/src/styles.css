@@ -299,6 +299,9 @@ a { color: inherit; text-decoration: none; }
 .guestbook-entry > p { margin: 18px 0; font-size: 17px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
 .guestbook-entry-media { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 9px; margin: 18px 0; }
 .guestbook-entry-media img, .guestbook-entry-media video { width: 100%; aspect-ratio: 4 / 3; display: block; border: 1px solid #e4dbce; border-radius: 11px; background: #2f2a24; object-fit: cover; }
+/* 单图留言：直接展示原图，完整不裁切、不缩略 */
+.guestbook-entry-media .viewer-image-button.single-image { display: flex; justify-content: center; background: #211d1a; border-radius: 11px; }
+.guestbook-entry-media .viewer-image-button.single-image img { width: auto; max-width: 100%; max-height: 68vh; aspect-ratio: auto; object-fit: contain; border-radius: 11px; }
 .guestbook-entry-media .media-unavailable { border: 1px solid #e4dbce; border-radius: 11px; background: #f3eee6; }
 .guestbook-entry-media .guestbook-video { grid-column: 1 / -1; width: min(100%, 840px); justify-self: center; }
 .guestbook-entry > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid #eee6da; }
