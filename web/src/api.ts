@@ -38,6 +38,7 @@ export const api = {
   register: (body: { invite_code: string; username: string; email: string; password: string; nickname: string }) =>
     request<{ user: User }>('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
   logout: () => request<void>('/api/auth/logout', { method: 'POST', body: '{}' }),
+  deactivate: (password: string) => request<void>('/api/auth/deactivate', { method: 'POST', body: JSON.stringify({ password }) }),
   updateProfile: (body: { nickname: string; bio: string; bed_no: string; memorial_note: string }) =>
     request<{ user: User }>('/api/profile', { method: 'PATCH', body: JSON.stringify(body) }),
   updateAccount: (body: { username: string; email: string; nickname: string; current_password: string; new_password: string }) =>
@@ -71,7 +72,7 @@ export const api = {
     Object.entries(query).forEach(([key, value]) => { if (value) params.set(key, value) })
     return request<{ users: AdminUser[]; count: number }>(`/api/admin/users${params.size ? `?${params}` : ''}`)
   },
-  updateAdminUser: (id: string, body: { role: 'admin' | 'member'; status: 'active' | 'disabled' }) =>
+  updateAdminUser: (id: string, body: { role: 'admin' | 'member'; status: 'active' | 'disabled' | 'deactivated' }) =>
     request<{ user: AdminUser }>(`/api/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
   adminMessages: (query: { search?: string; status?: string; limit?: number } = {}) => {
     const params = new URLSearchParams()

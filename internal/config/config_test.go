@@ -24,8 +24,11 @@ func TestEnvironmentOverridesFileValues(t *testing.T) {
 	if cfg.MediaCacheMaxBytes != 2<<30 || cfg.MediaCacheDir != "data/media-cache" {
 		t.Fatalf("unexpected cache defaults: dir=%q bytes=%d", cfg.MediaCacheDir, cfg.MediaCacheMaxBytes)
 	}
-	if cfg.MaxVideoUploadBytes != 150<<20 {
+	if cfg.MaxVideoUploadBytes != 300<<20 {
 		t.Fatalf("unexpected video upload limit: %d", cfg.MaxVideoUploadBytes)
+	}
+	if cfg.MaxImageUploadBytes != 15<<20 {
+		t.Fatalf("unexpected image upload limit: %d", cfg.MaxImageUploadBytes)
 	}
 	if cfg.FFmpegPath != "ffmpeg" {
 		t.Fatalf("unexpected ffmpeg default: %q", cfg.FFmpegPath)
@@ -37,6 +40,14 @@ func TestRejectsInvalidMaxVideoUploadSize(t *testing.T) {
 	t.Setenv("APP_MAX_VIDEO_UPLOAD_BYTES", "0")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected non-positive video upload size to fail")
+	}
+}
+
+func TestRejectsInvalidMaxImageUploadSize(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("APP_MAX_IMAGE_UPLOAD_BYTES", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected non-positive image upload size to fail")
 	}
 }
 

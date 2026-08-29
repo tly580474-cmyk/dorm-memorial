@@ -63,6 +63,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.HandleFunc("POST /api/auth/login", s.login)
 	mux.Handle("POST /api/auth/logout", s.requireAuth(http.HandlerFunc(s.logout)))
 	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.me)))
+	mux.Handle("POST /api/auth/deactivate", s.requireAuth(http.HandlerFunc(s.deactivateAccount)))
 	mux.Handle("GET /api/auth/sessions", s.requireAuth(http.HandlerFunc(s.sessions)))
 	mux.Handle("GET /api/members", s.requireAuth(http.HandlerFunc(s.listMembers)))
 	mux.Handle("GET /api/messages/conversations", s.requireAuth(http.HandlerFunc(s.listConversations)))
@@ -240,7 +241,7 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
 		if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/media/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
@@ -323,6 +324,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.identity.Authenticate(r.Context(), body.Identifier, body.Password)
 	if err != nil {
+		if errors.Is(err, identity.ErrAccountDeactivated) {
+			writeError(w, http.StatusForbidden, "该账号已注销")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "用户名、邮箱或密码不正确")
 		return
 	}
@@ -348,6 +353,29 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user ident
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	p := mustPrincipal(r)
 	_ = s.identity.RevokeSession(r.Context(), p.User.ID, p.SessionID)
+	clearSessionCookie(w, s.cfg.CookieSecure)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deactivateAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	p := mustPrincipal(r)
+	if err := s.identity.SelfDeactivate(r.Context(), p.User, body.Password, remoteIP(r)); err != nil {
+		switch {
+		case errors.Is(err, identity.ErrInvalidCredentials):
+			writeError(w, http.StatusUnauthorized, "当前密码不正确")
+		case errors.Is(err, identity.ErrNotFound):
+			writeError(w, http.StatusConflict, "账号状态已变化，请刷新页面")
+		default:
+			writeError(w, http.StatusInternalServerError, "注销失败，请稍后重试")
+		}
+		return
+	}
 	clearSessionCookie(w, s.cfg.CookieSecure)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -760,13 +788,18 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	maxFileSize := mediastore.MaxFileSize
 	if strings.HasPrefix(mimeType, "video/") {
 		maxFileSize = s.cfg.MaxVideoUploadBytes
+	} else if strings.HasPrefix(mimeType, "image/") {
+		maxFileSize = s.cfg.MaxImageUploadBytes
 	}
 	if r.ContentLength > maxFileSize {
-		if strings.HasPrefix(mimeType, "video/") {
+		switch {
+		case strings.HasPrefix(mimeType, "video/"):
 			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个视频不能超过 %d MiB", maxFileSize/(1024*1024)))
-			return
+		case strings.HasPrefix(mimeType, "image/"):
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个图片不能超过 %d MiB", maxFileSize/(1024*1024)))
+		default:
+			writeError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 8 GiB")
 		}
-		writeError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 8 GiB")
 		return
 	}
 	filename, err := url.QueryUnescape(r.Header.Get("X-File-Name"))

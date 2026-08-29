@@ -75,6 +75,23 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", entry.Name(), err)
 		}
+		// A migration may opt out of the enclosing transaction. This is required
+		// for table rebuilds that drop a parent table referenced by foreign keys:
+		// PRAGMA foreign_keys cannot be changed inside a transaction.
+		raw := string(script)
+		nonTransactional := strings.HasPrefix(raw, "-- non-transactional\n")
+		if nonTransactional {
+			raw = strings.TrimPrefix(raw, "-- non-transactional\n")
+		}
+		if nonTransactional {
+			if _, err := db.ExecContext(ctx, raw); err != nil {
+				return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
+			}
+			if _, err := db.ExecContext(ctx, "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)", entry.Name(), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return fmt.Errorf("record migration %s: %w", entry.Name(), err)
+			}
+			continue
+		}
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %s: %w", entry.Name(), err)

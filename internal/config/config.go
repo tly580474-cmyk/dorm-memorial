@@ -30,6 +30,7 @@ type Config struct {
 	MediaCacheDir       string
 	MediaCacheMaxBytes  int64
 	MaxVideoUploadBytes int64
+	MaxImageUploadBytes int64
 	FFmpegPath          string
 }
 
@@ -62,11 +63,17 @@ func Load() (Config, error) {
 	}
 	cfg.MediaCacheMaxBytes = cacheMaxBytes
 
-	maxVideoUploadBytes, err := strconv.ParseInt(env(fileValues, "APP_MAX_VIDEO_UPLOAD_BYTES", "157286400"), 10, 64)
+	maxVideoUploadBytes, err := strconv.ParseInt(env(fileValues, "APP_MAX_VIDEO_UPLOAD_BYTES", "314572800"), 10, 64)
 	if err != nil || maxVideoUploadBytes <= 0 || maxVideoUploadBytes > 8<<30 {
 		return Config{}, errors.New("APP_MAX_VIDEO_UPLOAD_BYTES must be a positive integer no greater than 8589934592")
 	}
 	cfg.MaxVideoUploadBytes = maxVideoUploadBytes
+
+	maxImageUploadBytes, err := strconv.ParseInt(env(fileValues, "APP_MAX_IMAGE_UPLOAD_BYTES", "15728640"), 10, 64)
+	if err != nil || maxImageUploadBytes <= 0 || maxImageUploadBytes > 8<<30 {
+		return Config{}, errors.New("APP_MAX_IMAGE_UPLOAD_BYTES must be a positive integer no greater than 8589934592")
+	}
+	cfg.MaxImageUploadBytes = maxImageUploadBytes
 
 	secure, err := strconv.ParseBool(env(fileValues, "APP_COOKIE_SECURE", "false"))
 	if err != nil {

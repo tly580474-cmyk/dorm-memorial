@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,7 +53,7 @@ func TestAdminManagementEndpoints(t *testing.T) {
 		VALUES('ffffffffffffffffffffffffffffffff', ?, '/test/admin.png', '管理图片.png', 'image', 'image/png', 64, 'hash', 'ready', ?, ?)`, member.ID, now, now); err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, MaxVideoUploadBytes: 300 << 20, MaxImageUploadBytes: 15 << 20, FrontendDir: filepath.Join(t.TempDir(), "missing")}
 	server := httptest.NewServer(New(cfg, db, identities, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
 	defer server.Close()
 	adminCookie := loginTestUser(t, server.URL, "admin", "correct-horse-battery")
@@ -119,7 +120,7 @@ func TestInviteRegistrationSessionAndPermissions(t *testing.T) {
 	if err != nil || !created {
 		t.Fatalf("bootstrap created=%v err=%v", created, err)
 	}
-	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, MaxVideoUploadBytes: 300 << 20, MaxImageUploadBytes: 15 << 20, FrontendDir: filepath.Join(t.TempDir(), "missing")}
 	server := httptest.NewServer(New(cfg, db, store, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
 	defer server.Close()
 
@@ -477,7 +478,7 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects := &httpTestObjects{values: make(map[string][]byte)}
-	cfg := config.Config{Environment: "test", SessionTTL: time.Hour, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	cfg := config.Config{Environment: "test", SessionTTL: time.Hour, MaxVideoUploadBytes: 300 << 20, MaxImageUploadBytes: 15 << 20, FrontendDir: filepath.Join(t.TempDir(), "missing")}
 	server := httptest.NewServer(New(cfg, db, identities, slog.New(slog.NewTextHandler(io.Discard, nil)), objects).Handler())
 	defer server.Close()
 	cookie := loginTestUser(t, server.URL, "mediaadmin", "correct-horse-battery")
@@ -602,6 +603,54 @@ func (s *httpTestObjects) Delete(_ context.Context, objectPath string) error {
 }
 func (*httpTestObjects) Move(context.Context, string, string) error         { return nil }
 func (*httpTestObjects) ResolveURL(context.Context, string) (string, error) { return "", nil }
+
+func TestDeactivateAccountEndpoint(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "deactivate-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, _ := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	code, _, _ := identities.CreateInvite(ctx, admin, 1, time.Hour, "127.0.0.1")
+	if _, err := identities.Register(ctx, identity.RegisterInput{InviteCode: code, Username: "quitter", Email: "quitter@example.test", Password: "member-password", Nickname: "退站者"}, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Environment: "test", CookieSecure: false, SessionTTL: 24 * time.Hour, MaxVideoUploadBytes: 300 << 20, MaxImageUploadBytes: 15 << 20, FrontendDir: filepath.Join(t.TempDir(), "missing")}
+	server := httptest.NewServer(New(cfg, db, identities, slog.New(slog.NewTextHandler(io.Discard, nil))).Handler())
+	defer server.Close()
+
+	wrong := doJSON(t, server.URL+"/api/auth/deactivate", http.MethodPost, map[string]string{"password": "wrong-password"}, loginTestUser(t, server.URL, "quitter", "member-password"))
+	if wrong.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong password status=%d body=%s", wrong.StatusCode, readBody(wrong))
+	}
+	wrong.Body.Close()
+
+	cookie := loginTestUser(t, server.URL, "quitter", "member-password")
+	response := doJSON(t, server.URL+"/api/auth/deactivate", http.MethodPost, map[string]string{"password": "member-password"}, cookie)
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("deactivate status=%d body=%s", response.StatusCode, readBody(response))
+	}
+	response.Body.Close()
+
+	// 注销后原会话立即失效。
+	me := doJSON(t, server.URL+"/api/auth/me", http.MethodGet, nil, cookie)
+	if me.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("session after deactivate status=%d", me.StatusCode)
+	}
+	me.Body.Close()
+
+	// 已注销账号登录返回明确提示。
+	relogin := doJSON(t, server.URL+"/api/auth/login", http.MethodPost, map[string]string{"identifier": "quitter", "password": "member-password"}, nil)
+	if relogin.StatusCode != http.StatusForbidden || !strings.Contains(readBody(relogin), "已注销") {
+		t.Fatalf("relogin status=%d body=%s", relogin.StatusCode, readBody(relogin))
+	}
+	relogin.Body.Close()
+}
 
 func loginTestUser(t *testing.T, baseURL, identifier, password string) *http.Cookie {
 	t.Helper()

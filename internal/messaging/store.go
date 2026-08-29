@@ -22,10 +22,11 @@ var (
 )
 
 type Person struct {
-	ID         string `json:"id"`
-	Username   string `json:"username"`
-	Nickname   string `json:"nickname"`
-	AvatarPath string `json:"avatar_path"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Nickname    string `json:"nickname"`
+	AvatarPath  string `json:"avatar_path"`
+	Deactivated bool   `json:"deactivated,omitempty"`
 }
 
 type Attachment struct {
@@ -118,7 +119,7 @@ func (s *Store) ListConversations(ctx context.Context, actor identity.User) ([]C
 		WHERE cm.user_id = ?
 			AND (c.type = 'group' OR EXISTS(
 				SELECT 1 FROM conversation_members peer_cm JOIN users peer ON peer.id = peer_cm.user_id
-				WHERE peer_cm.conversation_id = c.id AND peer_cm.user_id <> ? AND peer.status = 'active'
+				WHERE peer_cm.conversation_id = c.id AND peer_cm.user_id <> ? AND peer.status IN ('active', 'deactivated')
 			))
 		ORDER BY c.updated_at DESC, c.id DESC`, actor.ID, actor.ID)
 	if err != nil {
@@ -374,7 +375,7 @@ func (s *Store) ListAdminGroupMessages(ctx context.Context, actor identity.User,
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
-	query := `SELECT m.id, m.conversation_id, c.title, u.id, u.username, p.nickname, p.avatar_path,
+	query := `SELECT m.id, m.conversation_id, c.title, u.id, u.username, p.nickname, p.avatar_path, u.status,
 		CASE WHEN m.status = 'recalled' THEN '' ELSE m.body END, m.status, m.created_at, (SELECT COUNT(*) FROM message_media mm WHERE mm.message_id = m.id)
 		FROM messages m JOIN conversations c ON c.id = m.conversation_id
 		JOIN users u ON u.id = m.sender_id JOIN profiles p ON p.user_id = u.id
@@ -400,9 +401,11 @@ func (s *Store) ListAdminGroupMessages(ctx context.Context, actor identity.User,
 	for rows.Next() {
 		var item AdminMessage
 		var created string
-		if err := rows.Scan(&item.ID, &item.ConversationID, &item.ConversationTitle, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath, &item.Body, &item.Status, &created, &item.AttachmentCount); err != nil {
+		var senderStatus string
+		if err := rows.Scan(&item.ID, &item.ConversationID, &item.ConversationTitle, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath, &senderStatus, &item.Body, &item.Status, &created, &item.AttachmentCount); err != nil {
 			return nil, err
 		}
+		item.Sender.Deactivated = senderStatus == "deactivated"
 		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		items = append(items, item)
 	}
@@ -442,7 +445,7 @@ func (s *Store) ListNotifications(ctx context.Context, actor identity.User, curs
 	}
 	args = append(args, limit+1)
 	rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.kind, n.target_type, n.target_id, n.title, n.body, n.created_at, n.read_at,
-		u.id, u.username, p.nickname, p.avatar_path
+		u.id, u.username, p.nickname, p.avatar_path, u.status
 		FROM notifications n LEFT JOIN users u ON u.id = n.actor_id LEFT JOIN profiles p ON p.user_id = u.id `+where+` ORDER BY n.created_at DESC, n.id DESC LIMIT ?`, args...)
 	if err != nil {
 		return NotificationPage{}, err
@@ -577,12 +580,14 @@ func (s *Store) requireMember(ctx context.Context, conversationID, userID string
 
 func (s *Store) directPeer(ctx context.Context, conversationID, actorID string) (Person, error) {
 	var peer Person
-	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path FROM conversation_members cm
+	var peerStatus string
+	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path, u.status FROM conversation_members cm
 		JOIN users u ON u.id = cm.user_id JOIN profiles p ON p.user_id = u.id
-		WHERE cm.conversation_id = ? AND cm.user_id <> ? AND u.status = 'active' LIMIT 1`, conversationID, actorID).Scan(&peer.ID, &peer.Username, &peer.Nickname, &peer.AvatarPath)
+		WHERE cm.conversation_id = ? AND cm.user_id <> ? AND u.status IN ('active', 'deactivated') LIMIT 1`, conversationID, actorID).Scan(&peer.ID, &peer.Username, &peer.Nickname, &peer.AvatarPath, &peerStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Person{}, ErrNotFound
 	}
+	peer.Deactivated = peerStatus == "deactivated"
 	return peer, err
 }
 
@@ -610,7 +615,7 @@ func (s *Store) messageByID(ctx context.Context, id string) (Message, error) {
 
 func messageSelect() string {
 	return `SELECT m.id, m.conversation_id, m.body, m.status, m.created_at, m.recalled_at,
-		u.id, u.username, p.nickname, p.avatar_path FROM messages m
+		u.id, u.username, p.nickname, p.avatar_path, u.status FROM messages m
 		JOIN users u ON u.id = m.sender_id JOIN profiles p ON p.user_id = u.id`
 }
 
@@ -620,9 +625,11 @@ func scanMessage(row scanner) (Message, error) {
 	item := Message{Attachments: []Attachment{}}
 	var created string
 	var recalled sql.NullString
-	if err := row.Scan(&item.ID, &item.ConversationID, &item.Body, &item.Status, &created, &recalled, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath); err != nil {
+	var senderStatus string
+	if err := row.Scan(&item.ID, &item.ConversationID, &item.Body, &item.Status, &created, &recalled, &item.Sender.ID, &item.Sender.Username, &item.Sender.Nickname, &item.Sender.AvatarPath, &senderStatus); err != nil {
 		return Message{}, err
 	}
+	item.Sender.Deactivated = senderStatus == "deactivated"
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	if recalled.Valid {
 		value, _ := time.Parse(time.RFC3339Nano, recalled.String)
@@ -674,8 +681,8 @@ func (s *Store) loadAttachments(ctx context.Context, item *Message) error {
 func scanNotification(row scanner) (Notification, error) {
 	var item Notification
 	var created string
-	var readAt, actorID, username, nickname, avatar sql.NullString
-	if err := row.Scan(&item.ID, &item.Kind, &item.TargetType, &item.TargetID, &item.Title, &item.Body, &created, &readAt, &actorID, &username, &nickname, &avatar); err != nil {
+	var readAt, actorID, username, nickname, avatar, actorStatus sql.NullString
+	if err := row.Scan(&item.ID, &item.Kind, &item.TargetType, &item.TargetID, &item.Title, &item.Body, &created, &readAt, &actorID, &username, &nickname, &avatar, &actorStatus); err != nil {
 		return Notification{}, err
 	}
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
@@ -684,7 +691,7 @@ func scanNotification(row scanner) (Notification, error) {
 		item.ReadAt = &value
 	}
 	if actorID.Valid {
-		item.Actor = &Person{ID: actorID.String, Username: username.String, Nickname: nickname.String, AvatarPath: avatar.String}
+		item.Actor = &Person{ID: actorID.String, Username: username.String, Nickname: nickname.String, AvatarPath: avatar.String, Deactivated: actorStatus.Valid && actorStatus.String == "deactivated"}
 	}
 	return item, nil
 }

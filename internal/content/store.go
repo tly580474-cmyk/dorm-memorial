@@ -41,10 +41,11 @@ func newRichTextPolicy() *bluemonday.Policy {
 }
 
 type Author struct {
-	ID         string `json:"id"`
-	Username   string `json:"username"`
-	Nickname   string `json:"nickname"`
-	AvatarPath string `json:"avatar_path"`
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	Nickname    string `json:"nickname"`
+	AvatarPath  string `json:"avatar_path"`
+	Deactivated bool   `json:"deactivated,omitempty"`
 }
 
 type Post struct {
@@ -330,7 +331,7 @@ func (s *Store) ListComments(ctx context.Context, actor identity.User, postID st
 	if post.Status != "published" {
 		return nil, ErrConflict
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.post_id, c.body, c.created_at, u.id, u.username, p.nickname, p.avatar_path
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.post_id, c.body, c.created_at, u.id, u.username, p.nickname, p.avatar_path, u.status
 		FROM comments c JOIN users u ON u.id = c.author_id JOIN profiles p ON p.user_id = u.id
 		WHERE c.post_id = ? AND c.status = 'visible' ORDER BY c.created_at, c.id LIMIT 500`, postID)
 	if err != nil {
@@ -340,10 +341,11 @@ func (s *Store) ListComments(ctx context.Context, actor identity.User, postID st
 	comments := []Comment{}
 	for rows.Next() {
 		var item Comment
-		var created string
-		if err := rows.Scan(&item.ID, &item.PostID, &item.Body, &created, &item.Author.ID, &item.Author.Username, &item.Author.Nickname, &item.Author.AvatarPath); err != nil {
+		var created, authorStatus string
+		if err := rows.Scan(&item.ID, &item.PostID, &item.Body, &created, &item.Author.ID, &item.Author.Username, &item.Author.Nickname, &item.Author.AvatarPath, &authorStatus); err != nil {
 			return nil, err
 		}
+		item.Author.Deactivated = authorStatus == "deactivated"
 		item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 		comments = append(comments, item)
 	}
@@ -719,7 +721,7 @@ func (s *Store) scanOne(ctx context.Context, viewerID, where string, args ...any
 func postSelect() string {
 	return `SELECT p.id, p.title, p.body, p.body_html, p.status, p.visibility, p.content_date, p.moderation_note,
 		p.submitted_at, p.published_at, p.created_at, p.updated_at, p.external_video_url,
-		u.id, u.username, pr.nickname, pr.avatar_path,
+		u.id, u.username, pr.nickname, pr.avatar_path, u.status,
 		(SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.status = 'visible'),
 		(SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id AND r.kind = 'like'),
 		EXISTS(SELECT 1 FROM reactions mine WHERE mine.post_id = p.id AND mine.user_id = ? AND mine.kind = 'like')
@@ -729,14 +731,15 @@ func postSelect() string {
 func scanPost(row scanner) (Post, error) {
 	var post Post
 	var contentDate, submittedAt, publishedAt sql.NullString
-	var createdAt, updatedAt string
+	var createdAt, updatedAt, authorStatus string
 	err := row.Scan(&post.ID, &post.Title, &post.Body, &post.BodyHTML, &post.Status, &post.Visibility, &contentDate, &post.ModerationNote,
 		&submittedAt, &publishedAt, &createdAt, &updatedAt, &post.ExternalVideoURL,
-		&post.Author.ID, &post.Author.Username, &post.Author.Nickname, &post.Author.AvatarPath,
+		&post.Author.ID, &post.Author.Username, &post.Author.Nickname, &post.Author.AvatarPath, &authorStatus,
 		&post.CommentCount, &post.LikeCount, &post.LikedByMe)
 	if err != nil {
 		return Post{}, err
 	}
+	post.Author.Deactivated = authorStatus == "deactivated"
 	post.ContentDate = parseOptionalTime(contentDate)
 	post.SubmittedAt = parseOptionalTime(submittedAt)
 	post.PublishedAt = parseOptionalTime(publishedAt)
@@ -808,8 +811,8 @@ func (s *Store) getGuestbookEntry(ctx context.Context, id string) (GuestbookEntr
 
 func guestbookSelect() string {
 	return `SELECT g.id, g.body, g.external_video_url, g.status, g.created_at, g.updated_at,
-		a.id, a.username, ap.nickname, ap.avatar_path,
-		r.id, r.username, rp.nickname, rp.avatar_path
+		a.id, a.username, ap.nickname, ap.avatar_path, a.status,
+		r.id, r.username, rp.nickname, rp.avatar_path, r.status
 		FROM guestbook_entries g
 		JOIN users a ON a.id = g.author_id JOIN profiles ap ON ap.user_id = a.id
 		LEFT JOIN users r ON r.id = g.recipient_id LEFT JOIN profiles rp ON rp.user_id = r.id`
@@ -818,18 +821,20 @@ func guestbookSelect() string {
 func scanGuestbookEntry(row scanner) (GuestbookEntry, error) {
 	var entry GuestbookEntry
 	var created, updated string
+	var authorStatus, recipientStatus sql.NullString
 	var recipientID, recipientUsername, recipientNickname, recipientAvatar sql.NullString
 	err := row.Scan(&entry.ID, &entry.Body, &entry.ExternalVideoURL, &entry.Status, &created, &updated,
-		&entry.Author.ID, &entry.Author.Username, &entry.Author.Nickname, &entry.Author.AvatarPath,
-		&recipientID, &recipientUsername, &recipientNickname, &recipientAvatar)
+		&entry.Author.ID, &entry.Author.Username, &entry.Author.Nickname, &entry.Author.AvatarPath, &authorStatus,
+		&recipientID, &recipientUsername, &recipientNickname, &recipientAvatar, &recipientStatus)
 	if err != nil {
 		return GuestbookEntry{}, err
 	}
+	entry.Author.Deactivated = authorStatus.Valid && authorStatus.String == "deactivated"
 	entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	entry.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	entry.Media = []Media{}
 	if recipientID.Valid {
-		entry.Recipient = &Author{ID: recipientID.String, Username: recipientUsername.String, Nickname: recipientNickname.String, AvatarPath: recipientAvatar.String}
+		entry.Recipient = &Author{ID: recipientID.String, Username: recipientUsername.String, Nickname: recipientNickname.String, AvatarPath: recipientAvatar.String, Deactivated: recipientStatus.Valid && recipientStatus.String == "deactivated"}
 	}
 	return entry, nil
 }

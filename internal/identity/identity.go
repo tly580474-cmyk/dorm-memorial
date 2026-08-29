@@ -20,6 +20,7 @@ import (
 
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrAccountDeactivated = errors.New("account deactivated")
 	ErrInviteInvalid      = errors.New("invite is invalid or expired")
 	ErrConflict           = errors.New("username or email already exists")
 	ErrForbidden          = errors.New("forbidden")
@@ -48,6 +49,7 @@ type Member struct {
 	Bio          string `json:"bio"`
 	BedNo        string `json:"bed_no"`
 	MemorialNote string `json:"memorial_note"`
+	Deactivated  bool   `json:"deactivated,omitempty"`
 }
 
 type AdminUser struct {
@@ -101,8 +103,8 @@ type Store struct {
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
 func (s *Store) ListMembers(ctx context.Context) ([]Member, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path, p.bio, p.bed_no, p.memorial_note
-		FROM users u JOIN profiles p ON p.user_id = u.id WHERE u.status = 'active' ORDER BY p.nickname COLLATE NOCASE, u.username COLLATE NOCASE`)
+	rows, err := s.db.QueryContext(ctx, `SELECT u.id, u.username, p.nickname, p.avatar_path, p.bio, p.bed_no, p.memorial_note, u.status = 'deactivated'
+		FROM users u JOIN profiles p ON p.user_id = u.id WHERE u.status IN ('active', 'deactivated') ORDER BY p.nickname COLLATE NOCASE, u.username COLLATE NOCASE`)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +112,7 @@ func (s *Store) ListMembers(ctx context.Context) ([]Member, error) {
 	members := []Member{}
 	for rows.Next() {
 		var member Member
-		if err := rows.Scan(&member.ID, &member.Username, &member.Nickname, &member.AvatarPath, &member.Bio, &member.BedNo, &member.MemorialNote); err != nil {
+		if err := rows.Scan(&member.ID, &member.Username, &member.Nickname, &member.AvatarPath, &member.Bio, &member.BedNo, &member.MemorialNote, &member.Deactivated); err != nil {
 			return nil, err
 		}
 		members = append(members, member)
@@ -136,7 +138,7 @@ func (s *Store) ListAdminUsers(ctx context.Context, actor User, search, role, st
 		query += ` AND u.role = ?`
 		args = append(args, role)
 	}
-	if status == "active" || status == "disabled" {
+	if status == "active" || status == "disabled" || status == "deactivated" {
 		query += ` AND u.status = ?`
 		args = append(args, status)
 	}
@@ -164,7 +166,7 @@ func (s *Store) UpdateAdminUser(ctx context.Context, actor User, targetID string
 		return AdminUser{}, ErrForbidden
 	}
 	input.Role, input.Status = strings.TrimSpace(input.Role), strings.TrimSpace(input.Status)
-	if (input.Role != "admin" && input.Role != "member") || (input.Status != "active" && input.Status != "disabled") {
+	if (input.Role != "admin" && input.Role != "member") || (input.Status != "active" && input.Status != "disabled" && input.Status != "deactivated") {
 		return AdminUser{}, errors.New("invalid user role or status")
 	}
 	if targetID == actor.ID && (input.Role != actor.Role || input.Status != actor.Status) {
@@ -194,7 +196,7 @@ func (s *Store) UpdateAdminUser(ctx context.Context, actor User, targetID string
 	if _, err := tx.ExecContext(ctx, `UPDATE users SET role = ?, status = ?, updated_at = ? WHERE id = ?`, input.Role, input.Status, now, targetID); err != nil {
 		return AdminUser{}, err
 	}
-	if input.Status == "disabled" {
+	if input.Status == "disabled" || input.Status == "deactivated" {
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, now, targetID); err != nil {
 			return AdminUser{}, err
 		}
@@ -322,10 +324,47 @@ func (s *Store) Authenticate(ctx context.Context, identifier, password string) (
 		&user.ID, &user.Username, &user.Email, &passwordHash, &user.Role, &user.Status,
 		&user.Nickname, &user.Bio, &user.BedNo, &user.MemorialNote, &user.AvatarPath,
 	)
-	if err != nil || user.Status != "active" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+		return User{}, ErrInvalidCredentials
+	}
+	if user.Status != "active" {
+		if user.Status == "deactivated" {
+			return User{}, ErrAccountDeactivated
+		}
 		return User{}, ErrInvalidCredentials
 	}
 	return user, nil
+}
+
+// SelfDeactivate 注销当前账号但不删除任何历史内容：置为 deactivated、
+// 撤销全部会话并记录审计日志。管理员可在后台将其恢复为 active。
+func (s *Store) SelfDeactivate(ctx context.Context, actor User, password, ip string) error {
+	var passwordHash string
+	if err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id = ? AND status = 'active'`, actor.ID).Scan(&passwordHash); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+		return ErrInvalidCredentials
+	}
+	now := nowText()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET status = 'deactivated', updated_at = ? WHERE id = ? AND status = 'active'`, now, actor.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, now, actor.ID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'account.deactivate', 'user', ?, ?, ?)`, actor.ID, actor.ID, ip, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) UserByID(ctx context.Context, id string) (User, error) {

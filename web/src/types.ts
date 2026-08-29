@@ -3,12 +3,20 @@ export interface User {
   username: string
   email: string
   role: 'admin' | 'member'
-  status: 'active' | 'disabled'
+  status: 'active' | 'disabled' | 'deactivated'
   nickname: string
   bio: string
   bed_no: string
   memorial_note: string
   avatar_path: string
+}
+
+export interface Author {
+  id: string
+  username: string
+  nickname: string
+  avatar_path: string
+  deactivated?: boolean
 }
 
 export interface AdminUser extends User {
@@ -72,7 +80,7 @@ export interface MediaUsage {
 
 export interface Post {
   id: string
-  author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+  author: Author
   title: string
   body: string
   body_html: string
@@ -100,17 +108,17 @@ export interface PostPage {
 export interface Comment {
   id: string
   post_id: string
-  author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+  author: Author
   body: string
   created_at: string
 }
 
-export type Member = Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path' | 'bio' | 'bed_no' | 'memorial_note'>
+export type Member = Omit<User, 'email' | 'role' | 'status' | 'avatar_path'> & { avatar_path: string; deactivated?: boolean }
 
 export interface GuestbookEntry {
   id: string
-  author: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
-  recipient: Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'> | null
+  author: Author
+  recipient: Author | null
   body: string
   status: 'visible' | 'hidden' | 'deleted'
   created_at: string
@@ -124,7 +132,7 @@ export interface GuestbookPage {
   next_cursor?: string
 }
 
-export type MessagePerson = Pick<User, 'id' | 'username' | 'nickname' | 'avatar_path'>
+export type MessagePerson = Author
 
 export interface MessageAttachment {
   id: string
