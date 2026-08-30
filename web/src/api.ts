@@ -2,7 +2,7 @@ import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Convers
 
 type ApiErrorBody = { error?: { message?: string } }
 export type MediaProcessingPhase = 'staged' | 'transcoding' | 'uploading' | 'verifying' | 'completed' | 'failed'
-export type MediaProcessingStep = 'encoding' | 'finalizing' | ''
+export type MediaProcessingStep = 'probing' | 'encoding' | 'finalizing' | ''
 export type MediaProcessingJob = { id: string; media_id: string; phase: MediaProcessingPhase; step: MediaProcessingStep; encoder: string; error_code: string; media?: Media }
 
 export class ApiError extends Error {
@@ -44,25 +44,44 @@ const processingErrorLabels: Record<string, string> = {
   database_failed: '处理结果保存失败',
 }
 
-async function waitForMediaProcessing(jobID: string, onPhase: (job: MediaProcessingJob) => void) {
+export async function waitForMediaProcessing(jobID: string, onPhase: (job: MediaProcessingJob) => void) {
   let consecutiveErrors = 0
-  for (;;) {
-    let response: { job: MediaProcessingJob; usage: MediaUsage }
+  let pollDelay = 1500
+  let includeUsage = false
+  // The server's job deadline is two hours; allow a short margin without polling forever.
+  const deadline = Date.now() + 130 * 60 * 1000
+  while (Date.now() < deadline) {
+    let response: { job: MediaProcessingJob; usage?: MediaUsage }
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), 15000)
     try {
-      response = await request<{ job: MediaProcessingJob; usage: MediaUsage }>(`/api/media-upload-jobs/${encodeURIComponent(jobID)}`)
+      response = await request<{ job: MediaProcessingJob; usage?: MediaUsage }>(`/api/media-upload-jobs/${encodeURIComponent(jobID)}${includeUsage ? '' : '?include_usage=0'}`, { signal: controller.signal })
       consecutiveErrors = 0
     } catch (error) {
-      if (error instanceof ApiError && (error.status === 401 || error.status === 403)) throw error
+      if (error instanceof ApiError && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) throw error
       consecutiveErrors += 1
       if (consecutiveErrors >= 20) throw error
-      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+      window.clearTimeout(timeout)
+      await new Promise((resolve) => window.setTimeout(resolve, pollDelay))
+      pollDelay = Math.min(5000, Math.round(pollDelay * 1.5))
       continue
+    } finally {
+      window.clearTimeout(timeout)
     }
     onPhase(response.job)
-    if (response.job.phase === 'completed' && response.job.media) return { media: response.job.media, usage: response.usage }
+    if (response.job.phase === 'completed') {
+      if (!response.job.media) throw new ApiError('视频处理完成，但服务器未返回媒体记录，请刷新页面', 502)
+      if (response.usage) return { media: response.job.media, usage: response.usage }
+      if (includeUsage) throw new ApiError('视频处理完成，但无法获取存储用量，请刷新页面', 502)
+      // Older servers may include usage on every response. New servers calculate it only once here.
+      includeUsage = true
+      continue
+    }
     if (response.job.phase === 'failed') throw new ApiError(processingErrorLabels[response.job.error_code] ?? '视频处理失败，请重新上传', 500)
-    await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    await new Promise((resolve) => window.setTimeout(resolve, pollDelay))
+    pollDelay = Math.min(5000, Math.round(pollDelay * 1.5))
   }
+  throw new ApiError('视频处理等待超时，请刷新页面检查处理结果', 408)
 }
 
 export const api = {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"dorm-memorial/internal/storage"
@@ -216,7 +217,7 @@ func extractVideoFrame(ctx context.Context, ffmpegPath, inputPath, outputPath st
 
 // buildVideoPlayback creates a broadly compatible, bounded-bitrate web
 // rendition while preserving the uploaded original for downloads.
-func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID, createdText string) (string, string, int64) {
+func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID, createdText string, encoderPreferences ...string) (string, string, int64) {
 	body, err := objects.Open(ctx, objectPath)
 	if err != nil {
 		return "", "", 0
@@ -227,8 +228,10 @@ func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmp
 		return "", "", 0
 	}
 	inputPath := input.Name()
+	defer input.Close()
 	defer os.Remove(inputPath)
-	if _, err = io.Copy(input, body); err != nil || input.Close() != nil {
+	size, err := io.Copy(input, body)
+	if closeErr := input.Close(); err != nil || closeErr != nil {
 		return "", "", 0
 	}
 	output, err := os.CreateTemp("", "dorm-video-playback-*.mp4")
@@ -239,8 +242,16 @@ func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmp
 	output.Close()
 	defer os.Remove(outputPath)
 
-	if _, err := transcodeVideoFile(ctx, ffmpegPath, "cpu", inputPath, outputPath, 2000); err != nil {
+	preference := "auto"
+	if len(encoderPreferences) > 0 && strings.TrimSpace(encoderPreferences[0]) != "" {
+		preference = encoderPreferences[0]
+	}
+	prepared, err := prepareVideoPlaybackFile(ctx, ffmpegPath, preference, inputPath, outputPath, size, 0, nil)
+	if err != nil {
 		return "", "", 0
+	}
+	if prepared.UseOriginal {
+		return objectPath, "video/mp4", size
 	}
 	file, err := os.Open(outputPath)
 	if err != nil {
@@ -270,7 +281,13 @@ func transcodeVideoFile(ctx context.Context, ffmpegPath, preference, inputPath, 
 // Fast Start remux. This lets callers stop reporting GPU activity as soon as
 // the encoder exits, while the file is still being finalized on disk.
 func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference, inputPath, outputPath string, targetKbps int, onStep func(step, encoder string)) (string, error) {
-	available := ffmpegEncoders(ctx, ffmpegPath)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	available := ""
+	if !strings.EqualFold(strings.TrimSpace(preference), "cpu") {
+		available = ffmpegEncoders(ctx, ffmpegPath)
+	}
 	candidates := videoEncoderCandidates(preference, available)
 	encodedPath := outputPath + ".encoded.mp4"
 	defer os.Remove(encodedPath)
@@ -293,6 +310,9 @@ func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference,
 		cancel()
 		if err != nil {
 			lastErr = fmt.Errorf("%s: %w: %s", encoder, err, bytes.TrimSpace(output))
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
 			continue
 		}
 		info, statErr := os.Stat(encodedPath)
@@ -303,15 +323,15 @@ func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference,
 		if onStep != nil {
 			onStep("finalizing", encoder)
 		}
-		if err := RemuxMP4FastStart(ctx, ffmpegPath, encodedPath, outputPath); err != nil {
-			lastErr = fmt.Errorf("%s Fast Start remux: %w", encoder, err)
-			continue
+		if err := remuxVideoPlayback(ctx, ffmpegPath, encodedPath, outputPath); err != nil {
+			// Encoding already succeeded. A disk/container error must not start
+			// another expensive encode with a different hardware backend.
+			return encoder, fmt.Errorf("%s Fast Start remux: %w", encoder, err)
 		}
 		info, statErr = os.Stat(outputPath)
 		fastStart, fastStartErr := MP4FastStart(outputPath)
 		if statErr != nil || info.Size() <= 0 || fastStartErr != nil || !fastStart {
-			lastErr = fmt.Errorf("%s produced an invalid fast-start MP4", encoder)
-			continue
+			return encoder, fmt.Errorf("%s produced an invalid fast-start MP4", encoder)
 		}
 		return encoder, nil
 	}
@@ -321,14 +341,34 @@ func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference,
 	return "", lastErr
 }
 
+var videoEncoderCache = struct {
+	sync.Mutex
+	entries map[string]videoEncoderCacheEntry
+}{entries: make(map[string]videoEncoderCacheEntry)}
+
+type videoEncoderCacheEntry struct {
+	output    string
+	expiresAt time.Time
+}
+
 func ffmpegEncoders(ctx context.Context, ffmpegPath string) string {
+	videoEncoderCache.Lock()
+	entry, found := videoEncoderCache.entries[ffmpegPath]
+	videoEncoderCache.Unlock()
+	if found && time.Now().Before(entry.expiresAt) {
+		return entry.output
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(probeCtx, ffmpegPath, "-hide_banner", "-encoders").CombinedOutput()
 	if err != nil {
 		return ""
 	}
-	return string(output)
+	result := string(output)
+	videoEncoderCache.Lock()
+	videoEncoderCache.entries[ffmpegPath] = videoEncoderCacheEntry{output: result, expiresAt: time.Now().Add(10 * time.Minute)}
+	videoEncoderCache.Unlock()
+	return result
 }
 
 func videoEncoderCandidates(preference, available string) []string {
@@ -374,22 +414,23 @@ func targetVideoBitrateKbps(sizeBytes, durationMS int64) int {
 	if sizeBytes <= 0 || durationMS <= 0 {
 		return 2000
 	}
-	sourceTotalKbps := sizeBytes * 8 / durationMS
-	target := int(sourceTotalKbps*3/2) - 128
+	// Preserve the source bitrate budget instead of inflating it by 50%.
+	// Float arithmetic also avoids overflowing for untrusted size metadata.
+	target := float64(sizeBytes)*8/float64(durationMS) - 128
 	if target < 700 {
 		return 700
 	}
 	if target > 4000 {
 		return 4000
 	}
-	return target
+	return int(target)
 }
 
 func videoFilter(targetKbps int) string {
 	if targetKbps > 0 && targetKbps < 1500 {
-		return "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30"
+		return "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps='if(gt(source_fps,0),min(source_fps,30),30)'"
 	}
-	return "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30"
+	return "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps='if(gt(source_fps,0),min(source_fps,30),30)'"
 }
 
 func containsString(values []string, target string) bool {

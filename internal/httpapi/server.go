@@ -853,8 +853,17 @@ func (s *Server) mediaUploadStatus(w http.ResponseWriter, r *http.Request) {
 		writeMediaError(w, err)
 		return
 	}
-	usage, _ := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"job": job, "usage": usage})
+	response := map[string]any{"job": job}
+	if r.URL.Query().Get("include_usage") != "0" {
+		usage, err := s.media.Usage(r.Context(), mustPrincipal(r).User.ID)
+		if err != nil {
+			writeMediaError(w, err)
+			return
+		}
+		response["usage"] = usage
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, response)
 }
 
 func parsePositiveHeader(value string) int {
@@ -894,13 +903,29 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 	if variant == "" {
 		variant = "original"
 	}
-	if variant != "original" && variant != "preview" && variant != "display" && variant != "playback" {
+	if variant != "original" && variant != "preview" && variant != "display" && variant != "playback" && variant != "watch" {
 		writeError(w, http.StatusBadRequest, "不支持的媒体版本")
 		return
 	}
+	requestedVariant := variant
+	if variant == "watch" {
+		if descriptor.MediaType != "video" {
+			writeError(w, http.StatusBadRequest, "播放资源只适用于视频")
+			return
+		}
+		variant = "original"
+		if descriptor.PlaybackPath != "" {
+			variant = "playback"
+		}
+	}
 	etag := `"media-` + r.PathValue("id") + `-` + variant + `"`
+	w.Header().Set("X-Media-Variant", variant)
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, max-age=604800, immutable")
+	if requestedVariant == "watch" {
+		// A legacy upload may gain a prepared rendition after this URL was read.
+		w.Header().Set("Cache-Control", "private, no-cache")
+	}
 	if r.Header.Get("Range") == "" && r.Header.Get("If-None-Match") == etag {
 		w.Header().Set("Server-Timing", trace.ServerTiming())
 		w.WriteHeader(http.StatusNotModified)
@@ -1064,6 +1089,7 @@ func writeMediaError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, mediastore.ErrPreviewPending):
 		w.Header().Set("Retry-After", "2")
+		w.Header().Set("X-Media-State", "preparing")
 		writeError(w, http.StatusServiceUnavailable, "媒体版本正在生成，请稍后重试")
 	case errors.Is(err, mediastore.ErrNotFound):
 		writeError(w, http.StatusNotFound, "媒体不存在")

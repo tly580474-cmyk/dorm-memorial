@@ -143,6 +143,10 @@ func TestStageVideoCompletesInBackground(t *testing.T) {
 	if err != nil {
 		t.Skip("ffmpeg is not installed")
 	}
+	wantEncoder := "copy"
+	if _, err := findFFprobe(ffmpegPath); err != nil {
+		wantEncoder = "libx264"
+	}
 	dir := t.TempDir()
 	sourcePath := filepath.Join(dir, "source.mp4")
 	command := exec.Command(ffmpegPath, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=12", "-t", "1", "-pix_fmt", "yuv420p", "-y", sourcePath)
@@ -173,7 +177,7 @@ func TestStageVideoCompletesInBackground(t *testing.T) {
 			t.Fatal(err)
 		}
 		if status.Phase == "completed" {
-			if status.Media == nil || status.Media.Status != "ready" || !status.Media.HasPreview || status.Encoder != "libx264" {
+			if status.Media == nil || status.Media.Status != "ready" || !status.Media.HasPreview || status.Encoder != wantEncoder {
 				t.Fatalf("completed status=%+v", status)
 			}
 			break
@@ -194,8 +198,8 @@ func TestStageVideoCompletesInBackground(t *testing.T) {
 }
 
 func TestTargetVideoBitrateBoundsOutputGrowth(t *testing.T) {
-	if got := targetVideoBitrateKbps(116_809_613, 1_521_706); got != 793 {
-		t.Fatalf("target bitrate=%d kbps, want 793", got)
+	if got := targetVideoBitrateKbps(116_809_613, 1_521_706); got != 700 {
+		t.Fatalf("target bitrate=%d kbps, want 700", got)
 	}
 	if got := targetVideoBitrateKbps(1, 10_000); got != 700 {
 		t.Fatalf("minimum bitrate=%d", got)

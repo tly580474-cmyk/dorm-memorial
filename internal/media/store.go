@@ -516,7 +516,11 @@ func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force
 }
 
 func (s *Store) deleteVariantObjects(ctx context.Context, mediaID string) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT object_path FROM media_variants WHERE media_id = ?`, mediaID)
+	// A compatible original may also be the playback rendition. The caller
+	// already deletes the original and poster, so delete each distinct extra
+	// object only once.
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT v.object_path FROM media_variants v JOIN media m ON m.id = v.media_id
+		WHERE v.media_id = ? AND v.object_path <> m.object_path AND v.object_path <> m.preview_path`, mediaID)
 	if err != nil {
 		return err
 	}
@@ -623,9 +627,6 @@ func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor
 	if variant == "playback" && mediaType != "video" || variant == "display" && mediaType != "image" {
 		return Content{}, ErrInvalid
 	}
-	if variant != "preview" && mediaType == "video" {
-		s.scheduleWarm(objectPath)
-	}
 	if byteRange != "" {
 		if ranged, ok := s.objects.(storage.RangeStorage); ok {
 			response, err := ranged.OpenRange(ctx, objectPath, byteRange)
@@ -640,16 +641,6 @@ func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor
 		return Content{}, fmt.Errorf("open object: %w", errors.Join(ErrStorageUnavailable, err))
 	}
 	return Content{Body: body, StatusCode: http.StatusOK, MimeType: mimeType, Filename: filename, ContentLength: size, AcceptRanges: "bytes"}, nil
-}
-
-func (s *Store) scheduleWarm(objectPath string) {
-	warmer, ok := s.objects.(storage.CacheWarmer)
-	if !ok || warmer.IsCached(objectPath) {
-		return
-	}
-	s.runBackground("warm:"+objectPath, func(ctx context.Context) {
-		_ = warmer.Warm(ctx, objectPath)
-	})
 }
 
 func (s *Store) scheduleVideoPreview(descriptor ContentDescriptor) {
@@ -670,7 +661,7 @@ func (s *Store) scheduleVideoPlayback(descriptor ContentDescriptor) {
 		case <-ctx.Done():
 			return
 		}
-		path, mimeType, size := buildVideoPlayback(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText)
+		path, mimeType, size := buildVideoPlayback(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText, s.videoEncoder)
 		if path == "" || size <= 0 {
 			return
 		}

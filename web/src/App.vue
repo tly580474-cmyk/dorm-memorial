@@ -1365,11 +1365,17 @@ function mediaProcessingLabel(item: EditorMedia) {
   if (item.status !== 'processing') return ''
   const accelerator = item.encoder === 'h264_nvenc' ? 'NVIDIA GPU' : item.encoder === 'h264_qsv' ? 'Intel GPU' : item.encoder === 'h264_amf' ? 'AMD GPU' : item.encoder === 'libx264' ? 'CPU' : ''
   switch (item.processingPhase) {
-    case 'staged': return '已上传到服务器，等待转码'
-    case 'transcoding': return item.processingStep === 'finalizing'
+    case 'staged': return '已上传到服务器，等待处理'
+    case 'transcoding': return item.processingStep === 'probing'
+      ? '正在检测视频格式与播放兼容性'
+      : item.encoder === 'original'
+      ? '原文件可直接播放，正在生成封面'
+      : item.encoder === 'copy'
+      ? '正在优化 MP4 封装并生成封面'
+      : item.processingStep === 'finalizing'
       ? `${accelerator || '视频'}编码已完成，正在执行 Fast Start 封装并生成封面`
       : `正在${accelerator ? `使用 ${accelerator} ` : ''}编码为 H.264/AAC`
-    case 'uploading': return '转码完成，正在上传到 AList'
+    case 'uploading': return '视频处理完成，正在上传到 AList'
     case 'verifying': return '正在校验 AList 中的文件'
     default: return '服务器正在处理视频'
   }

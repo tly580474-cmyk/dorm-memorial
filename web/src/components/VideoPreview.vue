@@ -20,8 +20,15 @@ const props = withDefaults(defineProps<{
 const active = ref(false)
 const videoFailed = ref(false)
 const videoRetry = ref(0)
-const useCompatible = ref(false)
+const selectedVariant = ref<'playback' | 'original' | ''>('')
+type Failure = 'checking' | 'preparing' | 'network' | 'permission' | 'missing' | 'unsupported' | 'unavailable' | 'external'
+const failure = ref<Failure>('checking')
+const automaticRetry = ref(false)
+let automaticAttempts = 0
 let videoRetryTimer = 0
+let diagnosticTimeout = 0
+let diagnostic: AbortController | undefined
+let disposed = false
 const posterFailed = ref(false)
 const posterRetry = ref(0)
 let posterRetryTimer = 0
@@ -32,6 +39,7 @@ const posterSrc = computed(() => {
 })
 function onPosterError() {
 	posterFailed.value = true
+	window.clearTimeout(posterRetryTimer)
 	if (posterRetry.value >= 5) return
 	const delay = Math.min(8000, 1000 * 2 ** posterRetry.value)
 	posterRetryTimer = window.setTimeout(() => {
@@ -39,40 +47,114 @@ function onPosterError() {
 		posterFailed.value = false
 	}, delay)
 }
-function onVideoError() {
-	if (!props.external && !useCompatible.value) {
-		useCompatible.value = true
-		videoFailed.value = false
-		videoRetry.value = 0
-		return
-	}
-	videoFailed.value = true
-	if (props.external || videoRetry.value >= 36) return
-	const delay = Math.min(10000, 1500 * 2 ** Math.min(videoRetry.value, 3))
+const internalSource = computed(() => {
+	if (props.external) return false
+	try {
+		const url = new URL(props.src, window.location.href)
+		return url.origin === window.location.origin && /^\/api\/media\/[^/]+\/content$/.test(url.pathname)
+	} catch { return false }
+})
+function scheduleRetry(kind: 'preparing' | 'network', retryAfter = 0) {
+	failure.value = kind
+	const limit = kind === 'preparing' ? 18 : 3
+	if (automaticAttempts >= limit) return
+	const delay = Math.min(10000, Math.max(retryAfter, 1500 * 2 ** Math.min(automaticAttempts, 3)))
+	automaticAttempts += 1
+	automaticRetry.value = true
 	videoRetryTimer = window.setTimeout(() => {
+		automaticRetry.value = false
 		videoRetry.value += 1
 		videoFailed.value = false
 	}, delay)
 }
+async function onVideoError(event: Event) {
+	if (diagnostic || disposed) return
+	window.clearTimeout(videoRetryTimer)
+	automaticRetry.value = false
+	videoFailed.value = true
+	if (!internalSource.value) { failure.value = 'external'; return }
+	failure.value = 'checking'
+	const errorCode = (event.currentTarget as HTMLVideoElement).error?.code
+	const controller = new AbortController()
+	diagnostic = controller
+	diagnosticTimeout = window.setTimeout(() => controller.abort(), 8000)
+	try {
+		// Read only one byte, then cancel even when storage ignores Range. Never download a video to diagnose it.
+		const response = await fetch(playbackSrc.value, {
+			headers: { Range: 'bytes=0-0' }, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+		})
+		void response.body?.cancel().catch(() => undefined)
+		if (disposed || diagnostic !== controller) return
+		if (response.status === 401 || response.status === 403) { failure.value = 'permission'; return }
+		if (response.status === 404 || response.status === 410) { failure.value = 'missing'; return }
+		if (response.status === 503 && response.headers.get('X-Media-State') === 'preparing') {
+			scheduleRetry('preparing', Math.max(0, Number(response.headers.get('Retry-After')) || 0) * 1000)
+			return
+		}
+		if (response.ok && (errorCode === 3 || errorCode === 4)) {
+			if (response.headers.get('X-Media-Variant') === 'original' && selectedVariant.value !== 'original' && selectedVariant.value !== 'playback') {
+				selectedVariant.value = 'playback'
+				videoFailed.value = false
+			} else failure.value = 'unsupported'
+			return
+		}
+		if (response.ok || response.status >= 500 || response.status === 408 || response.status === 429) scheduleRetry('network')
+		else failure.value = 'unavailable'
+	} catch {
+		if (!disposed && diagnostic === controller) scheduleRetry('network')
+	} finally {
+		if (diagnostic === controller) {
+			window.clearTimeout(diagnosticTimeout)
+			diagnostic = undefined
+		}
+		controller.abort()
+	}
+}
 onBeforeUnmount(() => {
+	disposed = true
 	window.clearTimeout(posterRetryTimer)
 	window.clearTimeout(videoRetryTimer)
+	window.clearTimeout(diagnosticTimeout)
+	diagnostic?.abort()
+	diagnostic = undefined
 })
 const sourceLabel = computed(() => props.external ? '外链视频' : '上传视频')
 const playbackSrc = computed(() => {
-	const base = props.external || !useCompatible.value || props.src.includes('variant=') ? props.src : `${props.src}${props.src.includes('?') ? '&' : '?'}variant=playback`
-	return videoRetry.value ? `${base}${base.includes('?') ? '&' : '?'}playback_retry=${videoRetry.value}` : base
+	if (!internalSource.value) return props.src
+	const url = new URL(props.src, window.location.href)
+	if (selectedVariant.value) url.searchParams.set('variant', selectedVariant.value)
+	else if (!url.searchParams.has('variant')) url.searchParams.set('variant', 'watch')
+	if (videoRetry.value) url.searchParams.set('playback_retry', String(videoRetry.value))
+	return props.src.startsWith('/') ? `${url.pathname}${url.search}${url.hash}` : url.href
+})
+const failureTitle = computed(() => ({
+	checking: '正在检查视频状态…',
+	preparing: automaticRetry.value ? '正在准备兼容播放版本…' : '兼容播放版本仍在准备中',
+	network: '视频暂时无法加载', permission: '无权访问此视频', missing: '视频不存在或已被删除',
+	unsupported: '浏览器无法解码此视频', unavailable: '视频暂时不可用', external: '外链视频暂时无法播放',
+})[failure.value])
+const failureDetail = computed(() => {
+	if (failure.value === 'checking') return '正在确认访问权限和文件状态'
+	if (failure.value === 'preparing') return automaticRetry.value ? '服务器已确认正在处理，请稍候' : '已停止自动重试；请稍后重试，或尝试原文件'
+	if (failure.value === 'permission') return '请登录有访问权限的账号后重试'
+	if (failure.value === 'missing') return '请联系上传者确认文件是否仍可访问'
+	if (failure.value === 'external') return '请检查原网站后重新尝试'
+	if (failure.value === 'unsupported') return '可以重试，或尝试播放原文件'
+	return automaticRetry.value ? '网络或媒体存储暂时不可用，稍后自动重试' : '已停止自动重试，请检查网络后重试'
 })
 function retryVideo() {
 	window.clearTimeout(videoRetryTimer)
+	window.clearTimeout(diagnosticTimeout)
+	diagnostic?.abort()
+	diagnostic = undefined
+	automaticAttempts = 0
+	automaticRetry.value = false
 	videoRetry.value += 1
 	videoFailed.value = false
 }
 function retryOriginal() {
-	window.clearTimeout(videoRetryTimer)
-	useCompatible.value = false
-	videoRetry.value = 0
-	videoFailed.value = false
+	selectedVariant.value = 'original'
+	retryVideo()
 }
 </script>
 
@@ -88,8 +170,8 @@ function retryOriginal() {
         allowfullscreen
       ></iframe>
 	  <template v-else>
-		<video v-show="!videoFailed" :key="playbackSrc" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline :aria-label="title" @error="onVideoError"></video>
-		<div v-if="videoFailed" class="video-preparing" :role="external || videoRetry >= 36 ? 'alert' : 'status'" aria-live="polite"><span v-if="!external && videoRetry < 36"></span><strong>{{ external || videoRetry >= 36 ? '视频暂时无法播放' : '正在准备兼容播放版本…' }}</strong><small>{{ external ? '请检查原网站后重新尝试' : videoRetry >= 36 ? '可以重试，或尝试播放原文件' : '原文件不兼容，首次处理可能需要一些时间' }}</small><div v-if="external || videoRetry >= 36" class="video-recovery"><button type="button" @click="retryVideo">重新尝试</button><button v-if="!external" type="button" @click="retryOriginal">尝试原文件</button></div></div>
+		<video v-show="!videoFailed" :key="`${playbackSrc}:${videoRetry}`" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline :aria-label="title" @error="onVideoError"></video>
+		<div v-if="videoFailed" class="video-preparing" :role="failure === 'checking' || automaticRetry ? 'status' : 'alert'" aria-live="polite"><span v-if="failure === 'checking' || automaticRetry"></span><strong>{{ failureTitle }}</strong><small>{{ failureDetail }}</small><div v-if="failure !== 'checking' && !automaticRetry" class="video-recovery"><button type="button" @click="retryVideo">重新尝试</button><button v-if="internalSource && failure !== 'permission' && failure !== 'missing' && selectedVariant !== 'original'" type="button" @click="retryOriginal">尝试原文件</button></div></div>
 	  </template>
     </template>
     <button v-else type="button" :aria-label="`播放${sourceLabel}：${title}`" @click="active = true">
