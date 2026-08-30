@@ -55,6 +55,22 @@ const internalSource = computed(() => {
 		return url.origin === window.location.origin && /^\/api\/media\/[^/]+\/content$/.test(url.pathname)
 	} catch { return false }
 })
+const safeExternalSource = computed(() => {
+  if (!props.external) return true
+  try {
+    const url = new URL(props.src, window.location.href)
+    return ['http:', 'https:'].includes(url.protocol) && !(window.location.protocol === 'https:' && url.protocol !== 'https:')
+  } catch { return false }
+})
+const embeddedSource = computed(() => {
+  if (!props.embedded || !safeExternalSource.value) return false
+  try {
+    const url = new URL(props.src, window.location.href)
+    const host = url.hostname.toLowerCase().replace(/\.$/, '')
+    return ['player.bilibili.com', 'youtube.com', 'www.youtube.com', 'www.youtube-nocookie.com'].includes(host)
+  } catch { return false }
+})
+const validExternalPlayback = computed(() => safeExternalSource.value && (!props.embedded || embeddedSource.value))
 function scheduleRetry(kind: 'preparing' | 'network', retryAfter = 0) {
 	failure.value = kind
 	const limit = kind === 'preparing' ? 18 : 3
@@ -173,20 +189,22 @@ function retryOriginal() {
   <div class="video-preview" :class="{ square, active }">
     <template v-if="active">
       <iframe
-        v-if="embedded"
+        v-if="embeddedSource"
         :src="src"
         :title="`播放：${title}`"
+        referrerpolicy="no-referrer"
         sandbox="allow-scripts allow-same-origin allow-presentation"
         allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share"
         allowfullscreen
       ></iframe>
-	  <template v-else>
-		<video v-show="!videoFailed" :key="`${playbackSrc}:${videoRetry}`" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline :aria-label="title" @error="onVideoError"></video>
+      <template v-else-if="validExternalPlayback">
+		<video v-show="!videoFailed" :key="`${playbackSrc}:${videoRetry}`" :src="playbackSrc" :poster="posterSrc || undefined" controls autoplay preload="metadata" playsinline referrerpolicy="no-referrer" :aria-label="title" @error="onVideoError"></video>
 		<div v-if="videoFailed" class="video-preparing" :role="failure === 'checking' || automaticRetry ? 'status' : 'alert'" aria-live="polite"><span v-if="failure === 'checking' || automaticRetry"></span><strong>{{ failureTitle }}</strong><small>{{ failureDetail }}</small><div v-if="failure !== 'checking' && !automaticRetry" class="video-recovery"><button type="button" @click="retryVideo">重新尝试</button><button v-if="internalSource && failure !== 'permission' && failure !== 'missing' && selectedVariant !== 'original'" type="button" @click="retryOriginal">尝试原文件</button></div></div>
 	  </template>
+      <div v-else class="video-preparing" role="alert"><strong>外链视频地址无效</strong><small>请检查链接后重试</small></div>
     </template>
     <button v-else type="button" :aria-label="`播放${sourceLabel}：${title}`" @click="active = true">
-      <img v-if="posterSrc && !posterFailed" :src="posterSrc" alt="" loading="lazy" @error="onPosterError" />
+      <img v-if="posterSrc && !posterFailed" :src="posterSrc" alt="" loading="lazy" referrerpolicy="no-referrer" @error="onPosterError" />
       <span v-else class="fallback-art" aria-hidden="true"><Film :size="48" /></span>
       <span class="shade" aria-hidden="true"></span>
       <span class="source-badge"><ExternalLink v-if="external" :size="13" /><Film v-else :size="13" />{{ sourceLabel }}</span>

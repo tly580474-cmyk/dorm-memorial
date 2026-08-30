@@ -138,6 +138,21 @@ describe('VideoPreview', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('does not load an external video with an unsafe URL scheme', async () => {
+    await play({ external: true, src: 'javascript:alert(1)' })
+    expect(wrapper!.find('video').exists()).toBe(false)
+    expect(wrapper!.find('iframe').exists()).toBe(false)
+    expect(wrapper!.get('[role="alert"]').text()).toContain('地址无效')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not turn an unapproved embedded host into an iframe', async () => {
+    await play({ external: true, embedded: true, src: 'https://evil.example/embed/video' })
+    expect(wrapper!.find('iframe').exists()).toBe(false)
+    expect(wrapper!.find('video').exists()).toBe(false)
+    expect(wrapper!.get('[role="alert"]').text()).toContain('地址无效')
+  })
+
   it('aborts an outstanding diagnostic and cancels timers on unmount', async () => {
     let signal: AbortSignal | undefined
     fetchMock.mockImplementation((_url: string, options: RequestInit) => {

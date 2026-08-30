@@ -12,12 +12,23 @@ import ImageViewer from './components/ImageViewer.vue'
 import type { ViewerItem } from './components/ImageViewer.vue'
 
 const markdownRenderer = new MarkdownIt({ html: false, linkify: true, typographer: false })
+const postRenderCache = new WeakMap<Post, { source: string; html: string; textLength: number }>()
+const richTextTags = new Set(['p', 'br', 'h2', 'h3', 'strong', 'em', 's', 'blockquote', 'ul', 'ol', 'li', 'a', 'img', 'pre', 'code', 'table', 'thead', 'tbody', 'tr', 'th', 'td'])
+const richTextAttrs: Record<string, Set<string>> = {
+  a: new Set(['href', 'title', 'target', 'rel']),
+  img: new Set(['src', 'alt', 'title', 'loading']),
+  code: new Set(['class']),
+  th: new Set(['colspan', 'rowspan']),
+  td: new Set(['colspan', 'rowspan']),
+}
 
 // 图片限制由登录后的服务端配置提供；旧后端或配置请求失败时使用安全默认值。
 const DEFAULT_IMAGE_BYTES = 15 * 1024 ** 2
 const AVATAR_INPUT_BYTES = 25 * 1024 ** 2
 const AVATAR_OUTPUT_BYTES = 2 * 1024 ** 2
 const DEFAULT_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+const MIN_PASSWORD_BYTES = 10
+const MAX_PASSWORD_BYTES = 72
 const mediaLimits = ref<MediaLimits>({ max_image_upload_bytes: DEFAULT_IMAGE_BYTES, supported_image_mime_types: DEFAULT_IMAGE_MIME_TYPES })
 const imageUploadLimitBytes = computed(() => Number.isFinite(mediaLimits.value.max_image_upload_bytes) && mediaLimits.value.max_image_upload_bytes > 0 ? mediaLimits.value.max_image_upload_bytes : DEFAULT_IMAGE_BYTES)
 const supportedImageMimeTypes = computed(() => mediaLimits.value.supported_image_mime_types.length ? mediaLimits.value.supported_image_mime_types : DEFAULT_IMAGE_MIME_TYPES)
@@ -85,6 +96,7 @@ const profileOpen = ref(false)
 const profileDialog = ref<HTMLElement | null>(null)
 let profileTrigger: HTMLElement | null = null
 const mobileMenuOpen = ref(false)
+const logoutBusy = ref(false)
 const profileBusy = ref(false)
 const profileMessage = ref('')
 const accountBusy = ref(false)
@@ -224,11 +236,13 @@ const messageMedia = ref<EditorMedia[]>([])
 const voiceMediaRecorder = ref<MediaRecorder | null>(null)
 const voiceStream = ref<MediaStream | null>(null)
 const voiceRecording = ref(false)
+const voiceStarting = ref(false)
 const voiceTimer = ref(0)
 let voiceTimerHandle = 0
 let voiceChunks: Blob[] = []
 let voiceStartTime = 0
 let voiceRecorderMime = 'audio/webm;codecs=opus'
+let voiceGeneration = 0
 const messageMediaInput = ref<HTMLInputElement | null>(null)
 const messageLoading = ref(false)
 const messageBusy = ref(false)
@@ -241,6 +255,17 @@ let activityTimer = 0
 let messageRequest = 0
 let messageLoadingRequest = 0
 let messageHighlightTimer = 0
+let messageCenterRequest = 0
+let conversationRequest = 0
+let notificationRequest = 0
+let adminRequest = 0
+let contentRequest = 0
+let feedLoadGeneration = 0
+let detailRequest = 0
+let authGeneration = 0
+let appDisposed = false
+let inviteCopyTimer = 0
+let avatarImageRequest = 0
 const selectedConversation = computed(() => conversations.value.find((item) => item.id === selectedConversationID.value) ?? null)
 const totalMessageUnread = computed(() => conversations.value.reduce((sum, item) => sum + item.unread_count, 0))
 type ActiveView = 'home' | 'timeline' | 'wall' | 'guestbook' | 'messages' | 'management' | 'detail'
@@ -301,6 +326,7 @@ function timelineDate(post: Post) {
 }
 
 onMounted(async () => {
+  appDisposed = false
   document.addEventListener('pointerdown', handleNotificationOutsidePointer)
   document.addEventListener('keydown', handleNotificationKeydown)
   document.addEventListener('visibilitychange', handleVisibilityRefresh)
@@ -321,7 +347,17 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  appDisposed = true
   stopActivityPolling()
+  stopVoiceRecording(false)
+  resetAvatarCrop()
+  notificationRequest += 1
+  conversationRequest += 1
+  messageCenterRequest += 1
+  messageRequest += 1
+  adminRequest += 1
+  contentRequest += 1
+  detailRequest += 1
   document.removeEventListener('pointerdown', handleNotificationOutsidePointer)
   document.removeEventListener('keydown', handleNotificationKeydown)
   document.removeEventListener('visibilitychange', handleVisibilityRefresh)
@@ -329,6 +365,7 @@ onBeforeUnmount(() => {
   if (topNoticeTimer) window.clearTimeout(topNoticeTimer)
   if (messageHighlightTimer) window.clearTimeout(messageHighlightTimer)
   if (composerAutosaveTimer) window.clearTimeout(composerAutosaveTimer)
+  if (inviteCopyTimer) window.clearTimeout(inviteCopyTimer)
 })
 
 function applyUser(next: User) {
@@ -388,6 +425,13 @@ function imageValidationError(file: File, maxBytes = imageUploadLimitBytes.value
   return ''
 }
 
+function passwordValidation(value: string) {
+  const bytes = new TextEncoder().encode(value).byteLength
+  if (bytes < MIN_PASSWORD_BYTES) return `密码至少需要 ${MIN_PASSWORD_BYTES} 个 UTF-8 字节。`
+  if (bytes > MAX_PASSWORD_BYTES) return `密码最多 ${MAX_PASSWORD_BYTES} 个 UTF-8 字节。`
+  return ''
+}
+
 function mediaUploadID() {
   return crypto.randomUUID()
 }
@@ -414,6 +458,15 @@ watch(contentLoadSentinel, (next, previous) => {
 })
 
 async function submitAuth() {
+  if (!auth.password) {
+    authError.value = '请输入密码。'
+    return
+  }
+  const passwordError = passwordValidation(auth.password)
+  if (passwordError) {
+    authError.value = passwordError
+    return
+  }
   authBusy.value = true
   authError.value = ''
   try {
@@ -443,17 +496,90 @@ function onRichImageClick(event: MouseEvent, post: Post) {
   openImagesFromList(post.media, match[1])
 }
 
-async function logout() {
-  stopActivityPolling()
-  await api.logout()
-  resetMediaLimits()
+function invalidateAuthenticatedRequests() {
+  authGeneration += 1
+  notificationRequest += 1
+  conversationRequest += 1
+  messageCenterRequest += 1
+  messageRequest += 1
+  adminRequest += 1
+  contentRequest += 1
+  feedLoadGeneration += 1
+  detailRequest += 1
+  voiceGeneration += 1
+  voiceStarting.value = false
+  contentLoading.value = false
+  feedLoadingMore.value = false
+  stopVoiceRecording(false)
+}
+
+function clearAuthenticatedState() {
   user.value = null
+  Object.assign(auth, { identifier: '', password: '', inviteCode: '', username: '', email: '', nickname: '' })
+  authMode.value = 'login'
+  passwordVisible.value = false
+  Object.assign(account, { username: '', email: '', nickname: '', current_password: '', new_password: '', confirm_password: '' })
+  Object.assign(profile, { nickname: '', bio: '', bed_no: '', memorial_note: '' })
+  Object.assign(editor, { title: '', body: '', body_html: '', content_date: '', visibility: 'members', tags: '', external_video_url: '' })
   feedPosts.value = []
   myPosts.value = []
   pendingPosts.value = []
   notifications.value = []
+  notificationUnread.value = 0
   conversations.value = []
+  messageMembers.value = []
+  chatMessages.value = []
+  selectedConversationID.value = ''
+  messageBody.value = ''
+  messageMedia.value = []
+  guestbookMembers.value = []
+  guestbookEntries.value = []
+  guestbookRecipientID.value = ''
+  guestbookBody.value = ''
+  guestbookExternalVideoURL.value = ''
+  guestbookMedia.value = []
+  detailPost.value = null
+  detailComments.value = []
+  commentBody.value = ''
+  contentError.value = ''
+  messageError.value = ''
+  guestbookError.value = ''
+  detailError.value = ''
+  composerError.value = ''
+  publicProfile.value = null
+  sessions.value = []
+  mediaUsage.value = null
+  editorMedia.value = []
+  removedMediaIDs.value = []
+  composerOpen.value = false
   profileOpen.value = false
+  imageViewerOpen.value = false
+  messageThreadOpen.value = false
+  activeView.value = 'home'
+  resetAvatarCrop()
+}
+
+async function logout() {
+  if (logoutBusy.value) return
+  logoutBusy.value = true
+  // Invalidate in-flight reads before ending the session so a late response
+  // cannot repopulate state after the user has logged out.
+  invalidateAuthenticatedRequests()
+  stopActivityPolling()
+  try {
+    await api.logout()
+    resetMediaLimits()
+    clearAuthenticatedState()
+  } catch {
+    // A failed server-side revoke must not look like a successful local
+    // logout. Restore activity polling while the current session remains valid.
+    if (!appDisposed && user.value) {
+      await initializeActivity()
+      showTopNotice('退出登录失败，请稍后重试')
+    }
+  } finally {
+    logoutBusy.value = false
+  }
 }
 
 function cancelDeactivate() {
@@ -464,19 +590,19 @@ function cancelDeactivate() {
 
 async function confirmDeactivateAccount() {
   if (deactivateBusy.value || !deactivatePassword.value) return
+  const passwordError = passwordValidation(deactivatePassword.value)
+  if (passwordError) {
+    deactivateError.value = passwordError
+    return
+  }
   deactivateBusy.value = true
   deactivateError.value = ''
   try {
     await api.deactivate(deactivatePassword.value)
+    invalidateAuthenticatedRequests()
     stopActivityPolling()
     resetMediaLimits()
-    user.value = null
-    feedPosts.value = []
-    myPosts.value = []
-    pendingPosts.value = []
-    notifications.value = []
-    conversations.value = []
-    profileOpen.value = false
+    clearAuthenticatedState()
     cancelDeactivate()
     authMode.value = 'login'
   } catch (error) {
@@ -558,9 +684,23 @@ async function saveAccount() {
     accountMessage.value = '两次输入的新密码不一致'
     return
   }
+  if (account.new_password) {
+    const newPasswordError = passwordValidation(account.new_password)
+    if (newPasswordError) {
+      accountMessage.value = newPasswordError
+      return
+    }
+  }
   if (accountSensitiveChanged.value && !account.current_password) {
     accountMessage.value = '更改用户名、邮箱或密码时，请输入当前密码'
     return
+  }
+  if (accountSensitiveChanged.value) {
+    const currentPasswordError = passwordValidation(account.current_password)
+    if (currentPasswordError) {
+      accountMessage.value = currentPasswordError
+      return
+    }
   }
   accountBusy.value = true
   try {
@@ -602,6 +742,7 @@ function markAvatarBroken(value: string) {
 }
 
 function resetAvatarCrop() {
+  avatarImageRequest += 1
   if (avatarCrop.sourceURL) URL.revokeObjectURL(avatarCrop.sourceURL)
   avatarUploadID = ''
   avatarUploadSignature = ''
@@ -619,8 +760,10 @@ async function handleAvatarInput(event: Event) {
   }
   resetAvatarCrop()
   const sourceURL = URL.createObjectURL(file)
+  const requestID = ++avatarImageRequest
   const image = new window.Image()
   image.onload = () => {
+    if (appDisposed || requestID !== avatarImageRequest) return
     avatarCrop.sourceURL = sourceURL
     avatarCrop.filename = file.name
     avatarCrop.imageWidth = image.naturalWidth
@@ -629,6 +772,7 @@ async function handleAvatarInput(event: Event) {
     nextTick(() => { avatarCropFrameSize.value = avatarCropFrame.value?.clientWidth || 300 })
   }
   image.onerror = () => {
+    if (appDisposed || requestID !== avatarImageRequest) return
     URL.revokeObjectURL(sourceURL)
     profileMessage.value = '无法读取这张图片，请换一张重试。'
   }
@@ -708,6 +852,7 @@ async function clearAvatar() {
 }
 
 async function openDetail(post: Post) {
+  const requestID = ++detailRequest
   detailTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   if (activeView.value !== 'detail') {
     detailReturnView = activeView.value
@@ -716,6 +861,7 @@ async function openDetail(post: Post) {
   detailPost.value = post
   detailComments.value = []
   detailError.value = ''
+  commentBusy.value = false
   commentBody.value = ''
   activeView.value = 'detail'
   detailLoading.value = true
@@ -724,16 +870,19 @@ async function openDetail(post: Post) {
   document.querySelector<HTMLElement>('#detail-title')?.focus()
   try {
     const [fresh, comments] = await Promise.all([api.post(post.id), api.comments(post.id)])
+    if (requestID !== detailRequest || detailPost.value?.id !== post.id) return
     detailPost.value = fresh.post
     detailComments.value = comments.comments
   } catch (error) {
-    detailError.value = error instanceof Error ? error.message : '无法读取详情'
+    if (requestID === detailRequest && detailPost.value?.id === post.id) detailError.value = error instanceof Error ? error.message : '无法读取详情'
   } finally {
-    detailLoading.value = false
+    if (requestID === detailRequest) detailLoading.value = false
   }
 }
 
 function closeDetail() {
+  detailRequest += 1
+  detailLoading.value = false
   activeView.value = detailReturnView
   nextTick(() => {
     window.scrollTo({ top: detailReturnScrollY })
@@ -746,7 +895,10 @@ async function refreshCurrentView() {
   pageRefreshBusy.value = true
   try {
     if (activeView.value === 'detail' && detailPost.value) {
-      const [fresh, comments] = await Promise.all([api.post(detailPost.value.id), api.comments(detailPost.value.id)])
+      const postID = detailPost.value.id
+      const requestID = ++detailRequest
+      const [fresh, comments] = await Promise.all([api.post(postID), api.comments(postID)])
+      if (requestID !== detailRequest || detailPost.value?.id !== postID) return
       detailPost.value = fresh.post
       detailComments.value = comments.comments
     } else if (activeView.value === 'guestbook') {
@@ -795,23 +947,29 @@ async function togglePostLike(post: Post) {
 
 async function submitComment() {
   if (!detailPost.value || !commentBody.value.trim()) return
+  const postID = detailPost.value.id
+  const detailGeneration = detailRequest
   commentBusy.value = true
   detailError.value = ''
   try {
-    const response = await api.addComment(detailPost.value.id, commentBody.value)
+    const response = await api.addComment(postID, commentBody.value)
+    if (detailGeneration !== detailRequest || detailPost.value?.id !== postID) return
     detailComments.value.push(response.comment)
     replacePost({ ...detailPost.value, comment_count: detailPost.value.comment_count + 1 })
     commentBody.value = ''
   } catch (error) {
-    detailError.value = error instanceof Error ? error.message : '评论失败'
+    if (detailGeneration === detailRequest && detailPost.value?.id === postID) detailError.value = error instanceof Error ? error.message : '评论失败'
   } finally {
-    commentBusy.value = false
+    if (detailGeneration === detailRequest) commentBusy.value = false
   }
 }
 
 async function removeComment(comment: Comment) {
+  const postID = detailPost.value?.id
+  const detailGeneration = detailRequest
   try {
     await api.deleteComment(comment.id)
+    if (!postID || detailGeneration !== detailRequest || detailPost.value?.id !== postID) return
     detailComments.value = detailComments.value.filter((item) => item.id !== comment.id)
     if (detailPost.value) replacePost({ ...detailPost.value, comment_count: Math.max(0, detailPost.value.comment_count - 1) })
   } catch (error) {
@@ -977,23 +1135,37 @@ async function selectManagementTab(tab: typeof managementTab.value) {
 }
 
 async function loadManagementSection() {
-  if (user.value?.role !== 'admin' || managementTab.value === 'invites' || managementTab.value === 'backup') return
+  const requestID = ++adminRequest
+  const tab = managementTab.value
+  const userID = user.value?.id
+  if (user.value?.role !== 'admin' || tab === 'invites' || tab === 'backup') {
+    adminLoading.value = false
+    return
+  }
   adminLoading.value = true
   adminFeedback.value = ''
   try {
-    if (managementTab.value === 'users') {
-      adminUsers.value = (await api.adminUsers(adminUserFilters)).users
-    } else if (managementTab.value === 'posts') {
-      adminPosts.value = (await api.posts({ scope: 'admin', status: adminPostFilters.status, limit: 50 })).posts
-    } else if (managementTab.value === 'messages') {
-      adminMessages.value = (await api.adminMessages({ ...adminMessageFilters, limit: 100 })).messages
+    if (tab === 'users') {
+      const response = await api.adminUsers(adminUserFilters)
+      if (requestID !== adminRequest || managementTab.value !== tab || user.value?.id !== userID) return
+      adminUsers.value = response.users
+    } else if (tab === 'posts') {
+      const response = await api.posts({ scope: 'admin', status: adminPostFilters.status, limit: 50 })
+      if (requestID !== adminRequest || managementTab.value !== tab || user.value?.id !== userID) return
+      adminPosts.value = response.posts
+    } else if (tab === 'messages') {
+      const response = await api.adminMessages({ ...adminMessageFilters, limit: 100 })
+      if (requestID !== adminRequest || managementTab.value !== tab || user.value?.id !== userID) return
+      adminMessages.value = response.messages
     } else {
-      adminMedia.value = (await api.adminMedia({ ...adminMediaFilters, limit: 100 })).media
+      const response = await api.adminMedia({ ...adminMediaFilters, limit: 100 })
+      if (requestID !== adminRequest || managementTab.value !== tab || user.value?.id !== userID) return
+      adminMedia.value = response.media
     }
   } catch (error) {
-    adminFeedback.value = error instanceof Error ? error.message : '管理数据读取失败'
+    if (requestID === adminRequest) adminFeedback.value = error instanceof Error ? error.message : '管理数据读取失败'
   } finally {
-    adminLoading.value = false
+    if (requestID === adminRequest) adminLoading.value = false
   }
 }
 
@@ -1086,41 +1258,55 @@ function adminMediaTypeLabel(type: AdminMedia['media_type']) {
 
 async function loadContent() {
   if (!user.value) return
+  const requestID = ++contentRequest
+  const userID = user.value.id
+  const feedGeneration = ++feedLoadGeneration
   contentLoading.value = true
+  feedLoadingMore.value = false
   contentError.value = ''
   try {
-    if (guestbookMembers.value.length === 0) guestbookMembers.value = (await api.members()).members
+    if (guestbookMembers.value.length === 0) {
+      const members = await api.members()
+      if (requestID !== contentRequest || user.value?.id !== userID) return
+      guestbookMembers.value = members.members
+    }
     const requests = [
       api.posts({ scope: 'feed', limit: 8 }),
       api.posts({ scope: 'mine', limit: 20 }),
     ] as const
     const [feed, mine] = await Promise.all(requests)
+    if (requestID !== contentRequest || user.value?.id !== userID) return
     feedPosts.value = feed.posts
     feedNextCursor.value = feed.next_cursor ?? ''
     myPosts.value = mine.posts
     pendingPosts.value = []
     timelineVisibleCount.value = 8
     wallVisibleCount.value = 12
-    mediaUsage.value = (await api.mediaUsage()).usage
+    const usage = await api.mediaUsage()
+    if (requestID !== contentRequest || user.value?.id !== userID) return
+    mediaUsage.value = usage.usage
   } catch (error) {
-    contentError.value = error instanceof Error ? error.message : '暂时无法读取纪念内容'
+    if (requestID === contentRequest) contentError.value = error instanceof Error ? error.message : '暂时无法读取纪念内容'
   } finally {
-    contentLoading.value = false
+    if (requestID === contentRequest) contentLoading.value = false
   }
 }
 
 async function loadMoreFeed() {
   if (!user.value || !feedNextCursor.value || feedLoadingMore.value) return
+  const feedGeneration = feedLoadGeneration
+  const userID = user.value.id
   feedLoadingMore.value = true
   try {
     const page = await api.posts({ scope: 'feed', cursor: feedNextCursor.value, limit: 8 })
+    if (feedGeneration !== feedLoadGeneration || user.value?.id !== userID) return
     const known = new Set(feedPosts.value.map((post) => post.id))
     feedPosts.value.push(...page.posts.filter((post) => !known.has(post.id)))
     feedNextCursor.value = page.next_cursor ?? ''
   } catch (error) {
-    contentError.value = error instanceof Error ? error.message : '无法继续读取回忆'
+    if (feedGeneration === feedLoadGeneration) contentError.value = error instanceof Error ? error.message : '无法继续读取回忆'
   } finally {
-    feedLoadingMore.value = false
+    if (feedGeneration === feedLoadGeneration) feedLoadingMore.value = false
   }
 }
 
@@ -1154,7 +1340,7 @@ async function revealMoreContent() {
 function showTopNotice(message: string) {
   topNotice.value = message
   if (topNoticeTimer) window.clearTimeout(topNoticeTimer)
-  topNoticeTimer = window.setTimeout(() => { topNotice.value = '' }, 3500)
+  topNoticeTimer = window.setTimeout(() => { topNotice.value = ''; topNoticeTimer = 0 }, 3500)
 }
 
 function armDialogBackdrop(event: PointerEvent) {
@@ -1193,10 +1379,75 @@ function postTitle(post: Post) {
   return post.title || (post.body ? (post.body.split('\n')[0] ?? '').slice(0, 48) : `${post.author.nickname}的回忆`)
 }
 
-function postRichHTML(post: Post) {
-  const source = post.body_html || plainTextToHTML(post.body)
-  if (!source) return ''
+function sanitizeRichTextDocument(source: string) {
   const parsed = new DOMParser().parseFromString(source, 'text/html')
+  const dangerousTags = new Set(['script', 'style', 'iframe', 'object', 'embed', 'svg', 'math', 'form', 'input', 'textarea', 'button', 'template', 'meta', 'link', 'base', 'video', 'audio', 'source'])
+  const elements = [...parsed.body.querySelectorAll<HTMLElement>('*')].reverse()
+  for (const element of elements) {
+    const tag = element.tagName.toLowerCase()
+    if (!richTextTags.has(tag)) {
+      if (dangerousTags.has(tag)) element.remove()
+      else element.replaceWith(...[...element.childNodes])
+      continue
+    }
+    const allowedAttrs = richTextAttrs[tag] ?? new Set<string>()
+    for (const attribute of [...element.attributes]) {
+      if (!allowedAttrs.has(attribute.name.toLowerCase())) element.removeAttribute(attribute.name)
+    }
+    if (tag === 'a') {
+      const href = element.getAttribute('href')?.trim() ?? ''
+      let safe = Boolean(href) && (href.startsWith('/') && !href.startsWith('//') || href.startsWith('#'))
+      if (href) {
+        try {
+          const url = new URL(href, window.location.href)
+          safe ||= ['http:', 'https:', 'mailto:', 'tel:'].includes(url.protocol) && !href.startsWith('//')
+        } catch {
+          safe = false
+        }
+      }
+      if (!safe) element.removeAttribute('href')
+      else {
+        element.setAttribute('target', '_blank')
+        element.setAttribute('rel', 'noopener noreferrer nofollow')
+      }
+    } else if (tag === 'img') {
+      const src = element.getAttribute('src')?.trim() ?? ''
+      try {
+        const url = new URL(src, window.location.href)
+        if (url.origin !== window.location.origin || !/^\/api\/media\/[^/]+\/content$/.test(url.pathname) || src.startsWith('//')) element.remove()
+      } catch {
+        element.remove()
+      }
+      const loading = element.getAttribute('loading')
+      if (loading && loading !== 'lazy' && loading !== 'eager') element.removeAttribute('loading')
+    } else if (tag === 'code') {
+      const className = element.getAttribute('class') ?? ''
+      if (className && !/^language-[a-zA-Z0-9_+#.-]+$/.test(className)) element.removeAttribute('class')
+    } else if (tag === 'th' || tag === 'td') {
+      for (const name of ['colspan', 'rowspan']) {
+        const value = element.getAttribute(name)
+        if (value && !/^[1-9][0-9]?$/.test(value)) element.removeAttribute(name)
+      }
+    }
+  }
+  const comments: Node[] = []
+  const walker = parsed.createTreeWalker(parsed.body, 128)
+  let node: Node | null
+  while ((node = walker.nextNode())) comments.push(node)
+  comments.forEach((comment) => comment.parentNode?.removeChild(comment))
+  return parsed
+}
+
+function renderedPost(post: Post) {
+  const source = post.body_html || plainTextToHTML(post.body)
+  const cached = postRenderCache.get(post)
+  if (cached?.source === source) return cached
+  if (!source) {
+    const empty = { source, html: '', textLength: 0 }
+    postRenderCache.set(post, empty)
+    return empty
+  }
+  const parsed = sanitizeRichTextDocument(source)
   parsed.querySelectorAll('pre code').forEach((code) => {
     const language = [...code.classList].find((name) => name.startsWith('language-'))?.slice(9) ?? ''
     const content = code.textContent ?? ''
@@ -1211,13 +1462,19 @@ function postRichHTML(post: Post) {
       code.setAttribute('data-language', language || 'code')
     }
   })
-  return parsed.body.innerHTML
+  const html = parsed.body.innerHTML
+  const textLength = parsed.body.textContent?.trim().length ?? 0
+  const rendered = { source, html, textLength }
+  postRenderCache.set(post, rendered)
+  return rendered
+}
+
+function postRichHTML(post: Post) {
+  return renderedPost(post).html
 }
 
 function postRichTextLength(post: Post) {
-  const source = post.body_html || post.body
-  if (!source) return 0
-  return new DOMParser().parseFromString(source, 'text/html').body.textContent?.trim().length ?? 0
+  return renderedPost(post).textLength
 }
 
 function isPostExpanded(post: Post) {
@@ -1429,8 +1686,10 @@ function uploadEditorMedia(item: EditorMedia): Promise<void> {
 }
 
 async function performEditorMediaUpload(item: EditorMedia) {
+  const generation = authGeneration
   if (!item.file) throw new Error(`${item.name} 无法重新读取，请移除后再次选择。`)
   await item.metadataPromise
+  if (appDisposed || generation !== authGeneration) return
   item.status = 'uploading'
   item.error = ''
   item.progress = 0
@@ -1439,20 +1698,26 @@ async function performEditorMediaUpload(item: EditorMedia) {
       item.file,
       item.kind === 'video' ? mediaUploadID() : (item.uploadID ?? (item.uploadID = mediaUploadID())),
       { width: item.width, height: item.height, duration_ms: item.duration_ms },
-      (percent) => { item.progress = percent },
+      (percent) => { if (!appDisposed && generation === authGeneration) item.progress = percent },
       (job) => {
+        if (appDisposed || generation !== authGeneration) return
         item.status = job.phase === 'failed' ? 'error' : 'processing'
         item.processingPhase = job.phase
         item.processingStep = job.step
         item.encoder = job.encoder
       },
     )
+    if (appDisposed || generation !== authGeneration) {
+      await api.deleteMedia(response.media.id).catch(() => undefined)
+      return
+    }
     item.media = response.media
     item.status = 'ready'
     item.progress = 100
     item.processingPhase = 'completed'
     mediaUsage.value = response.usage
   } catch (error) {
+    if (appDisposed || generation !== authGeneration) return
     item.status = 'error'
     item.error = error instanceof Error ? error.message : '上传失败'
     throw error
@@ -1485,7 +1750,16 @@ async function readVideoMetadata(item: EditorMedia) {
   try {
     await new Promise<void>((resolve) => {
       const video = document.createElement('video')
-      const finish = () => resolve()
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        window.clearTimeout(timeout)
+        video.onloadedmetadata = null
+        video.onerror = null
+        video.removeAttribute('src')
+        resolve()
+      }
       const timeout = window.setTimeout(finish, 5000)
       video.preload = 'metadata'
       video.onloadedmetadata = () => {
@@ -1509,7 +1783,16 @@ async function readAudioMetadata(item: EditorMedia) {
   try {
     await new Promise<void>((resolve) => {
       const audio = document.createElement('audio')
-      const finish = () => resolve()
+      let finished = false
+      const finish = () => {
+        if (finished) return
+        finished = true
+        window.clearTimeout(timeout)
+        audio.onloadedmetadata = null
+        audio.onerror = null
+        audio.removeAttribute('src')
+        resolve()
+      }
       const timeout = window.setTimeout(finish, 5000)
       audio.preload = 'metadata'
       audio.onloadedmetadata = () => {
@@ -1571,7 +1854,9 @@ function mediaContentURL(id: string, preview = false) {
 
 function isEmbeddedPlayer(value: string) {
   try {
-    const host = new URL(value).hostname.toLowerCase()
+    const url = new URL(value)
+    if (!['http:', 'https:'].includes(url.protocol) || (window.location.protocol === 'https:' && url.protocol !== 'https:')) return false
+    const host = url.hostname.toLowerCase().replace(/\.$/, '')
     return ['player.bilibili.com', 'youtube.com', 'www.youtube.com', 'www.youtube-nocookie.com'].includes(host)
   } catch {
     return false
@@ -1581,10 +1866,11 @@ function isEmbeddedPlayer(value: string) {
 function externalVideoThumbnail(value: string) {
   try {
     const url = new URL(value)
-    const host = url.hostname.toLowerCase()
+    if (!['http:', 'https:'].includes(url.protocol) || (window.location.protocol === 'https:' && url.protocol !== 'https:')) return ''
+    const host = url.hostname.toLowerCase().replace(/\.$/, '')
     let videoID = ''
     if (host === 'youtu.be') videoID = url.pathname.split('/').filter(Boolean)[0] ?? ''
-    if (host.includes('youtube.com')) {
+    if (['youtube.com', 'www.youtube.com', 'www.youtube-nocookie.com'].includes(host)) {
       videoID = url.searchParams.get('v') ?? ''
       if (!videoID) {
         const parts = url.pathname.split('/').filter(Boolean)
@@ -1664,15 +1950,18 @@ function stopActivityPolling() {
 
 async function loadNotifications(quiet = false) {
   if (!user.value) return
+  const requestID = ++notificationRequest
+  const userID = user.value.id
   if (!quiet) notificationLoading.value = true
   try {
     const page = await api.notifications({ limit: 30 })
+    if (requestID !== notificationRequest || user.value?.id !== userID) return
     notifications.value = page.notifications
     notificationUnread.value = page.unread_count
   } catch (error) {
-    if (!quiet) console.error(error)
+    if (!quiet && requestID === notificationRequest) console.error(error)
   } finally {
-    if (!quiet) notificationLoading.value = false
+    if (!quiet && requestID === notificationRequest) notificationLoading.value = false
   }
 }
 
@@ -1699,7 +1988,15 @@ function handleNotificationKeydown(event: KeyboardEvent) {
 }
 
 async function markAllNotificationsRead() {
-  await api.markAllNotificationsRead()
+  const requestID = ++notificationRequest
+  notificationLoading.value = false
+  try {
+    await api.markAllNotificationsRead()
+  } catch (error) {
+    if (requestID === notificationRequest) notificationFeedback.value = error instanceof Error ? error.message : '标记通知失败'
+    return
+  }
+  if (requestID !== notificationRequest || !user.value) return
   notifications.value = notifications.value.map((item) => ({ ...item, read_at: item.read_at || new Date().toISOString() }))
   notificationUnread.value = 0
 }
@@ -1709,13 +2006,16 @@ async function clearAllNotifications() {
   if (!window.confirm('确定清空全部通知吗？清空后无法恢复。')) return
   notificationClearing.value = true
   notificationFeedback.value = ''
+  const requestID = ++notificationRequest
+  notificationLoading.value = false
   try {
     await api.clearNotifications()
+    if (requestID !== notificationRequest || !user.value) return
     notifications.value = []
     notificationUnread.value = 0
     notificationFeedback.value = '通知已清空'
   } catch (error) {
-    notificationFeedback.value = error instanceof Error ? error.message : '清空通知失败'
+    if (requestID === notificationRequest) notificationFeedback.value = error instanceof Error ? error.message : '清空通知失败'
   } finally {
     notificationClearing.value = false
   }
@@ -1772,21 +2072,31 @@ async function openNotification(item: NotificationItem) {
 
 async function loadConversations(quiet = false) {
   if (!user.value) return
+  const requestID = ++conversationRequest
+  const userID = user.value.id
   try {
-    conversations.value = (await api.conversations()).conversations
+    const response = await api.conversations()
+    if (requestID !== conversationRequest || user.value?.id !== userID) return
+    conversations.value = response.conversations
   } catch (error) {
-    if (!quiet) messageError.value = error instanceof Error ? error.message : '无法读取会话'
+    if (!quiet && requestID === conversationRequest) messageError.value = error instanceof Error ? error.message : '无法读取会话'
   }
 }
 
 async function loadMessageCenter() {
+  const requestID = ++messageCenterRequest
+  const userID = user.value?.id
+  if (!userID) return
   messageError.value = ''
   try {
-    messageMembers.value = (await api.members()).members.filter((member) => member.id !== user.value?.id)
+    const response = await api.members()
+    if (requestID !== messageCenterRequest || user.value?.id !== userID) return
+    messageMembers.value = response.members.filter((member) => member.id !== userID)
   } catch (error) {
-    messageError.value = error instanceof Error ? error.message : '无法读取成员'
+    if (requestID === messageCenterRequest) messageError.value = error instanceof Error ? error.message : '无法读取成员'
   }
   await loadConversations()
+  if (requestID !== messageCenterRequest || user.value?.id !== userID) return
   if (selectedConversationID.value && !conversations.value.some((item) => item.id === selectedConversationID.value)) {
     selectedConversationID.value = ''
     chatMessages.value = []
@@ -1819,7 +2129,7 @@ function handleMessageMediaInput(event: Event) {
 }
 
 async function toggleVoiceRecording() {
-  if (messageBusy.value || messageMedia.value.length >= 6) return
+  if (messageBusy.value || messageMedia.value.length >= 6 || voiceStarting.value) return
   if (voiceRecording.value) {
     stopVoiceRecording()
     return
@@ -1828,14 +2138,21 @@ async function toggleVoiceRecording() {
     messageError.value = '当前浏览器不支持录音，请使用最新版 Chrome、Edge 或 Safari。'
     return
   }
+  const generation = ++voiceGeneration
+  voiceStarting.value = true
+  let stream: MediaStream | undefined
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+    if (appDisposed || generation !== voiceGeneration || !user.value) {
+      stream.getTracks().forEach((track) => track.stop())
+      return
+    }
     let mime = 'audio/webm;codecs=opus'
     if (!MediaRecorder.isTypeSupported(mime)) mime = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/ogg'
     const recorder = new MediaRecorder(stream, { mimeType: mime })
     voiceChunks = []
     recorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data) }
-    recorder.onstop = () => commitVoiceRecording()
+    recorder.onstop = () => commitVoiceRecording(generation)
     recorder.start()
     voiceMediaRecorder.value = recorder
     voiceStream.value = stream
@@ -1849,21 +2166,34 @@ async function toggleVoiceRecording() {
       if (voiceTimer.value >= MAX_VOICE_SECONDS) stopVoiceRecording()
     }, 250)
   } catch {
-    messageError.value = '无法访问麦克风。请在浏览器地址栏允许使用麦克风后重试。'
+    stream?.getTracks().forEach((track) => track.stop())
+    if (!appDisposed && generation === voiceGeneration) messageError.value = '无法访问麦克风。请在浏览器地址栏允许使用麦克风后重试。'
+  } finally {
+    if (generation === voiceGeneration) voiceStarting.value = false
   }
 }
 
-function stopVoiceRecording() {
+function stopVoiceRecording(commit = true) {
   window.clearInterval(voiceTimerHandle)
+  voiceTimerHandle = 0
   voiceRecording.value = false
   const recorder = voiceMediaRecorder.value
   voiceMediaRecorder.value = null
+  if (!commit) {
+    voiceGeneration += 1
+    recorder && (recorder.onstop = null)
+    voiceChunks = []
+  }
   voiceStream.value?.getTracks().forEach((track) => track.stop())
   voiceStream.value = null
   try { recorder?.stop() } catch { /* 已停止 */ }
 }
 
-function commitVoiceRecording() {
+function commitVoiceRecording(generation = voiceGeneration) {
+  if (appDisposed || generation !== voiceGeneration || !user.value) {
+    voiceChunks = []
+    return
+  }
   if (voiceTimer.value < MIN_VOICE_SECONDS) {
     messageError.value = '录音太短了，请至少录制 1 秒。'
     voiceChunks = []
@@ -1876,7 +2206,8 @@ function commitVoiceRecording() {
     return
   }
   const stamp = new Date().toISOString().replace(/[-:TZ]/g, '').slice(0, 14)
-  const file = new File([blob], `语音-${stamp}.webm`, { type: blob.type })
+  const extension = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm'
+  const file = new File([blob], `语音-${stamp}.${extension}`, { type: blob.type })
   const available = 6 - messageMedia.value.length
   if (available <= 0) {
     messageError.value = '每条消息最多 6 个附件。'
@@ -1944,6 +2275,9 @@ async function openConversation(id: string) {
 async function loadMessages(reset = true, quiet = false) {
   const conversationID = selectedConversationID.value
   if (!conversationID) return
+  // A background poll must not supersede a user initiated initial load or
+  // pagination request. The loading flag belongs to the non-quiet request.
+  if (quiet && messageLoading.value) return
   const requestID = ++messageRequest
   if (!quiet) {
     messageLoadingRequest = requestID
@@ -1957,6 +2291,7 @@ async function loadMessages(reset = true, quiet = false) {
     chatMessages.value = reset ? nextMessages : [...nextMessages, ...chatMessages.value]
     messageNextCursor.value = page.next_cursor ?? ''
     await api.markConversationRead(conversationID)
+    if (requestID !== messageRequest || conversationID !== selectedConversationID.value) return
     conversations.value = conversations.value.map((item) => item.id === conversationID ? { ...item, unread_count: 0 } : item)
     if (reset && previousLastID !== chatMessages.value[chatMessages.value.length - 1]?.id) await nextTick(() => { if (messageScroll.value) messageScroll.value.scrollTop = messageScroll.value.scrollHeight })
   } catch (error) {
@@ -2028,7 +2363,8 @@ async function copyInvites() {
   try {
     await navigator.clipboard.writeText(inviteCodes.value.join('\n'))
     inviteCopyStatus.value = 'copied'
-    window.setTimeout(() => { inviteCopyStatus.value = 'idle' }, 2000)
+    if (inviteCopyTimer) window.clearTimeout(inviteCopyTimer)
+    inviteCopyTimer = window.setTimeout(() => { inviteCopyStatus.value = 'idle'; inviteCopyTimer = 0 }, 2000)
   } catch {
     inviteCopyStatus.value = 'error'
   }
@@ -2065,7 +2401,7 @@ async function copyInvites() {
           </div>
           <div v-if="authMode === 'register'" class="field"><label for="email">邮箱</label><input id="email" v-model.trim="auth.email" type="email" autocomplete="email" required placeholder="用于识别账号" /></div>
           <div v-else class="field"><label for="identifier">用户名或邮箱</label><input id="identifier" v-model.trim="auth.identifier" autocomplete="username" required autofocus placeholder="输入用户名或邮箱" /></div>
-          <div class="field"><label for="password">密码</label><div class="password-input"><input id="password" v-model="auth.password" :type="passwordVisible ? 'text' : 'password'" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" minlength="10" required placeholder="至少 10 个字符" /><button type="button" :aria-label="passwordVisible ? '隐藏密码' : '显示密码'" :title="passwordVisible ? '隐藏密码' : '显示密码'" @click="passwordVisible = !passwordVisible"><EyeOff v-if="passwordVisible" :size="20" aria-hidden="true" /><Eye v-else :size="20" aria-hidden="true" /></button></div></div>
+          <div class="field"><label for="password">密码</label><div class="password-input"><input id="password" v-model="auth.password" :type="passwordVisible ? 'text' : 'password'" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" minlength="10" maxlength="72" required placeholder="10–72 个 UTF-8 字节" /><button type="button" :aria-label="passwordVisible ? '隐藏密码' : '显示密码'" :title="passwordVisible ? '隐藏密码' : '显示密码'" @click="passwordVisible = !passwordVisible"><EyeOff v-if="passwordVisible" :size="20" aria-hidden="true" /><Eye v-else :size="20" aria-hidden="true" /></button></div><small>密码长度为 10–72 个 UTF-8 字节。</small></div>
           <p v-if="authError" class="form-error" role="alert">{{ authError }}</p>
           <button class="primary-button" type="submit" :disabled="authBusy"><span v-if="authBusy" class="button-loader" aria-hidden="true"></span>{{ authBusy ? '请稍候…' : authMode === 'login' ? '登录' : '完成注册' }}</button>
         </form>
@@ -2442,8 +2778,8 @@ async function copyInvites() {
           <div><p class="eyebrow">登录信息</p><h3>修改账号</h3><small>昵称可直接修改；更改用户名、邮箱或密码时才需要当前密码。</small></div>
           <div class="field-grid"><div class="field"><label for="account-username">用户名</label><input id="account-username" v-model.trim="account.username" autocomplete="username" minlength="3" maxlength="24" required /></div><div class="field"><label for="account-email">邮箱</label><input id="account-email" v-model.trim="account.email" type="email" autocomplete="email" required /></div></div>
           <div class="field"><label for="account-nickname">昵称</label><input id="account-nickname" v-model.trim="account.nickname" maxlength="40" required /></div>
-          <div class="field"><label for="account-current-password">当前密码{{ accountSensitiveChanged ? '（必填）' : '（可选）' }}</label><input id="account-current-password" v-model="account.current_password" type="password" autocomplete="current-password" minlength="10" maxlength="128" :required="accountSensitiveChanged" :aria-describedby="accountSensitiveChanged ? 'account-password-help' : undefined" /><small id="account-password-help">{{ accountSensitiveChanged ? '你正在更改用户名、邮箱或密码，请验证当前密码。' : '仅修改昵称时可以留空。' }}</small></div>
-          <div class="field-grid"><div class="field"><label for="account-new-password">新密码（可选）</label><input id="account-new-password" v-model="account.new_password" type="password" autocomplete="new-password" minlength="10" maxlength="128" placeholder="至少 10 个字符" /></div><div class="field"><label for="account-confirm-password">确认新密码</label><input id="account-confirm-password" v-model="account.confirm_password" type="password" autocomplete="new-password" :required="Boolean(account.new_password)" /></div></div>
+          <div class="field"><label for="account-current-password">当前密码{{ accountSensitiveChanged ? '（必填）' : '（可选）' }}</label><input id="account-current-password" v-model="account.current_password" type="password" autocomplete="current-password" minlength="10" maxlength="72" :required="accountSensitiveChanged" :aria-describedby="accountSensitiveChanged ? 'account-password-help' : undefined" /><small id="account-password-help">{{ accountSensitiveChanged ? '你正在更改用户名、邮箱或密码，请验证当前密码。' : '仅修改昵称时可以留空。' }} 密码长度为 10–72 个 UTF-8 字节。</small></div>
+          <div class="field-grid"><div class="field"><label for="account-new-password">新密码（可选）</label><input id="account-new-password" v-model="account.new_password" type="password" autocomplete="new-password" minlength="10" maxlength="72" placeholder="10–72 个 UTF-8 字节" /><small>密码长度为 10–72 个 UTF-8 字节。</small></div><div class="field"><label for="account-confirm-password">确认新密码</label><input id="account-confirm-password" v-model="account.confirm_password" type="password" autocomplete="new-password" maxlength="72" :required="Boolean(account.new_password)" /></div></div>
           <p v-if="accountMessage" class="form-message" role="status">{{ accountMessage }}</p><button class="primary-button" type="submit" :disabled="accountBusy || !accountHasChanges || (accountSensitiveChanged && !account.current_password)">{{ accountBusy ? '保存中…' : '保存账号信息' }}</button>
         </form>
         <form @submit.prevent="saveProfile">
@@ -2462,12 +2798,12 @@ async function copyInvites() {
           <div><h3>注销账号</h3><p>注销后无法再登录。已发布的回忆、留言、评论与聊天记录都会<b>原样保留</b>，方便其他室友继续查看；管理员可以在后台随时恢复你的账号。</p></div>
           <button v-if="!deactivateOpen" class="danger-button" type="button" @click="deactivateOpen = true">注销账号</button>
           <div v-else class="deactivate-confirm">
-            <input v-model="deactivatePassword" type="password" placeholder="输入当前密码确认注销" autocomplete="current-password" @keydown.enter.prevent="confirmDeactivateAccount" />
+            <input v-model="deactivatePassword" type="password" maxlength="72" placeholder="输入当前密码确认注销（10–72 个 UTF-8 字节）" autocomplete="current-password" @keydown.enter.prevent="confirmDeactivateAccount" />
             <p v-if="deactivateError" class="form-error" role="alert">{{ deactivateError }}</p>
             <div class="deactivate-buttons"><button class="secondary-button compact" type="button" :disabled="deactivateBusy" @click="cancelDeactivate">取消</button><button class="danger-button" type="button" :disabled="deactivateBusy || !deactivatePassword" @click="confirmDeactivateAccount">{{ deactivateBusy ? '注销中…' : '确认注销' }}</button></div>
           </div>
         </section>
-        <button class="logout-button" type="button" @click="logout"><LogOut :size="18" />退出登录</button>
+         <button class="logout-button" type="button" :disabled="logoutBusy" @click="logout"><LogOut :size="18" />{{ logoutBusy ? '退出中…' : '退出登录' }}</button>
       </section>
     </div>
 
