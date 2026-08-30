@@ -20,6 +20,51 @@ import (
 	storagecache "dorm-memorial/internal/storage/cache"
 )
 
+type observedMediaBody struct {
+	reads  int
+	closed bool
+}
+
+func (b *observedMediaBody) Read([]byte) (int, error) { b.reads++; return 0, io.EOF }
+func (b *observedMediaBody) Close() error             { b.closed = true; return nil }
+
+type headTestObjects struct {
+	httpTestObjects
+	body *observedMediaBody
+}
+
+func (s *headTestObjects) Open(context.Context, string) (io.ReadCloser, error) { return s.body, nil }
+
+func TestMediaHeadDoesNotConsumeObjectBody(t *testing.T) {
+	db, owner, _, _ := videoDeliveryServer(t)
+	body := &observedMediaBody{}
+	objects := &headTestObjects{body: body}
+	s := New(config.Config{FrontendDir: t.TempDir()}, db, identity.NewStore(db), slog.New(slog.NewTextHandler(io.Discard, nil)), objects)
+	req := httptest.NewRequest(http.MethodHead, "/api/media/video-delivery/content", nil)
+	req.SetPathValue("id", "video-delivery")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: owner}))
+	response := httptest.NewRecorder()
+	s.mediaContent(response, req)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Length") != "16" || response.Body.Len() != 0 {
+		t.Fatalf("HEAD response: status=%d headers=%v body=%q", response.Code, response.Header(), response.Body.String())
+	}
+	if body.reads != 0 || !body.closed {
+		t.Fatalf("HEAD consumed or leaked object body: %+v", body)
+	}
+}
+
+func TestSessionLookupFailureDoesNotClearCookie(t *testing.T) {
+	db, _, server, cookie := videoDeliveryServer(t)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response := doJSON(t, server.URL+"/api/auth/me", http.MethodGet, nil, cookie)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || len(response.Cookies()) != 0 {
+		t.Fatalf("database outage cleared login: status=%d cookies=%v", response.StatusCode, response.Cookies())
+	}
+}
+
 func videoDeliveryServer(t *testing.T) (*sql.DB, identity.User, *httptest.Server, *http.Cookie) {
 	t.Helper()
 	ctx := context.Background()

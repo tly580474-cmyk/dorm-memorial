@@ -29,7 +29,7 @@
 ## 快速检查
 
 ```powershell
-go test ./...
-go vet ./...
-npm run build --prefix web
+.\check-project.ps1
 ```
+
+检查脚本执行正式 Go 包的测试与 vet、前端测试及生产构建，构建输出至 `build/review-web`，不会覆盖运行中的 `web/dist`，也不会执行 `data` 下的本地诊断脚本。

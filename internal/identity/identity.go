@@ -398,21 +398,34 @@ func (s *Store) UserForToken(ctx context.Context, token string) (User, string, e
 	if token == "" {
 		return User{}, "", ErrInvalidCredentials
 	}
-	var userID, sessionID, expiresText string
+	var user User
+	var sessionID, expiresText, lastSeenText string
 	var revoked sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT user_id, id, expires_at, revoked_at FROM sessions WHERE token_hash = ?`, hashValue(token)).Scan(&userID, &sessionID, &expiresText, &revoked)
+	err := s.db.QueryRowContext(ctx, `SELECT s.id, s.expires_at, s.revoked_at, s.last_seen_at,
+		u.id, u.username, u.email, u.role, u.status,
+		p.nickname, p.bio, p.bed_no, p.memorial_note, p.avatar_path
+		FROM sessions s JOIN users u ON u.id = s.user_id JOIN profiles p ON p.user_id = u.id
+		WHERE s.token_hash = ?`, hashValue(token)).Scan(&sessionID, &expiresText, &revoked, &lastSeenText,
+		&user.ID, &user.Username, &user.Email, &user.Role, &user.Status,
+		&user.Nickname, &user.Bio, &user.BedNo, &user.MemorialNote, &user.AvatarPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, "", ErrInvalidCredentials
+	}
 	if err != nil {
-		return User{}, "", ErrInvalidCredentials
+		return User{}, "", err
 	}
+	now := time.Now().UTC()
 	expires, err := time.Parse(time.RFC3339Nano, expiresText)
-	if err != nil || revoked.Valid || !expires.After(time.Now().UTC()) {
+	if err != nil || revoked.Valid || !expires.After(now) || user.Status != "active" {
 		return User{}, "", ErrInvalidCredentials
 	}
-	user, err := s.UserByID(ctx, userID)
-	if err != nil || user.Status != "active" {
-		return User{}, "", ErrInvalidCredentials
+	// Polling and media range requests must not turn every authenticated read
+	// into a SQLite write. Keep activity accurate to one minute, and only let
+	// one concurrent request advance the timestamp it observed.
+	lastSeen, err := time.Parse(time.RFC3339Nano, lastSeenText)
+	if err != nil || now.Sub(lastSeen) >= time.Minute {
+		_, _ = s.db.ExecContext(ctx, `UPDATE sessions SET last_seen_at = ? WHERE id = ? AND last_seen_at = ? AND revoked_at IS NULL`, now.Format(time.RFC3339Nano), sessionID, lastSeenText)
 	}
-	_, _ = s.db.ExecContext(ctx, "UPDATE sessions SET last_seen_at = ? WHERE id = ?", nowText(), sessionID)
 	return user, sessionID, nil
 }
 

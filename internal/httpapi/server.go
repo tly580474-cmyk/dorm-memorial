@@ -271,6 +271,11 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		user, sessionID, err := s.identity.UserForToken(r.Context(), cookie.Value)
 		if err != nil {
+			if !errors.Is(err, identity.ErrInvalidCredentials) {
+				s.logger.Error("session_lookup_failed", "error", err)
+				writeError(w, http.StatusServiceUnavailable, "会话服务暂时不可用，请稍后重试")
+				return
+			}
 			clearSessionCookie(w, s.cfg.CookieSecure)
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
@@ -962,6 +967,9 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(content.ContentLength, 10))
 	}
 	w.WriteHeader(content.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
 	if _, err := io.Copy(w, content.Body); err != nil {
 		s.logger.Warn("media_stream_interrupted", "media_id", r.PathValue("id"), "error", err)
 	}
