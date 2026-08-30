@@ -56,6 +56,19 @@ describe('VideoPreview', () => {
     expect(wrapper!.find('.video-preparing').exists()).toBe(false)
   })
 
+  it('falls back once when an older server rejects watch, without misreporting a network failure', async () => {
+    fetchMock.mockResolvedValue(response(400))
+    await play()
+    await error()
+    expect(wrapper!.get('video').attributes('src')).toBe(`${src}?variant=playback`)
+    expect(wrapper!.find('.video-preparing').exists()).toBe(false)
+    await error()
+    expect(wrapper!.get('[role="alert"]').text()).toContain('HTTP 400')
+    expect(wrapper!.text()).not.toContain('检查网络')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('does not request another rendition when a prepared playback file cannot decode', async () => {
     fetchMock.mockResolvedValue(response(206, { 'X-Media-Variant': 'playback' }))
     await play()

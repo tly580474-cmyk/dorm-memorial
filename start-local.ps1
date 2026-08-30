@@ -68,6 +68,13 @@ function Start-LoggedProcess(
     return $process
 }
 
+# Static assets are read from disk by the running Go process. Rebuilding them
+# while reusing that process would serve a new frontend with an old API.
+$existingBackend = Get-ListenerProcess 13048
+if ($existingBackend) {
+    throw "Port 13048 is already served by $($existingBackend.ProcessName) (PID $($existingBackend.Id)). No build was performed. To update, first wait for active uploads to finish and stop that application process, then rerun start-local.ps1. To use the current version, open http://127.0.0.1:13048/ directly."
+}
+
 $alistExe = Join-Path $PSScriptRoot 'alist.exe'
 if (-not (Test-Path -LiteralPath $alistExe)) {
     throw "AList executable not found: $alistExe"
@@ -120,7 +127,7 @@ Wait-Endpoint 'AList' 'http://127.0.0.1:5244/api/public/settings'
 
 $backendProcess = Get-ListenerProcess 13048
 if ($backendProcess) {
-    Write-Host "[reuse] application (PID $($backendProcess.Id))"
+    throw "Port 13048 was occupied during the build by PID $($backendProcess.Id). Refusing to reuse a potentially outdated application."
 } else {
     $backendProcess = Start-LoggedProcess 'backend' $backendExe @() $PSScriptRoot
 }

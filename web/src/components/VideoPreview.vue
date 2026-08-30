@@ -23,6 +23,7 @@ const videoRetry = ref(0)
 const selectedVariant = ref<'playback' | 'original' | ''>('')
 type Failure = 'checking' | 'preparing' | 'network' | 'permission' | 'missing' | 'unsupported' | 'unavailable' | 'external'
 const failure = ref<Failure>('checking')
+const failureStatus = ref(0)
 const automaticRetry = ref(false)
 let automaticAttempts = 0
 let videoRetryTimer = 0
@@ -74,6 +75,7 @@ async function onVideoError(event: Event) {
 	videoFailed.value = true
 	if (!internalSource.value) { failure.value = 'external'; return }
 	failure.value = 'checking'
+	failureStatus.value = 0
 	const errorCode = (event.currentTarget as HTMLVideoElement).error?.code
 	const controller = new AbortController()
 	diagnostic = controller
@@ -85,8 +87,16 @@ async function onVideoError(event: Event) {
 		})
 		void response.body?.cancel().catch(() => undefined)
 		if (disposed || diagnostic !== controller) return
+		failureStatus.value = response.status
 		if (response.status === 401 || response.status === 403) { failure.value = 'permission'; return }
 		if (response.status === 404 || response.status === 410) { failure.value = 'missing'; return }
+		// A cached/new frontend may meet a server predating `watch`. Use its existing
+		// compatible rendition endpoint once; never retry a rejected variant forever.
+		if (response.status === 400 && new URL(playbackSrc.value, window.location.href).searchParams.get('variant') === 'watch' && !selectedVariant.value) {
+			selectedVariant.value = 'playback'
+			videoFailed.value = false
+			return
+		}
 		if (response.status === 503 && response.headers.get('X-Media-State') === 'preparing') {
 			scheduleRetry('preparing', Math.max(0, Number(response.headers.get('Retry-After')) || 0) * 1000)
 			return
@@ -140,6 +150,7 @@ const failureDetail = computed(() => {
 	if (failure.value === 'missing') return '请联系上传者确认文件是否仍可访问'
 	if (failure.value === 'external') return '请检查原网站后重新尝试'
 	if (failure.value === 'unsupported') return '可以重试，或尝试播放原文件'
+	if (failure.value === 'unavailable') return `服务器拒绝了播放请求（HTTP ${failureStatus.value}），请刷新页面后重试`
 	return automaticRetry.value ? '网络或媒体存储暂时不可用，稍后自动重试' : '已停止自动重试，请检查网络后重试'
 })
 function retryVideo() {

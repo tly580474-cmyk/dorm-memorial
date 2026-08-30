@@ -167,7 +167,7 @@ const mediaUsage = ref<MediaUsage | null>(null)
 const mediaSelectionError = ref('')
 const mediaLoadErrors = ref(new Set<string>())
 const publicProfile = ref<Member | null>(null)
-const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'uploading' || item.status === 'processing'))
+const mediaUploading = computed(() => editorMedia.value.some((item) => item.status === 'pending' || item.status === 'uploading' || item.status === 'processing'))
 const editorMediaSaveSignature = computed(() => editorMedia.value.map((item) => item.media?.id ?? item.key).join('|'))
 const composerSaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 let composerAutosaveTimer = 0
@@ -790,7 +790,7 @@ function addGuestbookMediaFiles(files: File[]) {
       guestbookError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。`
       continue
     }
-    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     guestbookMedia.value.push(item)
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
   }
@@ -1271,7 +1271,7 @@ async function handleRichImageInput(event: Event) {
     composerError.value = '请选择不超过 25 MiB 的图片。'
     return
   }
-  const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'image', status: 'pending', progress: 0, error: '', persisted: false }
+  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'image', status: 'pending', progress: 0, error: '', persisted: false })
   editorMedia.value.push(item)
   try {
     await uploadEditorMedia(item)
@@ -1310,7 +1310,8 @@ function addMediaFiles(files: File[]) {
       mediaSelectionError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。`
       continue
     }
-    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    // Async callbacks must keep the same reactive item used by the queue, not its raw object.
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
     editorMedia.value.push(item)
     // 文件选择后立即在后台上传；错误由队列项就地展示，不打断正文输入。
@@ -1428,7 +1429,7 @@ async function readAudioMetadata(item: EditorMedia) {
 }
 
 async function removeEditorMedia(item: EditorMedia) {
-  if (item.status === 'uploading' || item.status === 'processing') return
+  if (item.status === 'pending' || item.status === 'uploading' || item.status === 'processing') return
   editorMedia.value = editorMedia.value.filter((candidate) => candidate.key !== item.key)
   if (!item.media) return
   if (item.persisted) {
@@ -1784,7 +1785,7 @@ function commitVoiceRecording() {
     messageError.value = '每条消息最多 6 个附件。'
     return
   }
-  const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'audio', status: 'pending', progress: 0, error: '', persisted: false }
+  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'audio', status: 'pending', progress: 0, error: '', persisted: false })
   item.metadataPromise = readAudioMetadata(item)
   messageMedia.value.push(item)
 }
@@ -1803,7 +1804,7 @@ function addMessageMediaFiles(files: File[]) {
       messageError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : kind === 'image' ? `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。` : `${file.name} 为空或超过 8 GiB。`
       continue
     }
-    const item: EditorMedia = { key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false }
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     messageMedia.value.push(item)
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
     if (kind === 'audio') item.metadataPromise = readAudioMetadata(item)
@@ -2295,14 +2296,14 @@ async function copyInvites() {
                     <small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '正在读取文件信息' : item.status === 'uploading' ? `正在后台上传 ${item.progress}%` : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small>
                     <button v-if="item.status === 'uploading'" class="upload-speed-hint" type="button" :aria-describedby="`upload-speed-tip-${item.key}`" aria-label="查看上传速度说明">
                       <Info :size="15" aria-hidden="true" />
-                      <span :id="`upload-speed-tip-${item.key}`" class="upload-speed-tooltip" role="tooltip">上传速度先慢后快，稍安勿躁，这是TCP的特性</span>
+                      <span :id="`upload-speed-tip-${item.key}`" class="upload-speed-tooltip" role="tooltip">百分比反映文件发送到服务器的进度；上传完成后会单独显示视频处理状态。速度会受网络和服务器负载影响。</span>
                     </button>
                   </span>
                   <progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress>
                   <progress v-else-if="item.status === 'processing'" max="100">处理中</progress>
                 </div>
                 <button v-if="item.status === 'error'" type="button" aria-label="重新上传" title="重新上传" @click="retryEditorMedia(item)"><RotateCcw :size="18" /></button>
-                <button v-else type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
+                <button v-else type="button" :disabled="item.status === 'pending' || item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" title="移除" @click="removeEditorMedia(item)"><Trash2 :size="18" /></button>
               </article>
             </div>
             <div v-if="mediaUsage" class="media-usage"><span>我的媒体空间</span><span>{{ formatBytes(mediaUsage.used_bytes + mediaUsage.reserved_bytes) }} / {{ formatBytes(mediaUsage.quota_bytes) }}</span><progress :value="usagePercent()" max="100">{{ usagePercent() }}%</progress></div>
