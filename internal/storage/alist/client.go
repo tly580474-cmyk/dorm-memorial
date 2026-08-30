@@ -147,8 +147,8 @@ func (c *Client) Authenticate(ctx context.Context) error {
 }
 
 func (c *Client) Put(ctx context.Context, objectPath string, body io.Reader, size int64) error {
-	if size < 0 {
-		return fmt.Errorf("negative content length: %w", storage.ErrInvalidPath)
+	if body == nil || size < 0 {
+		return fmt.Errorf("body is nil or content length is negative: %w", storage.ErrInvalidPath)
 	}
 	remotePath, err := c.remotePath(objectPath)
 	if err != nil {
@@ -187,12 +187,18 @@ func (c *Client) OpenRange(ctx context.Context, objectPath, byteRange string) (*
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("download object returned an empty response: %w", storage.ErrUnavailable)
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone || resp.StatusCode >= 500 {
 		resp.Body.Close()
 		c.invalidateResolvedURL(objectPath)
 		resp, err = c.openRange(ctx, objectPath, byteRange, true)
 		if err != nil {
 			return nil, err
+		}
+		if resp == nil || resp.Body == nil {
+			return nil, fmt.Errorf("download object returned an empty response: %w", storage.ErrUnavailable)
 		}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -349,6 +355,9 @@ func (c *Client) resolveURL(ctx context.Context, objectPath string, refresh bool
 		base, _ := url.Parse(c.baseURL + "/")
 		resolved = base.ResolveReference(resolved)
 	}
+	if (resolved.Scheme != "http" && resolved.Scheme != "https") || resolved.Host == "" || resolved.User != nil {
+		return "", fmt.Errorf("alist returned an unsafe raw URL: %w", storage.ErrUnavailable)
+	}
 	value := resolved.String()
 	c.urlMu.Lock()
 	c.urlCache[objectPath] = resolvedURL{value: value, expiresAt: time.Now().Add(resolvedURLTTL)}
@@ -377,9 +386,26 @@ func (c *Client) postJSON(ctx context.Context, endpoint string, payload any, out
 }
 
 func (c *Client) doEnvelope(req *http.Request, out any) error {
-	resp, err := c.http.Do(req)
+	// API calls carry credentials and some of them carry replayable JSON or
+	// upload bodies. Keep the caller's transport and redirect policy, but add a
+	// second guard that refuses every API redirect. Raw object downloads use
+	// c.http directly so a provider CDN can still redirect those GET requests.
+	httpClient := *c.http
+	checkRedirect := httpClient.CheckRedirect
+	httpClient.CheckRedirect = func(next *http.Request, via []*http.Request) error {
+		if checkRedirect != nil {
+			if err := checkRedirect(next, via); err != nil {
+				return err
+			}
+		}
+		return fmt.Errorf("alist API redirect refused: %w", storage.ErrUnavailable)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("alist request: %w", errors.Join(storage.ErrUnavailable, err))
+	}
+	if resp == nil || resp.Body == nil {
+		return fmt.Errorf("alist request returned an empty response: %w", storage.ErrUnavailable)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +22,36 @@ type memoryStorage struct {
 	values     map[string][]byte
 	openCount  int
 	rangeCount int
+}
+
+type delayedOpenStorage struct {
+	*memoryStorage
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *delayedOpenStorage) Open(ctx context.Context, path string) (io.ReadCloser, error) {
+	s.mu.Lock()
+	data, ok := s.values[path]
+	if ok {
+		data = append([]byte(nil), data...)
+	}
+	s.openCount++
+	s.mu.Unlock()
+	first := false
+	s.once.Do(func() { first = true; close(s.started) })
+	if first {
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if !ok {
+		return nil, storage.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
 }
 
 func newMemoryStorage() *memoryStorage { return &memoryStorage{values: make(map[string][]byte)} }
@@ -162,6 +195,76 @@ func TestCompletedMissIsCachedButInterruptedReadIsNot(t *testing.T) {
 	body.Close()
 	if upstream.openCount != 3 {
 		t.Fatalf("interrupted object should reopen upstream, opens=%d", upstream.openCount)
+	}
+}
+
+func TestPutDoesNotAllowStaleInFlightReadToPopulateCache(t *testing.T) {
+	upstream := &delayedOpenStorage{
+		memoryStorage: newMemoryStorage(),
+		started:       make(chan struct{}),
+		release:       make(chan struct{}),
+	}
+	upstream.values["/item"] = []byte("old")
+	cached, err := New(upstream, t.TempDir(), 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		body, err := cached.Open(context.Background(), "/item")
+		if err != nil {
+			readDone <- err
+			return
+		}
+		data, readErr := io.ReadAll(body)
+		closeErr := body.Close()
+		if readErr != nil {
+			readDone <- readErr
+			return
+		}
+		if closeErr != nil || string(data) != "old" {
+			readDone <- errors.New("unexpected in-flight payload")
+			return
+		}
+		readDone <- nil
+	}()
+	<-upstream.started
+	if err := cached.Put(context.Background(), "/item", bytes.NewReader([]byte("new")), 3); err != nil {
+		t.Fatal(err)
+	}
+	close(upstream.release)
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+	body, err := cached.Open(context.Background(), "/item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(body)
+	closeErr := body.Close()
+	if err != nil || closeErr != nil || string(data) != "new" {
+		t.Fatalf("cache served stale data=%q read=%v close=%v", data, err, closeErr)
+	}
+}
+
+func TestNewRemovesOrphanCacheTemps(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, strings.Repeat("a", 64)+"-orphan.tmp")
+	if err := os.WriteFile(tmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manual := filepath.Join(dir, "manual.tmp")
+	if err := os.WriteFile(manual, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(newMemoryStorage(), dir, 1024); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan temp still exists: %v", err)
+	}
+	if _, err := os.Stat(manual); err != nil {
+		t.Fatalf("unrelated temp was removed: %v", err)
 	}
 }
 

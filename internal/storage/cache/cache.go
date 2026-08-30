@@ -19,7 +19,10 @@ import (
 	"dorm-memorial/internal/storage"
 )
 
-type flight struct{ done chan struct{} }
+type flight struct {
+	done       chan struct{}
+	generation uint64
+}
 
 // Storage keeps fully written or fully consumed objects on local disk. Partial
 // reads never become cache entries, so an interrupted transfer cannot poison
@@ -30,6 +33,10 @@ type Storage struct {
 	maxBytes int64
 	mu       sync.Mutex
 	flights  map[string]*flight
+	// generations changes whenever a caller mutates an object. A completed
+	// read from an older generation must never overwrite the cache after Put,
+	// Delete, or Move has started.
+	generations map[string]uint64
 }
 
 func New(upstream storage.ObjectStorage, dir string, maxBytes int64) (*Storage, error) {
@@ -46,7 +53,8 @@ func New(upstream storage.ObjectStorage, dir string, maxBytes int64) (*Storage, 
 	if err := os.MkdirAll(abs, 0o750); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
-	c := &Storage{upstream: upstream, dir: abs, maxBytes: maxBytes, flights: make(map[string]*flight)}
+	c := &Storage{upstream: upstream, dir: abs, maxBytes: maxBytes, flights: make(map[string]*flight), generations: make(map[string]uint64)}
+	c.removeOrphanTemps()
 	c.prune()
 	return c, nil
 }
@@ -54,11 +62,15 @@ func New(upstream storage.ObjectStorage, dir string, maxBytes int64) (*Storage, 
 func (c *Storage) Put(ctx context.Context, objectPath string, body io.Reader, size int64) error {
 	c.invalidate(objectPath)
 	if size < 0 || size > c.maxBytes {
-		return c.upstream.Put(ctx, objectPath, body, size)
+		err := c.upstream.Put(ctx, objectPath, body, size)
+		c.invalidate(objectPath)
+		return err
 	}
 	temp, err := os.CreateTemp(c.dir, c.key(objectPath)+"-*.tmp")
 	if err != nil {
-		return c.upstream.Put(ctx, objectPath, body, size)
+		err = c.upstream.Put(ctx, objectPath, body, size)
+		c.invalidate(objectPath)
+		return err
 	}
 	tempName := temp.Name()
 	written := int64(0)
@@ -80,9 +92,14 @@ func (c *Storage) Put(ctx context.Context, objectPath string, body io.Reader, si
 	closeErr := temp.Close()
 	if upstreamErr != nil || cacheFailed || closeErr != nil || written != size {
 		_ = os.Remove(tempName)
+		c.invalidate(objectPath)
 		return upstreamErr
 	}
-	if err := c.commit(tempName, c.path(objectPath)); err != nil {
+	// Invalidate again after the remote write. Reads that started while Put was
+	// in flight belong to the previous generation and must not win the cache
+	// race after this upload completes.
+	generation := c.invalidate(objectPath)
+	if err := c.commit(objectPath, generation, tempName, c.path(objectPath)); err != nil {
 		_ = os.Remove(tempName)
 	}
 	return nil
@@ -107,7 +124,7 @@ func (c *Storage) Open(ctx context.Context, objectPath string) (io.ReadCloser, e
 				c.finishFlight(objectPath, current)
 				return body, nil
 			}
-			return &fillReader{source: body, temp: temp, cache: c, objectPath: objectPath, current: current}, nil
+			return &fillReader{source: body, temp: temp, cache: c, objectPath: objectPath, current: current, generation: current.generation}, nil
 		}
 		select {
 		case <-ctx.Done():
@@ -150,20 +167,26 @@ func (c *Storage) OpenUncached(ctx context.Context, objectPath string) (io.ReadC
 }
 
 func (c *Storage) Delete(ctx context.Context, objectPath string) error {
+	c.invalidate(objectPath)
 	err := c.upstream.Delete(ctx, objectPath)
+	// A failed or ambiguous delete can still have reached the provider. Keep
+	// any read that overlapped the operation from publishing stale bytes.
+	c.invalidate(objectPath)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
-	c.invalidate(objectPath)
 	return err
 }
 
 func (c *Storage) Move(ctx context.Context, from, to string) error {
-	if err := c.upstream.Move(ctx, from, to); err != nil {
-		return err
-	}
 	c.invalidate(from)
 	c.invalidate(to)
+	err := c.upstream.Move(ctx, from, to)
+	c.invalidate(from)
+	c.invalidate(to)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -211,7 +234,7 @@ func (c *Storage) OpenRange(ctx context.Context, objectPath, byteRange string) (
 			if owner {
 				temp, tempErr := os.CreateTemp(c.dir, c.key(objectPath)+"-*.tmp")
 				if tempErr == nil {
-					response.Body = &fillReader{source: response.Body, temp: temp, cache: c, objectPath: objectPath, current: current}
+					response.Body = &fillReader{source: response.Body, temp: temp, cache: c, objectPath: objectPath, current: current, generation: current.generation}
 				} else {
 					c.finishFlight(objectPath, current)
 				}
@@ -232,6 +255,7 @@ type fillReader struct {
 	cache      *Storage
 	objectPath string
 	current    *flight
+	generation uint64
 	written    int64
 	done       bool
 }
@@ -267,7 +291,7 @@ func (r *fillReader) completeCache() {
 		name := r.temp.Name()
 		if err := r.temp.Close(); err == nil {
 			if info, statErr := os.Stat(name); statErr == nil && info.Size() <= r.cache.maxBytes {
-				if r.cache.commit(name, r.cache.path(r.objectPath)) == nil {
+				if r.cache.commit(r.objectPath, r.generation, name, r.cache.path(r.objectPath)) == nil {
 					r.temp = nil
 				}
 			}
@@ -310,7 +334,7 @@ func (c *Storage) beginFlight(objectPath string) (bool, *flight) {
 	if current := c.flights[objectPath]; current != nil {
 		return false, current
 	}
-	current := &flight{done: make(chan struct{})}
+	current := &flight{done: make(chan struct{}), generation: c.generations[objectPath]}
 	c.flights[objectPath] = current
 	return true, current
 }
@@ -324,9 +348,14 @@ func (c *Storage) finishFlight(objectPath string, current *flight) {
 	}
 }
 
-func (c *Storage) commit(tempName, finalName string) error {
+var errStaleCache = errors.New("stale cache generation")
+
+func (c *Storage) commit(objectPath string, generation uint64, tempName, finalName string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.generations[objectPath] != generation {
+		return errStaleCache
+	}
 	_ = os.Remove(finalName)
 	if err := os.Rename(tempName, finalName); err != nil {
 		return err
@@ -337,10 +366,39 @@ func (c *Storage) commit(tempName, finalName string) error {
 	return nil
 }
 
-func (c *Storage) invalidate(objectPath string) {
+func (c *Storage) invalidate(objectPath string) uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_ = os.Remove(c.path(objectPath))
+	c.generations[objectPath]++
+	return c.generations[objectPath]
+}
+
+// A process can terminate between CreateTemp and commit. Remove only the
+// cache's own temporary files at startup; active transfers are not present yet.
+func (c *Storage) removeOrphanTemps() {
+	entries, err := os.ReadDir(c.dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !isCacheTempName(entry.Name()) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(c.dir, entry.Name()))
+	}
+}
+
+func isCacheTempName(name string) bool {
+	if len(name) <= 65 || name[64] != '-' || !strings.HasSuffix(name, ".tmp") {
+		return false
+	}
+	for _, value := range name[:64] {
+		if (value < '0' || value > '9') && (value < 'a' || value > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Storage) prune() {

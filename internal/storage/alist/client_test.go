@@ -103,6 +103,60 @@ func TestStatAndRangeDownload(t *testing.T) {
 	}
 }
 
+func TestRejectsUnsafeResolvedURL(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/fs/get" {
+			http.NotFound(w, r)
+			return
+		}
+		writeOK(w, map[string]any{"raw_url": "file:///etc/passwd"})
+	}))
+	defer server.Close()
+	client := newTestClient(t, server.URL)
+	if _, err := client.ResolveURL(context.Background(), "/secret.txt"); !errors.Is(err, storage.ErrUnavailable) {
+		t.Fatalf("unsafe raw URL error=%v", err)
+	}
+}
+
+func TestPutRejectsNilBody(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, "http://127.0.0.1:1")
+	if err := client.Put(context.Background(), "/empty", nil, 0); !errors.Is(err, storage.ErrInvalidPath) {
+		t.Fatalf("nil body error=%v", err)
+	}
+}
+
+func TestAPIRequestRefusesRedirectWithoutForwardingBody(t *testing.T) {
+	t.Parallel()
+	var forwarded int
+	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded++
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer external.Close()
+
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/fs/put" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Location", external.URL+"/capture")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer api.Close()
+
+	client := newTestClient(t, api.URL)
+	err := client.Put(context.Background(), "/secret.txt", strings.NewReader("credential-bearing body"), int64(len("credential-bearing body")))
+	if !errors.Is(err, storage.ErrUnavailable) {
+		t.Fatalf("redirect error=%v", err)
+	}
+	if forwarded != 0 {
+		t.Fatalf("redirect forwarded API body to external origin %d times", forwarded)
+	}
+}
+
 func TestRangeReusesResolvedURLAndRefreshesExpiredURL(t *testing.T) {
 	t.Parallel()
 	var resolves, oldReads, newReads int

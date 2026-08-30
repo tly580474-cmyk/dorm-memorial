@@ -119,6 +119,7 @@ type Store struct {
 	stageMu         sync.Mutex
 	background      map[string]bool
 	videoTranscodes chan struct{}
+	videoPreviews   chan struct{}
 	imageRenders    chan struct{}
 	imageDisplays   map[string]*imageDisplayJob
 	uploadLockMu    sync.Mutex
@@ -130,7 +131,7 @@ func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) 
 	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
 		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
 	}
-	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2), imageDisplays: make(map[string]*imageDisplayJob), uploadLocks: make(map[string]*uploadRequestLock)}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), videoPreviews: make(chan struct{}, 2), imageRenders: make(chan struct{}, 2), imageDisplays: make(map[string]*imageDisplayJob), uploadLocks: make(map[string]*uploadRequestLock)}
 }
 
 func (s *Store) ConfigureVideoProcessing(stagingDir, encoder string) {
@@ -215,6 +216,13 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 		if err != nil {
 			return Record{}, fmt.Errorf("fingerprint image upload: %w", errors.Join(ErrInvalid, err))
 		}
+	} else if mediaType == "audio" {
+		prepared, cleanup, err := prepareAudioUpload(ctx, input)
+		if err != nil {
+			return Record{}, err
+		}
+		stagedCleanup = cleanup
+		input = prepared
 	}
 
 	if existing, ok, err := s.existingRequest(ctx, actor.ID, input.ClientRequestID, requestFingerprint); err != nil {
@@ -283,7 +291,14 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	}
 	previewPath = imageInfo.previewPath
 	if mediaType == "video" {
-		previewPath = buildVideoPreview(ctx, s.objects, s.ffmpegPath, objectPath, actor.ID, mediaID, now, input.DurationMS)
+		preview := buildVideoPreviewResult(ctx, s.objects, s.ffmpegPath, objectPath, actor.ID, mediaID, now, input.DurationMS)
+		previewPath = preview.path
+		if preview.attemptedPath != "" {
+			if release, lockErr := s.acquireUploadLock(ctx, "media-lifecycle\x00"+mediaID); lockErr == nil {
+				cleanupUnregisteredDerivedObject(ctx, s, preview.attemptedPath)
+				release()
+			}
+		}
 	}
 	record := Record{
 		ID: mediaID, OwnerID: actor.ID, OriginalFilename: input.Filename, MediaType: mediaType,
@@ -367,7 +382,7 @@ func (s *Store) verifySize(ctx context.Context, objectPath string, expected int6
 			}
 		}
 		info, err := s.objects.Stat(ctx, objectPath)
-		if err == nil && info.Size == expected {
+		if err == nil && !info.IsDir && info.Size == expected {
 			return nil
 		}
 		if err != nil {
@@ -544,10 +559,11 @@ func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force
 	if status != "deleted" && attached != 0 && !force {
 		return ErrConfirmationNeeded
 	}
-	if status != "deleted" {
-		if s.objects == nil {
+	if s.objects == nil {
+		if status != "deleted" {
 			return ErrStorageUnavailable
 		}
+	} else {
 		if err := s.objects.Delete(ctx, objectPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return fmt.Errorf("purge object: %w", errors.Join(ErrStorageUnavailable, err))
 		}
@@ -620,6 +636,27 @@ func (s *Store) deleteVariantObjects(ctx context.Context, mediaID string) error 
 	return err
 }
 
+// cleanupUnregisteredDerivedObject removes a deterministic derivative only
+// after confirming that no ready media record already references it. The
+// lifecycle lock protects registration in this process; the database check
+// also preserves objects that were registered before an ambiguous Put error.
+// Keep the original-object check as a final guard even though callers pass
+// only derived paths.
+func cleanupUnregisteredDerivedObject(ctx context.Context, s *Store, objectPath string) {
+	if s == nil || s.db == nil || s.objects == nil || objectPath == "" {
+		return
+	}
+	stateCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var registered int
+	if err := s.db.QueryRowContext(stateCtx, `SELECT COUNT(*) FROM media m
+		LEFT JOIN media_variants v ON v.media_id = m.id AND v.object_path = ?
+		WHERE m.status = 'ready' AND (m.object_path = ? OR m.preview_path = ? OR v.object_path IS NOT NULL)`, objectPath, objectPath, objectPath).Scan(&registered); err != nil || registered != 0 {
+		return
+	}
+	cleanupDerivedObject(ctx, s.objects, objectPath)
+}
+
 func (s *Store) InspectContent(ctx context.Context, actor identity.User, id string) (ContentDescriptor, error) {
 	defer storage.Time(ctx, "media_db")()
 	var ownerID, objectPath, previewPath, filename, mediaType, mimeType, status, createdText string
@@ -641,7 +678,7 @@ func (s *Store) InspectContent(ctx context.Context, actor identity.User, id stri
 		EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id),
 		EXISTS(SELECT 1 FROM message_media mm JOIN messages msg ON msg.id = mm.message_id
 			JOIN conversation_members cm ON cm.conversation_id = msg.conversation_id
-			WHERE mm.media_id = m.id AND cm.user_id = ?)
+			WHERE mm.media_id = m.id AND msg.status = 'sent' AND cm.user_id = ?)
 		FROM media m WHERE m.id = ?`, actor.ID, actor.ID, id).Scan(&ownerID, &objectPath, &previewPath, &filename, &mediaType, &mimeType, &size, &status, &createdText, &durationMS,
 		&displayPath, &displayMIME, &displaySize, &playbackPath, &playbackMIME, &playbackSize, &generallyReadable, &messageAttached, &messageReadable)
 	if errors.Is(err, sql.ErrNoRows) || status == "deleted" {
@@ -715,10 +752,37 @@ func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor
 
 func (s *Store) scheduleVideoPreview(descriptor ContentDescriptor) {
 	s.runBackground("preview:"+descriptor.ID, func(ctx context.Context) {
+		select {
+		case s.videoPreviews <- struct{}{}:
+			defer func() { <-s.videoPreviews }()
+		case <-ctx.Done():
+			return
+		}
 		createdAt, _ := time.Parse(time.RFC3339Nano, descriptor.CreatedText)
-		previewPath := buildVideoPreview(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, createdAt, descriptor.DurationMS.Int64)
-		if previewPath != "" {
-			_, _ = s.db.ExecContext(ctx, `UPDATE media SET preview_path = ?, updated_at = ? WHERE id = ? AND preview_path = ''`, previewPath, nowText(time.Now().UTC()), descriptor.ID)
+		preview := buildVideoPreviewResult(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, createdAt, descriptor.DurationMS.Int64)
+		if preview.path == "" && preview.attemptedPath == "" {
+			return
+		}
+		// Delete/Purge can run while FFmpeg or the archive write is in flight.
+		// Serialize registration with that lifecycle operation and clean an
+		// already-uploaded poster if the media disappeared in the meantime.
+		release, err := s.acquireUploadLock(ctx, "media-lifecycle\x00"+descriptor.ID)
+		if err != nil {
+			return
+		}
+		defer release()
+		if preview.attemptedPath != "" {
+			cleanupUnregisteredDerivedObject(ctx, s, preview.attemptedPath)
+			return
+		}
+		previewPath := preview.path
+		result, err := s.db.ExecContext(ctx, `UPDATE media SET preview_path = ?, updated_at = ? WHERE id = ? AND status = 'ready' AND preview_path = ''`, previewPath, nowText(time.Now().UTC()), descriptor.ID)
+		if err != nil {
+			cleanupUnregisteredDerivedObject(ctx, s, previewPath)
+			return
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			cleanupUnregisteredDerivedObject(ctx, s, previewPath)
 		}
 	})
 }
@@ -731,15 +795,40 @@ func (s *Store) scheduleVideoPlayback(descriptor ContentDescriptor) {
 		case <-ctx.Done():
 			return
 		}
-		path, mimeType, size := buildVideoPlayback(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText, s.videoEncoder)
+		playback := buildVideoPlaybackResult(ctx, s.objects, s.ffmpegPath, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText, s.videoEncoder)
+		path, mimeType, size := playback.path, playback.mimeType, playback.size
+		if (path == "" || size <= 0) && playback.attemptedPath == "" {
+			return
+		}
+		// Keep variant registration ordered with Delete/Purge. If the media was
+		// removed while the rendition was being generated, do not leave an
+		// unreferenced remote object behind.
+		release, err := s.acquireUploadLock(ctx, "media-lifecycle\x00"+descriptor.ID)
+		if err != nil {
+			return
+		}
+		defer release()
+		if playback.attemptedPath != "" {
+			cleanupUnregisteredDerivedObject(ctx, s, playback.attemptedPath)
+			return
+		}
 		if path == "" || size <= 0 {
 			return
 		}
 		now := nowText(time.Now().UTC())
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
-			VALUES(?, 'playback', ?, ?, ?, ?, ?)
+		result, err := s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
+			SELECT id, 'playback', ?, ?, ?, ?, ? FROM media WHERE id = ? AND status = 'ready'
 			ON CONFLICT(media_id, kind) DO UPDATE SET object_path = excluded.object_path, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
-			descriptor.ID, path, mimeType, size, now, now)
+			path, mimeType, size, now, now, descriptor.ID)
+		if err != nil {
+			if path != descriptor.ObjectPath {
+				cleanupUnregisteredDerivedObject(ctx, s, path)
+			}
+			return
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 && path != descriptor.ObjectPath {
+			cleanupUnregisteredDerivedObject(ctx, s, path)
+		}
 	})
 }
 

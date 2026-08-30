@@ -70,7 +70,10 @@ func (s *Store) StageVideo(ctx context.Context, actor identity.User, input Uploa
 	}
 	tempPath := temp.Name()
 	hasher := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(temp, hasher), input.Body)
+	// Read at most the declared size plus one byte. This bounds staging when a
+	// caller lies about Content-Length or supplies a never-ending reader, while
+	// still letting the size comparison reject an oversized body.
+	written, copyErr := copyUploadBody(ctx, io.MultiWriter(temp, hasher), input.Body, input.Size)
 	closeErr := temp.Close()
 	if copyErr != nil || closeErr != nil || written != input.Size {
 		_ = os.Remove(tempPath)
@@ -362,6 +365,11 @@ func (s *Store) processStagedVideoWithSource(ctx context.Context, jobID string, 
 // Returning from this helper releases the sole SQLite connection before the
 // caller writes failure status; BeginTx errors must never dereference a nil tx.
 func (s *Store) completeStagedVideo(ctx context.Context, video stagedVideo, checkpoint videoCheckpoint, playbackObjectPath, previewObjectPath string) error {
+	release, err := s.acquireUploadLock(ctx, "media-lifecycle\x00"+video.mediaID)
+	if err != nil {
+		return err
+	}
+	defer release()
 	now := nowText(time.Now().UTC())
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -539,6 +547,24 @@ func (s *Store) failProcessing(ctx context.Context, video stagedVideo, code stri
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	now := nowText(time.Now().UTC())
+	// A transaction commit can return an error after the database has already
+	// made its changes (for example when the connection drops while reporting
+	// the result). Preserve a ready media row in that ambiguous case; deleting
+	// its remote objects would turn a successful upload into a broken record.
+	var mediaStatus string
+	statusErr := s.db.QueryRowContext(cleanupCtx, `SELECT status FROM media WHERE id = ?`, video.mediaID).Scan(&mediaStatus)
+	if statusErr == nil && mediaStatus == "ready" {
+		_, _ = s.db.ExecContext(cleanupCtx, `UPDATE media_processing_jobs SET phase = 'completed', step = '', error_code = '', updated_at = ? WHERE id = ?`, now, video.jobID)
+		_, _ = s.db.ExecContext(cleanupCtx, `UPDATE upload_jobs SET state = 'completed', error_code = '', updated_at = ? WHERE id = ?`, now, video.jobID)
+		removeStagedVideoFiles(video.stagingPath)
+		return
+	}
+	if statusErr != nil && !errors.Is(statusErr, sql.ErrNoRows) {
+		// The media state is unknown. Leave the job for maintenance recovery;
+		// deleting remote objects while the database is unavailable could remove
+		// an upload that another worker has already finalized.
+		return
+	}
 	_, _ = s.db.ExecContext(cleanupCtx, `UPDATE media_processing_jobs SET phase = 'failed', error_code = ?, updated_at = ? WHERE id = ?`, code, now, video.jobID)
 	_, _ = s.db.ExecContext(cleanupCtx, `UPDATE upload_jobs SET state = 'failed', error_code = ?, updated_at = ? WHERE id = ?`, code, now, video.jobID)
 	_, _ = s.db.ExecContext(cleanupCtx, `UPDATE media SET status = 'unavailable', updated_at = ? WHERE id = ? AND status = 'uploading'`, now, video.mediaID)

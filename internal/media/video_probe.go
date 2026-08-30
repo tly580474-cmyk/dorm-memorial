@@ -106,7 +106,7 @@ func probeVideo(ctx context.Context, ffmpegPath, inputPath string) (probedVideo,
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	args := []string{"-v", "error", "-show_entries", "format=format_name,duration,bit_rate:format_tags=major_brand:stream=codec_name,codec_type,profile,pix_fmt,level,width,height,avg_frame_rate,r_frame_rate,bit_rate,duration,field_order,channels,sample_rate:stream_disposition=attached_pic", "-of", "json", inputPath}
+	args := []string{"-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", videoFormatWhitelist, "-show_entries", "format=format_name,duration,bit_rate:format_tags=major_brand:stream=codec_name,codec_type,profile,pix_fmt,level,width,height,avg_frame_rate,r_frame_rate,bit_rate,duration,field_order,channels,sample_rate:stream_disposition=attached_pic", "-of", "json", inputPath}
 	command := exec.CommandContext(probeCtx, probePath, args...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr

@@ -273,6 +273,7 @@ type memoryObjects struct {
 	objects  map[string][]byte
 	putCount int
 	badStat  bool
+	statDir  bool
 }
 
 func newMemoryObjects() *memoryObjects { return &memoryObjects{objects: make(map[string][]byte)} }
@@ -313,7 +314,7 @@ func (m *memoryObjects) Stat(_ context.Context, objectPath string) (storage.Obje
 	if m.badStat {
 		size++
 	}
-	return storage.ObjectInfo{Path: objectPath, Name: path.Base(objectPath), Size: size}, nil
+	return storage.ObjectInfo{Path: objectPath, Name: path.Base(objectPath), Size: size, IsDir: m.statDir}, nil
 }
 
 func (m *memoryObjects) Delete(_ context.Context, objectPath string) error {
@@ -454,7 +455,7 @@ func TestMessageAudioIsReadableOnlyByConversationMembers(t *testing.T) {
 	objects := newMemoryObjects()
 	mediaStore := NewStore(db, objects)
 	mediaStore.verifyDelays = []time.Duration{0}
-	payload := []byte("voice note")
+	payload := []byte{0, 0, 0, 12, 'f', 't', 'y', 'p', 'm', 'p', '4', '2'}
 	record, err := mediaStore.Upload(context.Background(), owner, UploadInput{ClientRequestID: "message-audio-file", Filename: "晚安.m4a", MimeType: "audio/mp4", Size: int64(len(payload)), Body: bytes.NewReader(payload), DurationMS: 2400})
 	if err != nil || record.MediaType != "audio" || record.DurationMS == nil || *record.DurationMS != 2400 {
 		t.Fatalf("audio upload=%+v err=%v", record, err)
@@ -468,7 +469,8 @@ func TestMessageAudioIsReadableOnlyByConversationMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := messageStore.SendMessage(context.Background(), owner, conversation.ID, "", []string{record.ID}, "127.0.0.1"); err != nil {
+	message, err := messageStore.SendMessage(context.Background(), owner, conversation.ID, "", []string{record.ID}, "127.0.0.1")
+	if err != nil {
 		t.Fatal(err)
 	}
 	content, err := mediaStore.OpenContent(context.Background(), recipient, record.ID, "", false)
@@ -478,6 +480,12 @@ func TestMessageAudioIsReadableOnlyByConversationMembers(t *testing.T) {
 	content.Body.Close()
 	if _, err := mediaStore.OpenContent(context.Background(), outsider, record.ID, "", false); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("outsider admin attachment access err=%v", err)
+	}
+	if err := messageStore.RecallMessage(context.Background(), owner, message.ID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mediaStore.OpenContent(context.Background(), recipient, record.ID, "", false); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("recipient accessed attachment from recalled message: %v", err)
 	}
 }
 
@@ -520,6 +528,59 @@ func TestUploadSizeVerificationCleansRemoteObject(t *testing.T) {
 	}
 	if state != "failed" {
 		t.Fatalf("state=%q", state)
+	}
+}
+
+func TestUploadSizeVerificationRejectsDirectory(t *testing.T) {
+	db, user := mediaTestUser(t)
+	objects := newMemoryObjects()
+	objects.statDir = true
+	store := NewStore(db, objects)
+	store.verifyDelays = []time.Duration{0}
+	payload := []byte("OggS audio")
+	_, err := store.Upload(context.Background(), user, UploadInput{ClientRequestID: "request-dir-0001", Filename: "clip.ogg", MimeType: "audio/ogg", Size: int64(len(payload)), Body: bytes.NewReader(payload)})
+	if !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("expected directory verification error, got %v", err)
+	}
+	objects.mu.Lock()
+	remaining := len(objects.objects)
+	objects.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("expected remote cleanup, %d objects remain", remaining)
+	}
+}
+
+func TestCleanupUnregisteredDerivedObjectPreservesRegisteredObject(t *testing.T) {
+	db, user := mediaTestUser(t)
+	objects := newMemoryObjects()
+	store := NewStore(db, objects)
+	now := nowText(time.Now().UTC())
+	registeredPath := "/playback/registered.mp4"
+	originalPath := "/originals/registered.mp4"
+	orphanPath := "/playback/orphan.mp4"
+	objects.objects[registeredPath] = []byte("registered")
+	objects.objects[originalPath] = []byte("original")
+	objects.objects[orphanPath] = []byte("orphan")
+	mediaID := "derived-cleanup-media"
+	if _, err := db.Exec(`INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at) VALUES(?, ?, '/originals/registered.mp4', 'clip.mp4', 'video', 'video/mp4', 10, ?, 'ready', ?, ?)`, mediaID, user.ID, mediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at) VALUES(?, 'playback', ?, 'video/mp4', 10, ?, ?)`, mediaID, registeredPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	cleanupUnregisteredDerivedObject(context.Background(), store, registeredPath)
+	cleanupUnregisteredDerivedObject(context.Background(), store, originalPath)
+	cleanupUnregisteredDerivedObject(context.Background(), store, orphanPath)
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	if _, ok := objects.objects[registeredPath]; !ok {
+		t.Fatal("registered derived object was removed")
+	}
+	if _, ok := objects.objects[originalPath]; !ok {
+		t.Fatal("registered original object was removed")
+	}
+	if _, ok := objects.objects[orphanPath]; ok {
+		t.Fatal("unregistered derived object was retained")
 	}
 }
 
@@ -640,6 +701,35 @@ func TestAdminCanListAndPurgeWithdrawnMedia(t *testing.T) {
 	var count int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE id = ?`, mediaID).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("remaining media=%d err=%v", count, err)
+	}
+}
+
+func TestPurgeWithdrawnMediaCleansRemainingObjects(t *testing.T) {
+	db, admin := mediaTestUser(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	mediaID := "cccccccccccccccccccccccccccccccc"
+	originalPath := "/test/withdrawn-original.mp4"
+	variantPath := "/playback/withdrawn.mp4"
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at, deleted_at)
+		VALUES(?, ?, ?, '已撤下视频.mp4', 'video', 'video/mp4', 8, ?, 'deleted', ?, ?, ?)`, mediaID, admin.ID, originalPath, mediaID, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
+		VALUES(?, 'playback', ?, 'video/mp4', 7, ?, ?)`, mediaID, variantPath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	objects := newMemoryObjects()
+	objects.objects[originalPath] = []byte("original")
+	objects.objects[variantPath] = []byte("variant")
+	store := NewStore(db, objects)
+	if err := store.Purge(ctx, admin, mediaID, false, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	objects.mu.Lock()
+	defer objects.mu.Unlock()
+	if len(objects.objects) != 0 {
+		t.Fatalf("remaining remote objects after purge: %v", objects.objects)
 	}
 }
 

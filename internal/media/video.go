@@ -20,6 +20,13 @@ import (
 
 const maxVideoPreviewBytes = 8 << 20
 
+// Keep FFmpeg on independent video containers. In particular, playlist and
+// image demuxers can resolve paths from inside an uploaded file, which would
+// otherwise let a crafted upload make the worker read unrelated local files.
+// The list deliberately includes the containers accepted by the normal video
+// pipeline while excluding concat, hls, image2, and other reference formats.
+const videoFormatWhitelist = "mov,matroska,webm,avi,mpeg,mpegts,ogg,flv,asf,h264,hevc"
+
 func prepareMP4Upload(ctx context.Context, ffmpegPath string, input UploadInput) (UploadInput, func(), error) {
 	inputFile, err := os.CreateTemp("", "dorm-video-upload-*.mp4")
 	if err != nil {
@@ -32,7 +39,7 @@ func prepareMP4Upload(ctx context.Context, ffmpegPath string, input UploadInput)
 		_ = os.Remove(inputPath)
 		_ = os.Remove(outputPath)
 	}
-	written, copyErr := io.Copy(inputFile, input.Body)
+	written, copyErr := copyUploadBody(ctx, inputFile, input.Body, input.Size)
 	closeErr := inputFile.Close()
 	if copyErr != nil || closeErr != nil || written != input.Size {
 		cleanup()
@@ -131,7 +138,7 @@ func mp4AtomOffsets(filename string) (moov, mdat int64, err error) {
 func RemuxMP4FastStart(ctx context.Context, ffmpegPath, inputPath, outputPath string) error {
 	processCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	args := []string{"-hide_banner", "-loglevel", "error", "-i", inputPath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", outputPath}
+	args := []string{"-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", videoFormatWhitelist, "-i", inputPath, "-map", "0", "-c", "copy", "-movflags", "+faststart", "-y", outputPath}
 	if output, err := exec.CommandContext(processCtx, ffmpegPath, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("remux MP4: %w: %s", err, bytes.TrimSpace(output))
 	}
@@ -145,28 +152,40 @@ func RemuxMP4FastStart(ctx context.Context, ffmpegPath, inputPath, outputPath st
 	return nil
 }
 
+type videoPreviewBuild struct {
+	path          string
+	attemptedPath string
+}
+
 func buildVideoPreview(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID string, createdAt time.Time, durationMS int64) string {
+	return buildVideoPreviewResult(ctx, objects, ffmpegPath, objectPath, ownerID, mediaID, createdAt, durationMS).path
+}
+
+// buildVideoPreviewResult returns attemptedPath when the remote Put may have
+// persisted an object despite returning an error. Callers can then perform a
+// database-aware cleanup without risking a concurrently registered variant.
+func buildVideoPreviewResult(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID string, createdAt time.Time, durationMS int64) videoPreviewBuild {
 	body, err := objects.Open(ctx, objectPath)
 	if err != nil {
-		return ""
+		return videoPreviewBuild{}
 	}
 	defer body.Close()
 
 	input, err := os.CreateTemp("", "dorm-video-*")
 	if err != nil {
-		return ""
+		return videoPreviewBuild{}
 	}
 	inputPath := input.Name()
 	defer input.Close()
 	defer os.Remove(inputPath)
-	defer input.Close()
-	if _, err = io.Copy(input, body); err != nil || input.Close() != nil {
-		return ""
+	sourceSize, copyErr := copyUploadBody(ctx, input, body, MaxFileSize)
+	if copyErr != nil || sourceSize <= 0 || sourceSize > MaxFileSize || input.Close() != nil {
+		return videoPreviewBuild{}
 	}
 
 	output, err := os.CreateTemp("", "dorm-video-preview-*.jpg")
 	if err != nil {
-		return ""
+		return videoPreviewBuild{}
 	}
 	outputPath := output.Name()
 	output.Close()
@@ -177,18 +196,23 @@ func buildVideoPreview(ctx context.Context, objects storage.ObjectStorage, ffmpe
 	seek := videoPreviewSeek(mediaID, durationMS)
 	if err := extractVideoFrame(processCtx, ffmpegPath, inputPath, outputPath, seek); err != nil && seek != 0 {
 		if err = extractVideoFrame(processCtx, ffmpegPath, inputPath, outputPath, 0); err != nil {
-			return ""
+			return videoPreviewBuild{}
 		}
 	}
-	encoded, err := os.ReadFile(outputPath)
-	if err != nil || len(encoded) == 0 || len(encoded) > maxVideoPreviewBytes {
-		return ""
+	encodedFile, err := os.Open(outputPath)
+	if err != nil {
+		return videoPreviewBuild{}
+	}
+	encoded, readErr := io.ReadAll(io.LimitReader(encodedFile, maxVideoPreviewBytes+1))
+	closeErr := encodedFile.Close()
+	if readErr != nil || closeErr != nil || len(encoded) == 0 || len(encoded) > maxVideoPreviewBytes {
+		return videoPreviewBuild{}
 	}
 	previewPath := "/previews/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
 	if err := objects.Put(ctx, previewPath, bytes.NewReader(encoded), int64(len(encoded))); err != nil {
-		return ""
+		return videoPreviewBuild{attemptedPath: previewPath}
 	}
-	return previewPath
+	return videoPreviewBuild{path: previewPath}
 }
 
 func videoPreviewSeek(mediaID string, durationMS int64) float64 {
@@ -208,7 +232,7 @@ func videoPreviewSeek(mediaID string, durationMS int64) float64 {
 }
 
 func extractVideoFrame(ctx context.Context, ffmpegPath, inputPath, outputPath string, seek float64) error {
-	args := []string{"-hide_banner", "-loglevel", "error", "-ss", strconv.FormatFloat(seek, 'f', 3, 64), "-i", inputPath, "-frames:v", "1", "-vf", "scale=960:-2:force_original_aspect_ratio=decrease", "-q:v", "3", "-y", outputPath}
+	args := []string{"-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", videoFormatWhitelist, "-ss", strconv.FormatFloat(seek, 'f', 3, 64), "-i", inputPath, "-frames:v", "1", "-vf", "scale=960:-2:force_original_aspect_ratio=decrease", "-q:v", "3", "-y", outputPath}
 	if output, err := exec.CommandContext(ctx, ffmpegPath, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("extract video frame: %w: %s", err, bytes.TrimSpace(output))
 	}
@@ -217,26 +241,41 @@ func extractVideoFrame(ctx context.Context, ffmpegPath, inputPath, outputPath st
 
 // buildVideoPlayback creates a broadly compatible, bounded-bitrate web
 // rendition while preserving the uploaded original for downloads.
+type videoPlaybackBuild struct {
+	path          string
+	mimeType      string
+	size          int64
+	attemptedPath string
+}
+
 func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID, createdText string, encoderPreferences ...string) (string, string, int64) {
+	result := buildVideoPlaybackResult(ctx, objects, ffmpegPath, objectPath, ownerID, mediaID, createdText, encoderPreferences...)
+	return result.path, result.mimeType, result.size
+}
+
+func buildVideoPlaybackResult(ctx context.Context, objects storage.ObjectStorage, ffmpegPath, objectPath, ownerID, mediaID, createdText string, encoderPreferences ...string) videoPlaybackBuild {
 	body, err := objects.Open(ctx, objectPath)
 	if err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
 	}
 	defer body.Close()
 	input, err := os.CreateTemp("", "dorm-video-playback-source-*.mp4")
 	if err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
 	}
 	inputPath := input.Name()
 	defer input.Close()
 	defer os.Remove(inputPath)
-	size, err := io.Copy(input, body)
+	size, err := copyUploadBody(ctx, input, body, MaxFileSize)
 	if closeErr := input.Close(); err != nil || closeErr != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
+	}
+	if size <= 0 || size > MaxFileSize {
+		return videoPlaybackBuild{}
 	}
 	output, err := os.CreateTemp("", "dorm-video-playback-*.mp4")
 	if err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
 	}
 	outputPath := output.Name()
 	output.Close()
@@ -248,26 +287,38 @@ func buildVideoPlayback(ctx context.Context, objects storage.ObjectStorage, ffmp
 	}
 	prepared, err := prepareVideoPlaybackFile(ctx, ffmpegPath, preference, inputPath, outputPath, size, 0, nil)
 	if err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
 	}
 	if prepared.UseOriginal {
-		return objectPath, "video/mp4", size
+		return videoPlaybackBuild{path: objectPath, mimeType: "video/mp4", size: size}
 	}
 	file, err := os.Open(outputPath)
 	if err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{}
 	}
 	defer file.Close()
 	info, err := file.Stat()
-	if err != nil || info.Size() <= 0 {
-		return "", "", 0
+	if err != nil || info.Size() <= 0 || info.Size() > MaxFileSize {
+		return videoPlaybackBuild{}
 	}
 	createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
 	playbackPath := "/playback/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".mp4"
 	if err := objects.Put(ctx, playbackPath, file, info.Size()); err != nil {
-		return "", "", 0
+		return videoPlaybackBuild{attemptedPath: playbackPath}
 	}
-	return playbackPath, "video/mp4", info.Size()
+	return videoPlaybackBuild{path: playbackPath, mimeType: "video/mp4", size: info.Size()}
+}
+
+// cleanupDerivedObject handles an ambiguous remote write. A provider may have
+// persisted an object before reporting an error, so derived files must be
+// deleted even when the caller's request context has already expired.
+func cleanupDerivedObject(ctx context.Context, objects storage.ObjectStorage, objectPath string) {
+	if objects == nil || objectPath == "" {
+		return
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	_ = objects.Delete(cleanupCtx, objectPath)
 }
 
 // transcodeVideoFile prefers a supported GPU H.264 encoder and falls back to
@@ -300,15 +351,19 @@ func transcodeVideoFileWithProgress(ctx context.Context, ffmpegPath, preference,
 		}
 		processCtx, cancel := context.WithTimeout(ctx, 90*time.Minute)
 		args := []string{
-			"-hide_banner", "-loglevel", "error", "-i", inputPath,
+			"-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", videoFormatWhitelist, "-i", inputPath,
 			"-map", "0:v:0", "-map", "0:a:0?",
 			"-vf", videoFilter(targetKbps),
 		}
 		args = append(args, videoEncoderArgs(encoder, targetKbps)...)
 		args = append(args, "-profile:v", "high", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-y", encodedPath)
 		output, err := exec.CommandContext(processCtx, ffmpegPath, args...).CombinedOutput()
+		processErr := processCtx.Err()
 		cancel()
 		if err != nil {
+			if processErr != nil {
+				return "", processErr
+			}
 			lastErr = fmt.Errorf("%s: %w: %s", encoder, err, bytes.TrimSpace(output))
 			if ctx.Err() != nil {
 				return "", ctx.Err()

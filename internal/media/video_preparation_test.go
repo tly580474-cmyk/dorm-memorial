@@ -233,6 +233,19 @@ func TestPrepareVideoHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestProbeRejectsLocalReferencePlaylist(t *testing.T) {
+	ffmpeg := preparationFFmpeg(t)
+	dir := t.TempDir()
+	createPreparationVideo(t, ffmpeg, filepath.Join(dir, "source.mp4"), "libx264", "12", true)
+	playlist := filepath.Join(dir, "playlist.mp4")
+	if err := os.WriteFile(playlist, []byte("ffconcat version 1.0\nfile 'source.mp4'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probeVideo(context.Background(), ffmpeg, playlist); err == nil {
+		t.Fatal("local reference playlist was accepted as a video input")
+	}
+}
+
 func TestLegacyVideoPlaybackReusesCompatibleOriginal(t *testing.T) {
 	ffmpeg := preparationFFmpeg(t)
 	input := filepath.Join(t.TempDir(), "input.mp4")
