@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -483,7 +485,11 @@ func TestRawMediaUploadCanBeAttachedToPost(t *testing.T) {
 	defer server.Close()
 	cookie := loginTestUser(t, server.URL, "mediaadmin", "correct-horse-battery")
 
-	payload := []byte("image payload")
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, image.NewRGBA(image.Rect(0, 0, 4, 3))); err != nil {
+		t.Fatal(err)
+	}
+	payload := encoded.Bytes()
 	request, err := http.NewRequest(http.MethodPost, server.URL+"/api/media/uploads", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatal(err)

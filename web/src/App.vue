@@ -4,7 +4,7 @@ import MarkdownIt from 'markdown-it'
 import { highlighter as hljs } from './syntax'
 import { AlertCircle, ArchiveRestore, Bell, BookHeart, CalendarDays, Camera, Check, CheckCheck, ChevronLeft, ChevronUp, Copy, DatabaseBackup, Download, Eye, EyeOff, FileEdit, Film, Heart, Home, Image, Info, LogOut, MailPlus, Menu, MessageCircle, Mic, Music, Paperclip, Plus, RefreshCw, RotateCcw, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, Undo2, UploadCloud, UserRound, Users, X } from 'lucide-vue-next'
 import { api, ApiError } from './api'
-import type { MediaProcessingPhase, MediaProcessingStep } from './api'
+import type { MediaLimits, MediaProcessingPhase, MediaProcessingStep } from './api'
 import type { AdminMedia, AdminMessage, AdminUser, ChatMessage, Comment, Conversation, GuestbookEntry, Media, MediaUsage, Member, NotificationItem, Post, Session, User } from './types'
 import RichTextEditor from './components/RichTextEditor.vue'
 import VideoPreview from './components/VideoPreview.vue'
@@ -13,8 +13,18 @@ import type { ViewerItem } from './components/ImageViewer.vue'
 
 const markdownRenderer = new MarkdownIt({ html: false, linkify: true, typographer: false })
 
-// 媒体上传大小统一限制（与后端 APP_MAX_*_UPLOAD_BYTES 保持一致）
-const MAX_IMAGE_BYTES = 15 * 1024 ** 2
+// 图片限制由登录后的服务端配置提供；旧后端或配置请求失败时使用安全默认值。
+const DEFAULT_IMAGE_BYTES = 15 * 1024 ** 2
+const AVATAR_INPUT_BYTES = 25 * 1024 ** 2
+const AVATAR_OUTPUT_BYTES = 2 * 1024 ** 2
+const DEFAULT_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp']
+const mediaLimits = ref<MediaLimits>({ max_image_upload_bytes: DEFAULT_IMAGE_BYTES, supported_image_mime_types: DEFAULT_IMAGE_MIME_TYPES })
+const imageUploadLimitBytes = computed(() => Number.isFinite(mediaLimits.value.max_image_upload_bytes) && mediaLimits.value.max_image_upload_bytes > 0 ? mediaLimits.value.max_image_upload_bytes : DEFAULT_IMAGE_BYTES)
+const supportedImageMimeTypes = computed(() => mediaLimits.value.supported_image_mime_types.length ? mediaLimits.value.supported_image_mime_types : DEFAULT_IMAGE_MIME_TYPES)
+const avatarOutputLimitBytes = computed(() => Math.min(imageUploadLimitBytes.value, AVATAR_OUTPUT_BYTES))
+const imageVideoAccept = computed(() => `${supportedImageMimeTypes.value.join(',')},video/*`)
+const imageVideoAudioAccept = computed(() => `${supportedImageMimeTypes.value.join(',')},video/*,audio/*`)
+let mediaLimitsRequest = 0
 const MAX_VIDEO_BYTES = 300 * 1024 ** 2
 // 语音录制时长上限（秒）
 const MAX_VOICE_SECONDS = 60
@@ -29,12 +39,12 @@ function openImageViewer(items: ViewerItem[], index = 0) {
   imageViewerOpen.value = true
 }
 
-function viewerItems(media: Array<{ id: string; original_filename: string; size_bytes: number; has_preview?: boolean }>): ViewerItem[] {
-	return media.map((item) => ({ id: item.id, filename: item.original_filename, size_bytes: item.size_bytes, has_preview: item.has_preview }))
+function viewerItems(media: Array<{ id: string; original_filename: string; mime_type?: string; size_bytes: number; has_preview?: boolean }>): ViewerItem[] {
+	return media.map((item) => ({ id: item.id, filename: item.original_filename, mime_type: item.mime_type, size_bytes: item.size_bytes, has_preview: item.has_preview }))
 }
 
 // 从一组媒体中取图片并打开查看器；tappedID 用于定位当前点击的图片。
-type ImageSource = { id: string; original_filename: string; media_type: string; size_bytes: number; has_preview?: boolean }
+type ImageSource = { id: string; original_filename: string; mime_type?: string; media_type: string; size_bytes: number; has_preview?: boolean }
 function openImagesFromList(media: ImageSource[], tappedID?: string) {
   const images = media.filter((item) => item.media_type === 'image' && !mediaLoadErrors.value.has(item.id))
   if (!images.length) return
@@ -61,6 +71,7 @@ type EditorMedia = {
   duration_ms?: number
   metadataPromise?: Promise<void>
   uploadPromise?: Promise<void>
+  uploadID?: string
 }
 
 const user = ref<User | null>(null)
@@ -98,6 +109,8 @@ const brokenAvatarIDs = ref(new Set<string>())
 const avatarCropFrame = ref<HTMLElement | null>(null)
 const avatarCropFrameSize = ref(300)
 const avatarCrop = reactive({ sourceURL: '', filename: '', imageWidth: 0, imageHeight: 0, zoom: 1, x: 50, y: 50, outputSize: 512 })
+let avatarUploadID = ''
+let avatarUploadSignature = ''
 const avatarCropStyle = computed(() => {
   if (!avatarCrop.imageWidth || !avatarCrop.imageHeight) return {}
   const frame = avatarCropFrameSize.value
@@ -297,6 +310,7 @@ onMounted(async () => {
   if (contentLoadSentinel.value) contentObserver.observe(contentLoadSentinel.value)
   try {
     applyUser((await api.me()).user)
+    void loadMediaLimits()
     await loadContent()
     await initializeActivity()
   } catch (error) {
@@ -333,6 +347,67 @@ function applyUser(next: User) {
   messageMembers.value = messageMembers.value.map((member) => member.id === next.id ? { ...member, username: next.username, nickname: next.nickname, avatar_path: next.avatar_path, bio: next.bio, bed_no: next.bed_no, memorial_note: next.memorial_note } : member)
 }
 
+async function loadMediaLimits() {
+  const requestID = ++mediaLimitsRequest
+  try {
+    const response = await api.mediaLimits()
+    if (requestID !== mediaLimitsRequest) return
+    const maxBytes = Number(response.max_image_upload_bytes)
+    const maxPixels = Number(response.max_image_pixels)
+    const mimeTypes = Array.isArray(response.supported_image_mime_types)
+      ? response.supported_image_mime_types.filter((value): value is string => typeof value === 'string').map((value) => value.toLowerCase()).filter((value) => value.startsWith('image/'))
+      : []
+    mediaLimits.value = {
+      max_image_upload_bytes: Number.isFinite(maxBytes) && maxBytes > 0 ? maxBytes : DEFAULT_IMAGE_BYTES,
+      supported_image_mime_types: mimeTypes.length ? [...new Set(mimeTypes)] : DEFAULT_IMAGE_MIME_TYPES,
+      ...(Number.isFinite(maxPixels) && maxPixels > 0 ? { max_image_pixels: maxPixels } : {}),
+    }
+  } catch {
+    if (requestID !== mediaLimitsRequest) return
+    // /api/media/limits was added after the initial client. Keep the old defaults
+    // when an older server or a transient request failure cannot provide it.
+    mediaLimits.value = { max_image_upload_bytes: DEFAULT_IMAGE_BYTES, supported_image_mime_types: DEFAULT_IMAGE_MIME_TYPES }
+  }
+}
+
+function resetMediaLimits() {
+  mediaLimitsRequest += 1
+  mediaLimits.value = { max_image_upload_bytes: DEFAULT_IMAGE_BYTES, supported_image_mime_types: DEFAULT_IMAGE_MIME_TYPES }
+}
+
+function formatLimitMiB(bytes: number) {
+  const value = bytes / 1024 ** 2
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
+
+function imageValidationError(file: File, maxBytes = imageUploadLimitBytes.value) {
+  const mimeType = file.type.toLowerCase()
+  if (!supportedImageMimeTypes.value.includes(mimeType)) return `${file.name} 不是支持的图片格式（JPEG、PNG、GIF 或 WebP）。`
+  if (file.size <= 0) return `${file.name} 为空。`
+  if (file.size > maxBytes) return `${file.name} 为空或超过 ${formatLimitMiB(maxBytes)} MiB。`
+  return ''
+}
+
+function mediaUploadID() {
+  return crypto.randomUUID()
+}
+
+function initialUploadID(kind: EditorMedia['kind']) {
+  // Video processing jobs reject a second request with the same id while a
+  // failed processing row still exists. Keep the existing video retry flow;
+  // image (and the non-transcoding audio flow) can safely use idempotency.
+  return kind === 'video' ? undefined : mediaUploadID()
+}
+
+function avatarUploadRequestID() {
+  const signature = [avatarCrop.sourceURL, avatarCrop.filename, avatarCrop.imageWidth, avatarCrop.imageHeight, avatarCrop.zoom, avatarCrop.x, avatarCrop.y, avatarCrop.outputSize, avatarOutputLimitBytes.value].join('|')
+  if (signature !== avatarUploadSignature) {
+    avatarUploadSignature = signature
+    avatarUploadID = mediaUploadID()
+  }
+  return avatarUploadID
+}
+
 watch(contentLoadSentinel, (next, previous) => {
   if (previous) contentObserver?.unobserve(previous)
   if (next) contentObserver?.observe(next)
@@ -346,6 +421,7 @@ async function submitAuth() {
       ? await api.login({ identifier: auth.identifier, password: auth.password })
       : await api.register({ invite_code: auth.inviteCode, username: auth.username, email: auth.email, password: auth.password, nickname: auth.nickname })
     applyUser(response.user)
+    void loadMediaLimits()
     await loadContent()
     await initializeActivity()
     auth.password = ''
@@ -370,6 +446,7 @@ function onRichImageClick(event: MouseEvent, post: Post) {
 async function logout() {
   stopActivityPolling()
   await api.logout()
+  resetMediaLimits()
   user.value = null
   feedPosts.value = []
   myPosts.value = []
@@ -392,6 +469,7 @@ async function confirmDeactivateAccount() {
   try {
     await api.deactivate(deactivatePassword.value)
     stopActivityPolling()
+    resetMediaLimits()
     user.value = null
     feedPosts.value = []
     myPosts.value = []
@@ -525,6 +603,8 @@ function markAvatarBroken(value: string) {
 
 function resetAvatarCrop() {
   if (avatarCrop.sourceURL) URL.revokeObjectURL(avatarCrop.sourceURL)
+  avatarUploadID = ''
+  avatarUploadSignature = ''
   Object.assign(avatarCrop, { sourceURL: '', filename: '', imageWidth: 0, imageHeight: 0, zoom: 1, x: 50, y: 50, outputSize: 512 })
 }
 
@@ -533,7 +613,7 @@ async function handleAvatarInput(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file || !user.value) return
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size <= 0 || file.size > 25 * 1024 * 1024) {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type.toLowerCase()) || file.size <= 0 || file.size > AVATAR_INPUT_BYTES) {
     profileMessage.value = '头像请选择 25 MiB 以内的 JPEG、PNG 或 WebP 图片。'
     return
   }
@@ -576,11 +656,11 @@ async function buildCroppedAvatar() {
   context.drawImage(image, sourceX, sourceY, visibleSize, visibleSize, 0, 0, canvas.width, canvas.height)
   let quality = .9
   let blob = await canvasBlob(canvas, quality)
-  while (blob.size > 2 * 1024 * 1024 && quality > .55) {
+  while (blob.size > avatarOutputLimitBytes.value && quality > .55) {
     quality -= .08
     blob = await canvasBlob(canvas, quality)
   }
-  if (blob.size > 2 * 1024 * 1024) throw new Error('压缩后仍超过 2 MiB，请选择较小的输出尺寸')
+  if (blob.size > avatarOutputLimitBytes.value) throw new Error(`压缩后仍超过 ${formatLimitMiB(avatarOutputLimitBytes.value)} MiB，请选择较小的输出尺寸`)
   const baseName = avatarCrop.filename.replace(/\.[^.]+$/, '') || 'avatar'
   return new File([blob], `${baseName}-${avatarCrop.outputSize}.jpg`, { type: 'image/jpeg' })
 }
@@ -593,14 +673,20 @@ async function uploadCroppedAvatar() {
   let uploadedID = ''
   try {
     const file = await buildCroppedAvatar()
-    const uploaded = await api.uploadMedia(file, crypto.randomUUID(), { width: avatarCrop.outputSize, height: avatarCrop.outputSize }, (progress) => { avatarProgress.value = progress })
+    const uploaded = await api.uploadMedia(file, avatarUploadRequestID(), { width: avatarCrop.outputSize, height: avatarCrop.outputSize }, (progress) => { avatarProgress.value = progress })
     uploadedID = uploaded.media.id
     applyUser((await api.setAvatar(uploaded.media.id)).user)
     brokenAvatarIDs.value = new Set([...brokenAvatarIDs.value].filter((id) => id !== uploaded.media.id))
     resetAvatarCrop()
     profileMessage.value = '头像已更新'
   } catch (error) {
-    if (uploadedID) await api.deleteMedia(uploadedID).catch(() => undefined)
+    if (uploadedID) {
+      await api.deleteMedia(uploadedID).catch(() => undefined)
+      // The completed media was explicitly removed, so its idempotency key
+      // cannot be reused if the profile update itself failed.
+      avatarUploadSignature = ''
+      avatarUploadID = ''
+    }
     profileMessage.value = error instanceof Error ? error.message : '头像上传失败'
   } finally {
     avatarBusy.value = false
@@ -786,11 +872,14 @@ function addGuestbookMediaFiles(files: File[]) {
       guestbookError.value = `${file.name} 不是有效的图片或视频。`
       continue
     }
-    if (file.size <= 0 || file.size > (kind === 'video' ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES)) {
-      guestbookError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。`
+    if (kind === 'image') {
+      const validationError = imageValidationError(file)
+      if (validationError) { guestbookError.value = validationError; continue }
+    } else if (file.size <= 0 || file.size > MAX_VIDEO_BYTES) {
+      guestbookError.value = `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。`
       continue
     }
-    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), uploadID: initialUploadID(kind), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     guestbookMedia.value.push(item)
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
   }
@@ -1267,11 +1356,16 @@ async function handleRichImageInput(event: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (!file) return
-  if (!file.type.startsWith('image/') || file.size <= 0 || file.size > 25 * 1024 ** 2) {
-    composerError.value = '请选择不超过 25 MiB 的图片。'
+  if (editorMedia.value.length >= 20) {
+    composerError.value = '每篇回忆最多添加 20 个文件。'
     return
   }
-  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'image', status: 'pending', progress: 0, error: '', persisted: false })
+  const validationError = imageValidationError(file)
+  if (validationError) {
+    composerError.value = validationError
+    return
+  }
+  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), uploadID: mediaUploadID(), file, name: file.name, size: file.size, kind: 'image', status: 'pending', progress: 0, error: '', persisted: false })
   editorMedia.value.push(item)
   try {
     await uploadEditorMedia(item)
@@ -1306,12 +1400,15 @@ function addMediaFiles(files: File[]) {
       mediaSelectionError.value = `${file.name} 不是支持的图片或视频格式。`
       continue
     }
-    if (file.size <= 0 || file.size > (kind === 'video' ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES)) {
-      mediaSelectionError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。`
+    if (kind === 'image') {
+      const validationError = imageValidationError(file)
+      if (validationError) { mediaSelectionError.value = validationError; continue }
+    } else if (file.size <= 0 || file.size > MAX_VIDEO_BYTES) {
+      mediaSelectionError.value = `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。`
       continue
     }
     // Async callbacks must keep the same reactive item used by the queue, not its raw object.
-    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), uploadID: initialUploadID(kind), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
     editorMedia.value.push(item)
     // 文件选择后立即在后台上传；错误由队列项就地展示，不打断正文输入。
@@ -1340,7 +1437,7 @@ async function performEditorMediaUpload(item: EditorMedia) {
   try {
     const response = await api.uploadMedia(
       item.file,
-      crypto.randomUUID(),
+      item.kind === 'video' ? mediaUploadID() : (item.uploadID ?? (item.uploadID = mediaUploadID())),
       { width: item.width, height: item.height, duration_ms: item.duration_ms },
       (percent) => { item.progress = percent },
       (job) => {
@@ -1785,7 +1882,7 @@ function commitVoiceRecording() {
     messageError.value = '每条消息最多 6 个附件。'
     return
   }
-  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind: 'audio', status: 'pending', progress: 0, error: '', persisted: false })
+  const item = reactive<EditorMedia>({ key: crypto.randomUUID(), uploadID: mediaUploadID(), file, name: file.name, size: file.size, kind: 'audio', status: 'pending', progress: 0, error: '', persisted: false })
   item.metadataPromise = readAudioMetadata(item)
   messageMedia.value.push(item)
 }
@@ -1800,11 +1897,14 @@ function addMessageMediaFiles(files: File[]) {
       messageError.value = `${file.name} 不是支持的图片、视频或音频格式。`
       continue
     }
-    if (file.size <= 0 || file.size > (kind === 'video' ? MAX_VIDEO_BYTES : kind === 'image' ? MAX_IMAGE_BYTES : 8 * 1024 ** 3)) {
-      messageError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : kind === 'image' ? `${file.name} 为空或超过 ${MAX_IMAGE_BYTES / 1024 ** 2} MiB。` : `${file.name} 为空或超过 8 GiB。`
+    if (kind === 'image') {
+      const validationError = imageValidationError(file)
+      if (validationError) { messageError.value = validationError; continue }
+    } else if (file.size <= 0 || file.size > (kind === 'video' ? MAX_VIDEO_BYTES : 8 * 1024 ** 3)) {
+      messageError.value = kind === 'video' ? `${file.name} 为空或超过 ${MAX_VIDEO_BYTES / 1024 ** 2} MiB，请先压缩视频后再上传。` : `${file.name} 为空或超过 8 GiB。`
       continue
     }
-    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
+    const item = reactive<EditorMedia>({ key: crypto.randomUUID(), uploadID: initialUploadID(kind), file, name: file.name, size: file.size, kind, status: 'pending', progress: 0, error: '', persisted: false })
     messageMedia.value.push(item)
     if (kind === 'video') item.metadataPromise = readVideoMetadata(item)
     if (kind === 'audio') item.metadataPromise = readAudioMetadata(item)
@@ -2110,7 +2210,7 @@ async function copyInvites() {
           <section v-if="selectedConversation" class="message-thread" :aria-labelledby="`conversation-${selectedConversation.id}`">
             <header><button class="icon-button thread-back" type="button" aria-label="返回会话列表" @click="closeMobileThread"><ChevronLeft /></button><span class="conversation-avatar"><Users v-if="selectedConversation.type === 'group'" :size="21" /><template v-else><img v-if="selectedConversation.peer && avatarVisible(selectedConversation.peer.avatar_path)" :src="avatarURL(selectedConversation.peer.avatar_path)" alt="" @error="selectedConversation.peer && markAvatarBroken(selectedConversation.peer.avatar_path)" /><span v-else>{{ selectedConversation.peer?.nickname.slice(0, 1) }}</span></template></span><div><strong :id="`conversation-${selectedConversation.id}`">{{ selectedConversation.title }}<em v-if="selectedConversation.peer?.deactivated" class="deactivated-name">已注销</em></strong><small>{{ selectedConversation.type === 'group' ? '所有室友可见' : '仅会话双方可见' }}</small></div></header>
             <div ref="messageScroll" class="message-scroll" role="log" aria-live="polite" aria-relevant="additions"><button v-if="messageNextCursor" class="message-more" type="button" :disabled="messageLoading" @click="loadMessages(false)">{{ messageLoading ? '读取中…' : '查看更早消息' }}</button><div v-if="messageLoading && chatMessages.length === 0" class="message-placeholder" role="status"><span class="loader"></span><span>正在读取消息…</span></div><div v-else-if="chatMessages.length === 0" class="message-placeholder"><MessageCircle :size="32" /><strong>从第一句话开始</strong><span>消息只对这个会话中的成员可见。</span></div><article v-for="item in chatMessages" v-else :key="item.id" class="chat-message" :class="{ mine: item.sender.id === user.id, recalled: item.status === 'recalled' }"><button v-if="item.sender.id !== user.id" class="mini-avatar" type="button" :aria-label="`查看${item.sender.nickname}的资料`" @click="showPublicProfile(item.sender.id)"><img v-if="avatarVisible(item.sender.avatar_path)" :src="avatarURL(item.sender.avatar_path)" alt="" @error="markAvatarBroken(item.sender.avatar_path)" /><span v-else>{{ item.sender.nickname.slice(0, 1) }}</span></button><div><header><button v-if="item.sender.id !== user.id" class="message-author-link" type="button" @click="showPublicProfile(item.sender.id)">{{ item.sender.nickname }}<em v-if="item.sender.deactivated" class="deactivated-name">已注销</em></button><time :datetime="item.created_at">{{ formatMessageTime(item.created_at) }}</time></header><div v-if="item.status === 'sent' && (item.attachments ?? []).length" class="chat-attachments"><figure v-for="attachment in (item.attachments ?? [])" :key="attachment.id" class="chat-attachment" :class="attachment.media_type"><div v-if="mediaLoadErrors.has(attachment.id)" class="message-media-unavailable"><AlertCircle :size="21" /><span>附件暂时无法读取</span><button type="button" @click="retryMediaLoad(attachment.id)"><RotateCcw :size="15" />重试</button></div><button v-else-if="attachment.media_type === 'image'" class="viewer-image-button" type="button" :aria-label="`查看图片：${attachment.original_filename}`" @click="openImagesFromList(item.attachments ?? [], attachment.id)"><img :src="mediaContentURL(attachment.id, attachment.has_preview)" :alt="attachment.original_filename" loading="lazy" @error="markMediaLoadError(attachment.id)" /></button><VideoPreview v-else-if="attachment.media_type === 'video'" class="chat-video" :src="mediaContentURL(attachment.id)" :poster="mediaContentURL(attachment.id, true)" :title="attachment.original_filename" /><div v-else class="chat-audio"><audio :src="mediaContentURL(attachment.id)" controls preload="metadata" :aria-label="attachment.original_filename" @error="markMediaLoadError(attachment.id)"></audio></div><figcaption><span :title="attachment.original_filename">{{ attachment.original_filename }}</span><small>{{ formatBytes(attachment.size_bytes) }}</small></figcaption></figure></div><p v-if="item.status === 'recalled' || item.body">{{ item.status === 'recalled' ? `${item.sender.id === user.id ? '你' : item.sender.nickname}撤回了一条消息` : item.body }}</p><button v-if="canRecallMessage(item)" type="button" @click="recallChatMessage(item)"><Undo2 :size="15" />撤回</button></div></article></div>
-            <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" accept="image/*,video/*,audio/*" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">上传中 {{ item.progress }}%</small><small v-else-if="item.status === 'processing'" role="status" aria-live="polite">{{ mediaProcessingLabel(item) }}</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><div v-if="voiceRecording" class="voice-recording-bar" role="status"><span class="recording-dot" aria-hidden="true"></span><strong>正在录音 {{ voiceTimer }}s</strong><small>最长 {{ MAX_VOICE_SECONDS }} 秒，点击「语音」结束并加入待发送队列</small></div><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="voice-button" type="button" :class="{ recording: voiceRecording }" :disabled="messageBusy || messageMedia.length >= 6" :aria-label="voiceRecording ? '停止录音' : '录制语音'" :title="voiceRecording ? `停止录音（已 ${voiceTimer}s）` : '录制语音，最长 60 秒'" @click="toggleVoiceRecording"><Mic :size="18" />{{ voiceRecording ? `停止 · ${voiceTimer}s` : '语音' }}</button><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
+            <form class="message-composer" @submit.prevent="sendChatMessage"><input ref="messageMediaInput" class="visually-hidden" type="file" :accept="imageVideoAudioAccept" multiple @change="handleMessageMediaInput" /><div v-if="messageMedia.length" class="message-attachment-queue" aria-label="待发送附件"><article v-for="item in messageMedia" :key="item.key"><span class="message-file-icon"><Image v-if="item.kind === 'image'" :size="20" /><Film v-else-if="item.kind === 'video'" :size="20" /><Music v-else :size="20" /></span><span><strong :title="item.name">{{ item.name }}</strong><small v-if="item.status === 'uploading'">{{ item.progress >= 100 ? '已发送，服务器正在保存/校验' : `上传中 ${item.progress}%` }}</small><small v-else-if="item.status === 'processing'" role="status" aria-live="polite">{{ mediaProcessingLabel(item) }}</small><small v-else-if="item.status === 'error'" class="field-error">{{ item.error }}</small><small v-else>{{ formatBytes(item.size) }}</small></span><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeMessageMedia(item)"><X :size="17" /></button><progress v-if="item.status === 'uploading'" :value="item.progress" max="100">{{ item.progress }}%</progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></article></div><label class="visually-hidden" for="message-body">输入消息</label><div v-if="voiceRecording" class="voice-recording-bar" role="status"><span class="recording-dot" aria-hidden="true"></span><strong>正在录音 {{ voiceTimer }}s</strong><small>最长 {{ MAX_VOICE_SECONDS }} 秒，点击「语音」结束并加入待发送队列</small></div><textarea id="message-body" v-model="messageBody" rows="2" maxlength="4000" placeholder="输入消息，Ctrl + Enter 发送" @keydown.ctrl.enter.prevent="sendChatMessage"></textarea><div class="message-composer-actions"><div><button class="voice-button" type="button" :class="{ recording: voiceRecording }" :disabled="messageBusy || messageMedia.length >= 6" :aria-label="voiceRecording ? '停止录音' : '录制语音'" :title="voiceRecording ? `停止录音（已 ${voiceTimer}s）` : '录制语音，最长 60 秒'" @click="toggleVoiceRecording"><Mic :size="18" />{{ voiceRecording ? `停止 · ${voiceTimer}s` : '语音' }}</button><button class="attachment-button" type="button" :disabled="messageBusy || messageMedia.length >= 6" @click="chooseMessageMedia"><Paperclip :size="18" />添加附件</button><small>{{ messageMedia.length }} / 6 个附件 · {{ messageBody.length }} / 4000 字</small></div><button class="primary-button compact" type="submit" :disabled="messageBusy || messageMediaUploading || (!messageBody.trim() && messageMedia.length === 0)"><Send :size="17" />{{ messageBusy ? '发送中…' : '发送' }}</button></div></form>
           </section>
           <section v-else class="message-welcome"><MessageCircle :size="38" /><h2>选择一个会话</h2><p>可以进入宿舍群聊，或从左侧选择一位室友开始私信。</p></section>
         </div>
@@ -2243,9 +2343,9 @@ async function copyInvites() {
               <textarea id="guestbook-body" v-model="guestbookBody" rows="4" maxlength="2000" placeholder="写一句以后再看到还会想起今天的话…"></textarea>
               <div class="guestbook-composer-meta"><small>{{ guestbookBody.length }} / 2000</small><span>最多 6 个附件</span></div>
               <div class="field guestbook-video-link"><label for="guestbook-video-url">外链视频（可选）</label><input id="guestbook-video-url" v-model.trim="guestbookExternalVideoURL" type="url" inputmode="url" maxlength="2000" placeholder="粘贴视频链接或播放器 iframe 代码" /><small>外链只在点击播放后从原网站加载，不占用本站视频流量。</small></div>
-              <input ref="guestbookMediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleGuestbookMediaInput" />
+              <input ref="guestbookMediaInput" class="visually-hidden" type="file" :accept="imageVideoAccept" multiple @change="handleGuestbookMediaInput" />
               <div v-if="guestbookMedia.length" class="media-queue guestbook-media-queue">
-                <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? `上传 ${item.progress}%` : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></div><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
+                <article v-for="item in guestbookMedia" :key="item.key" :data-status="item.status"><span class="media-kind"><Image v-if="item.kind === 'image'" :size="19" /><Film v-else :size="19" /></span><div><strong>{{ item.name }}</strong><small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '等待发布' : item.status === 'uploading' ? (item.progress >= 100 ? '已发送，服务器正在保存/校验' : `上传 ${item.progress}%`) : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small><progress v-if="item.status === 'uploading'" :value="item.progress" max="100"></progress><progress v-else-if="item.status === 'processing'" max="100">处理中</progress></div><button type="button" :disabled="item.status === 'uploading' || item.status === 'processing'" :aria-label="`移除 ${item.name}`" @click="removeGuestbookMedia(item)"><Trash2 :size="17" /></button></article>
               </div>
               <p v-if="guestbookError" class="form-error" role="alert">{{ guestbookError }}</p>
               <footer><button class="secondary-button" type="button" :disabled="guestbookBusy || guestbookMedia.length >= 6" @click="guestbookMediaInput?.click()"><UploadCloud :size="18" />添加照片或视频</button><button class="primary-button compact" type="submit" :disabled="guestbookBusy || guestbookMediaUploading || (!guestbookBody.trim() && !guestbookExternalVideoURL.trim() && guestbookMedia.length === 0)"><Send :size="18" />{{ guestbookBusy ? '发布中…' : '留下这句话' }}</button></footer>
@@ -2281,11 +2381,11 @@ async function copyInvites() {
         <header><div><p class="eyebrow">{{ editingPostID ? '编辑回忆' : '新的纪念' }}</p><h2 id="composer-title">写下一段回忆</h2></div><button class="icon-button" type="button" aria-label="关闭发布器" :disabled="composerBusy" @click="closeComposer"><X /></button></header>
         <form @submit.prevent="savePost(true)">
           <div class="field"><label for="post-title">标题</label><input id="post-title" v-model="editor.title" maxlength="120" autofocus placeholder="给这段回忆起个名字（可选）" /><small>{{ editor.title.length }} / 120</small></div>
-          <div class="field rich-editor-field"><div class="rich-editor-label"><label>正文</label><span class="autosave-state" role="status" aria-live="polite">{{ mediaUploading ? '媒体正在后台处理，可继续编辑' : composerSaveState === 'saving' ? '正在自动保存…' : composerSaveState === 'saved' ? '已自动保存' : composerSaveState === 'error' ? '自动保存失败' : '停顿后自动保存' }}</span></div><RichTextEditor ref="richTextEditor" v-model="editor.body_html" :disabled="composerBusy" @update:text="editor.body = $event" @request-image="richImageInput?.click()" /><input ref="richImageInput" class="visually-hidden" type="file" accept="image/*" @change="handleRichImageInput" /><small>{{ editor.body.length }} / 10000</small></div>
+          <div class="field rich-editor-field"><div class="rich-editor-label"><label>正文</label><span class="autosave-state" role="status" aria-live="polite">{{ mediaUploading ? '媒体正在后台处理，可继续编辑' : composerSaveState === 'saving' ? '正在自动保存…' : composerSaveState === 'saved' ? '已自动保存' : composerSaveState === 'error' ? '自动保存失败' : '停顿后自动保存' }}</span></div><RichTextEditor ref="richTextEditor" v-model="editor.body_html" :disabled="composerBusy" @update:text="editor.body = $event" @request-image="richImageInput?.click()" /><input ref="richImageInput" class="visually-hidden" type="file" :accept="supportedImageMimeTypes.join(',')" @change="handleRichImageInput" /><small>{{ editor.body.length }} / 10000</small></div>
           <section class="media-editor" aria-labelledby="media-editor-title">
             <header><div><strong id="media-editor-title">照片与视频</strong><small>选择后立即在后台上传；上传和视频转码期间可以继续编辑正文。</small></div><span>{{ editorMedia.length }} / 20</span></header>
-            <input ref="mediaInput" class="visually-hidden" type="file" accept="image/*,video/*" multiple @change="handleMediaInput" />
-            <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>图片不超过 {{ MAX_IMAGE_BYTES / 1024 ** 2 }} MiB，视频不超过 {{ MAX_VIDEO_BYTES / 1024 ** 2 }} MiB</small></span></button>
+            <input ref="mediaInput" class="visually-hidden" type="file" :accept="imageVideoAccept" multiple @change="handleMediaInput" />
+            <button class="media-dropzone" type="button" :disabled="composerBusy || editorMedia.length >= 20" @click="chooseMedia" @dragover.prevent @drop.prevent="handleMediaDrop"><UploadCloud :size="25" aria-hidden="true" /><span><strong>选择照片或视频</strong><small>图片不超过 {{ formatLimitMiB(imageUploadLimitBytes) }} MiB，视频不超过 {{ MAX_VIDEO_BYTES / 1024 ** 2 }} MiB</small></span></button>
             <p v-if="mediaSelectionError" class="field-error" role="alert"><AlertCircle :size="17" aria-hidden="true" />{{ mediaSelectionError }}</p>
             <div v-if="editorMedia.length" class="media-queue">
               <article v-for="item in editorMedia" :key="item.key" :data-status="item.status">
@@ -2293,7 +2393,7 @@ async function copyInvites() {
                 <div>
                   <strong>{{ item.name }}</strong>
                   <span class="media-upload-status">
-                    <small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '正在读取文件信息' : item.status === 'uploading' ? `正在后台上传 ${item.progress}%` : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small>
+                    <small role="status" aria-live="polite">{{ formatBytes(item.size) }} · {{ item.status === 'pending' ? '正在读取文件信息' : item.status === 'uploading' ? (item.progress >= 100 ? '已发送，服务器正在保存/校验' : `正在后台上传 ${item.progress}%`) : item.status === 'processing' ? mediaProcessingLabel(item) : item.status === 'ready' ? '已就绪' : item.error }}</small>
                     <button v-if="item.status === 'uploading'" class="upload-speed-hint" type="button" :aria-describedby="`upload-speed-tip-${item.key}`" aria-label="查看上传速度说明">
                       <Info :size="15" aria-hidden="true" />
                       <span :id="`upload-speed-tip-${item.key}`" class="upload-speed-tooltip" role="tooltip">百分比反映文件发送到服务器的进度；上传完成后会单独显示视频处理状态。速度会受网络和服务器负载影响。</span>
@@ -2326,10 +2426,10 @@ async function copyInvites() {
               <div><strong id="avatar-editor-title">裁剪头像</strong><span>调整范围后生成正方形头像，大于 2 MiB 的原图会先压缩再上传。</span></div>
               <div ref="avatarCropFrame" class="avatar-crop-frame" aria-label="头像裁剪预览"><img :src="avatarCrop.sourceURL" alt="待裁剪头像预览" :style="avatarCropStyle" /><span aria-hidden="true"></span></div>
               <div class="avatar-crop-controls">
-                <label for="avatar-zoom">缩放 <output>{{ avatarCrop.zoom.toFixed(1) }}×</output></label><input id="avatar-zoom" v-model.number="avatarCrop.zoom" type="range" min="1" max="3" step="0.1" />
-                <label for="avatar-x">水平位置 <output>{{ avatarCrop.x }}%</output></label><input id="avatar-x" v-model.number="avatarCrop.x" type="range" min="0" max="100" step="1" />
-                <label for="avatar-y">垂直位置 <output>{{ avatarCrop.y }}%</output></label><input id="avatar-y" v-model.number="avatarCrop.y" type="range" min="0" max="100" step="1" />
-                <label for="avatar-size">输出尺寸</label><select id="avatar-size" v-model.number="avatarCrop.outputSize"><option :value="256">256 × 256</option><option :value="512">512 × 512</option><option :value="1024">1024 × 1024</option></select>
+                <label for="avatar-zoom">缩放 <output>{{ avatarCrop.zoom.toFixed(1) }}×</output></label><input id="avatar-zoom" v-model.number="avatarCrop.zoom" type="range" min="1" max="3" step="0.1" :disabled="avatarBusy" />
+                <label for="avatar-x">水平位置 <output>{{ avatarCrop.x }}%</output></label><input id="avatar-x" v-model.number="avatarCrop.x" type="range" min="0" max="100" step="1" :disabled="avatarBusy" />
+                <label for="avatar-y">垂直位置 <output>{{ avatarCrop.y }}%</output></label><input id="avatar-y" v-model.number="avatarCrop.y" type="range" min="0" max="100" step="1" :disabled="avatarBusy" />
+                <label for="avatar-size">输出尺寸</label><select id="avatar-size" v-model.number="avatarCrop.outputSize" :disabled="avatarBusy"><option :value="256">256 × 256</option><option :value="512">512 × 512</option><option :value="1024">1024 × 1024</option></select>
               </div>
               <div class="avatar-buttons"><button class="secondary-button" type="button" :disabled="avatarBusy" @click="resetAvatarCrop">重新选择</button><button class="primary-button compact" type="button" :disabled="avatarBusy" @click="uploadCroppedAvatar"><UploadCloud :size="18" />{{ avatarBusy ? `上传中 ${avatarProgress}%` : '应用头像' }}</button></div>
             </div>

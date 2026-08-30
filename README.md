@@ -7,7 +7,7 @@
 近期新增能力：
 
 - **账号自注销**：设置中自助注销账号，历史文章、媒体、留言与聊天记录原样保留，管理员可在后台恢复；已注销成员在内容与成员列表中标注「已注销」。
-- **媒体上传限制**：图片单文件 ≤ 15 MiB、视频 ≤ 300 MiB（默认配置）；保留上传原文件。视频由服务器检测后选择原文件复用、Fast Start 封装或生成 H.264/AAC 播放版，网页默认使用选定的播放资源。
+- **媒体上传限制**：图片单文件 ≤ 15 MiB、视频 ≤ 300 MiB（默认配置）；保留上传原文件。图片支持 JPEG、PNG、GIF、WebP，限制 2400 万像素，前端读取后端大小与格式限制；上传时校验实际内容及远端 SHA256。视频由服务器检测后选择原文件复用、Fast Start 封装或生成 H.264/AAC 播放版，网页默认使用选定的播放资源。
 - **图片查看器**：首页、时间线、照片墙、留言册、帖子详情、私信与群聊中的图片均可点击打开全屏查看器，支持滚轮/双指缩放（1x–5x）、拖拽平移、双击切换与多图翻页。
 - **语音消息**：群聊与私信支持录制并发送语音（最长 60 秒，过短自动丢弃），播放与图片、视频同卡片化展示。
 
@@ -20,6 +20,7 @@
 - 注销·媒体上限·图片查看器·语音·消息美化：[`docs/FEATURES_ACCOUNT_MEDIA_MESSAGING.md`](./docs/FEATURES_ACCOUNT_MEDIA_MESSAGING.md)
 - 视频处理优化清单与验证：[`docs/VIDEO_OPTIMIZATION_CHECKLIST.md`](./docs/VIDEO_OPTIMIZATION_CHECKLIST.md)
 - 图片查看器加载与重影修复：[`docs/IMAGE_VIEWER_FIX.md`](./docs/IMAGE_VIEWER_FIX.md)
+- 图片上传改进清单与边界：[`docs/IMAGE_UPLOAD_IMPROVEMENTS.md`](./docs/IMAGE_UPLOAD_IMPROVEMENTS.md)
 
 视频处理需要 FFmpeg；建议同时安装 ffprobe（优先查找 FFmpeg 同目录，其次查找 PATH）。缺少 ffprobe 时保守回退到转码，不直接复用未经检测的原文件。服务器必须为暂存及编码输出预留磁盘空间；原文件与播放资源完成远端校验后才标记可用。
 

@@ -142,6 +142,13 @@ func (c *Storage) Stat(ctx context.Context, objectPath string) (storage.ObjectIn
 	return c.upstream.Stat(ctx, objectPath)
 }
 
+func (c *Storage) OpenUncached(ctx context.Context, objectPath string) (io.ReadCloser, error) {
+	if upstream, ok := c.upstream.(storage.UncachedStorage); ok {
+		return upstream.OpenUncached(ctx, objectPath)
+	}
+	return c.upstream.Open(ctx, objectPath)
+}
+
 func (c *Storage) Delete(ctx context.Context, objectPath string) error {
 	err := c.upstream.Delete(ctx, objectPath)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {

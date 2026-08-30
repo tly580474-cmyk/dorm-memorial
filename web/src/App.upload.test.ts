@@ -12,6 +12,7 @@ let progress: (value: number) => void
 let processing: (job: MediaProcessingJob) => void
 let complete: (value: Awaited<ReturnType<typeof api.uploadMedia>>) => void
 let fail: (error: Error) => void
+let uploadIDs: string[]
 const usage = { used_bytes: 0, reserved_bytes: 0, quota_bytes: 1024 ** 3 }
 
 beforeEach(() => {
@@ -22,14 +23,17 @@ beforeEach(() => {
   vi.spyOn(api, 'members').mockResolvedValue({ members: [] })
   vi.spyOn(api, 'posts').mockResolvedValue({ posts: [] })
   vi.spyOn(api, 'mediaUsage').mockResolvedValue({ usage })
+  vi.spyOn(api, 'mediaLimits').mockResolvedValue({ max_image_upload_bytes: 15 * 1024 ** 2, supported_image_mime_types: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] })
   vi.spyOn(api, 'notifications').mockResolvedValue({ notifications: [], unread_count: 0 })
   vi.spyOn(api, 'conversations').mockResolvedValue({ conversations: [] })
   vi.spyOn(api, 'createPost')
   vi.spyOn(api, 'uploadMedia').mockImplementation((_file, _id, _metadata, onProgress, onProcessing) => {
+    uploadIDs.push(_id)
     progress = onProgress!
     processing = onProcessing!
     return new Promise((resolve, reject) => { complete = resolve; fail = reject })
   })
+  uploadIDs = []
 })
 
 afterEach(() => {
@@ -59,6 +63,9 @@ async function selectVideo() {
 describe('background video upload UI', () => {
   it('updates progress and processing without typing, and keeps the editor available', async () => {
     await selectVideo()
+    progress(100)
+    await nextTick()
+    expect(wrapper!.get('.media-queue').text()).toContain('已发送，服务器正在保存/校验')
     progress(3)
     // Reproduce the incidental render that previously left the progress frozen at 3%.
     await wrapper!.get('#post-title').setValue('仍可编辑')
@@ -88,5 +95,44 @@ describe('background video upload UI', () => {
     expect(wrapper!.get('.media-queue article').attributes('data-status')).toBe('error')
     expect(wrapper!.get('.media-queue').text()).toContain('测试上传中断')
     expect(wrapper!.find('button[aria-label="重新上传"]').exists()).toBe(true)
+    const firstUploadID = uploadIDs[0]
+    await wrapper!.get('button[aria-label="重新上传"]').trigger('click')
+    await flushPromises()
+    expect(uploadIDs).toHaveLength(2)
+    expect(uploadIDs[1]).not.toBe(firstUploadID)
+  })
+
+  it('uses the server image limit and MIME allowlist before starting an upload', async () => {
+    vi.mocked(api.mediaLimits).mockResolvedValue({ max_image_upload_bytes: 1024 ** 2, supported_image_mime_types: ['image/jpeg', 'image/png'] })
+    wrapper = mount(App, { global: { stubs: { RichTextEditor: true } } })
+    await flushPromises()
+    await wrapper.get('.page-heading button').trigger('click')
+    const input = wrapper.get('.media-editor input[type=file]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File([new Uint8Array(1024 ** 2 + 1)], 'too-large.webp', { type: 'image/webp' })] })
+    await input.trigger('change')
+    expect(wrapper.get('.media-editor [role="alert"]').text()).toContain('不是支持的图片格式')
+    expect(api.uploadMedia).not.toHaveBeenCalled()
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File([new Uint8Array(1024 ** 2 + 1)], 'too-large.jpg', { type: 'image/jpeg' })] })
+    await input.trigger('change')
+    expect(wrapper.get('.media-editor [role="alert"]').text()).toContain('超过 1 MiB')
+    expect(api.uploadMedia).not.toHaveBeenCalled()
+  })
+
+  it('reuses an image upload ID when a failed upload is retried', async () => {
+    wrapper = mount(App, { global: { stubs: { RichTextEditor: true } } })
+    await flushPromises()
+    await wrapper.get('.page-heading button').trigger('click')
+    const input = wrapper.get('.media-editor input[type=file]')
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [new File(['fixture'], 'memory.jpg', { type: 'image/jpeg' })] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(uploadIDs).toHaveLength(1)
+    const firstUploadID = uploadIDs[0]
+    fail(new Error('图片上传失败'))
+    await flushPromises()
+    await wrapper.get('button[aria-label="重新上传"]').trigger('click')
+    await flushPromises()
+    expect(uploadIDs).toHaveLength(2)
+    expect(uploadIDs[1]).toBe(firstUploadID)
   })
 })

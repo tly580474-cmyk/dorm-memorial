@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
 import ImageViewer from './ImageViewer.vue'
 
 const items = [
@@ -65,5 +66,32 @@ describe('ImageViewer image replacement', () => {
     expect(view.find('.image-viewer-loading').exists()).toBe(true)
     await view.get('.image-viewer-active').trigger('load')
     expect(view.find('.image-viewer-preview').exists()).toBe(false)
+  })
+
+  it('falls back to the original once after display retries, then exposes a manual original retry', async () => {
+    const view = open()
+    const retryDelays = [1000, 2000, 4000, 8000, 8000]
+    for (const delay of retryDelays) {
+      await view.get('.image-viewer-active').trigger('error')
+      await vi.advanceTimersByTimeAsync(delay)
+      await nextTick()
+    }
+    await view.get('.image-viewer-active').trigger('error')
+    await nextTick()
+
+    expect(view.get('.image-viewer-active').attributes('src')).toBe('/api/media/first/content')
+    expect(view.find('.image-viewer-loading').exists()).toBe(true)
+    await view.get('.image-viewer-active').trigger('error')
+    expect(view.get('.image-viewer-error').text()).toContain('原图暂时无法读取')
+    expect(vi.getTimerCount()).toBe(0)
+
+    await view.get('.image-viewer-error button').trigger('click')
+    expect(view.get('.image-viewer-active').attributes('src')).toBe('/api/media/first/content?retry=1')
+  })
+
+  it('opens GIFs as original files so animation is retained', () => {
+    wrapper = mount(ImageViewer, { props: { open: true, items: [{ id: 'gif', filename: 'memory.gif', mime_type: 'image/gif', has_preview: true }], initialIndex: 0 }, global: { stubs: { teleport: true } } })
+    expect(wrapper.get('.image-viewer-active').attributes('src')).toBe('/api/media/gif/content')
+    expect(wrapper.get('.image-viewer-quality').attributes('disabled')).toBeDefined()
   })
 })

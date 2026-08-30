@@ -111,6 +111,7 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux.Handle("POST /api/media/uploads", s.requireAuth(http.HandlerFunc(s.uploadMedia)))
 	mux.Handle("GET /api/media-upload-jobs/{id}", s.requireAuth(http.HandlerFunc(s.mediaUploadStatus)))
 	mux.Handle("GET /api/media/usage", s.requireAuth(http.HandlerFunc(s.mediaUsage)))
+	mux.Handle("GET /api/media/limits", s.requireAuth(http.HandlerFunc(s.mediaLimits)))
 	mux.Handle("DELETE /api/media/{id}", s.requireAuth(http.HandlerFunc(s.deleteMedia)))
 	mux.Handle("GET /api/media/{id}/content", s.requireAuth(http.HandlerFunc(s.mediaContent)))
 	mux.Handle("/", s.frontend())
@@ -786,6 +787,15 @@ func (s *Server) deleteGuestbookEntry(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) mediaLimits(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"max_image_upload_bytes":     s.cfg.MaxImageUploadBytes,
+		"max_image_pixels":           mediastore.MaxImagePixels,
+		"supported_image_mime_types": mediastore.SupportedImageMIMETypes(),
+	})
+}
+
 func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	if r.ContentLength <= 0 {
 		writeError(w, http.StatusLengthRequired, "上传文件必须提供大小")
@@ -1087,6 +1097,8 @@ func writeMessagingError(w http.ResponseWriter, err error) {
 
 func writeMediaError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, mediastore.ErrImagePixelLimit):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("图片像素或 GIF 累计帧像素超过 %d 万，请缩小尺寸或减少帧数后重试", mediastore.MaxImagePixels/10000))
 	case errors.Is(err, mediastore.ErrPreviewPending):
 		w.Header().Set("Retry-After", "2")
 		w.Header().Set("X-Media-State", "preparing")

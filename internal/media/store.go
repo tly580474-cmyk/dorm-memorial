@@ -121,6 +121,8 @@ type Store struct {
 	videoTranscodes chan struct{}
 	imageRenders    chan struct{}
 	imageDisplays   map[string]*imageDisplayJob
+	uploadLockMu    sync.Mutex
+	uploadLocks     map[string]*uploadRequestLock
 }
 
 func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) *Store {
@@ -128,7 +130,7 @@ func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) 
 	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
 		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
 	}
-	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2), imageDisplays: make(map[string]*imageDisplayJob)}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2), imageDisplays: make(map[string]*imageDisplayJob), uploadLocks: make(map[string]*uploadRequestLock)}
 }
 
 func (s *Store) ConfigureVideoProcessing(stagingDir, encoder string) {
@@ -147,6 +149,9 @@ func (s *Store) ConfigureVideoProcessing(stagingDir, encoder string) {
 func (s *Store) StartMaintenance(ctx context.Context) error {
 	if s.objects == nil {
 		return nil
+	}
+	if err := s.recoverSynchronousUploads(ctx); err != nil {
+		return err
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.owner_id, m.object_path, m.preview_path, m.original_filename, m.mime_type, m.size_bytes, m.created_at, m.duration_ms
 		FROM media m WHERE m.media_type = 'video' AND m.status = 'ready'`)
@@ -182,8 +187,37 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	if s.objects == nil {
 		return Record{}, ErrStorageUnavailable
 	}
+	// A request ID is a reservation key. Lock only this key so an unrelated
+	// upload can proceed while a large image is being written to remote storage;
+	// reserveUpload's conditional state transitions cover other Store instances.
+	release, err := s.acquireUploadLock(ctx, actor.ID+"\x00"+input.ClientRequestID)
+	if err != nil {
+		return Record{}, err
+	}
+	defer release()
 
-	if existing, ok, err := s.existingRequest(ctx, actor.ID, input.ClientRequestID); err != nil {
+	var stagedCleanup func()
+	stagedCleanup = func() {}
+	defer func() { stagedCleanup() }()
+	requestFingerprint := uploadMetadataFingerprint(input)
+	if mediaType == "image" {
+		prepared, cleanup, err := prepareImageUpload(ctx, input)
+		if err != nil {
+			return Record{}, err
+		}
+		stagedCleanup = cleanup
+		input = prepared
+		mediaType, ext, err = validateUpload(input)
+		if err != nil {
+			return Record{}, err
+		}
+		requestFingerprint, err = imageUploadFingerprint(input)
+		if err != nil {
+			return Record{}, fmt.Errorf("fingerprint image upload: %w", errors.Join(ErrInvalid, err))
+		}
+	}
+
+	if existing, ok, err := s.existingRequest(ctx, actor.ID, input.ClientRequestID, requestFingerprint); err != nil {
 		return Record{}, err
 	} else if ok {
 		return existing, nil
@@ -198,30 +232,56 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	}
 
 	mediaID := newID()
-	objectPath := fmt.Sprintf("/originals/%s/%s/%s%s", remoteOwnerSegment(actor.ID), time.Now().UTC().Format("2006/01"), mediaID, ext)
+	createdAt := time.Now().UTC()
+	objectPath := fmt.Sprintf("/originals/%s/%s/%s%s", remoteOwnerSegment(actor.ID), createdAt.Format("2006/01"), mediaID, ext)
 	jobID := newID()
-	if err := s.reserve(ctx, actor.ID, jobID, input.ClientRequestID, objectPath, input.Size); err != nil {
+	effectiveJobID, err := s.reserveUpload(ctx, actor.ID, jobID, input.ClientRequestID, objectPath, input.Size, requestFingerprint)
+	if err != nil {
 		return Record{}, err
 	}
+	jobID = effectiveJobID
 	s.setJobState(ctx, jobID, "uploading", "")
+	previewPath := ""
+	cleanupPreviewPath := ""
+	if mediaType == "image" {
+		cleanupPreviewPath = imagePreviewObjectPath(actor.ID, mediaID, createdAt)
+		if err := s.setJobPreviewPath(context.WithoutCancel(ctx), jobID, cleanupPreviewPath); err != nil {
+			s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "database_failed")
+			return Record{}, err
+		}
+	}
 
 	hasher := sha256.New()
 	if err := s.objects.Put(ctx, objectPath, io.TeeReader(input.Body, hasher), input.Size); err != nil {
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "storage_write_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "storage_write_failed")
 		return Record{}, fmt.Errorf("upload object: %w", errors.Join(ErrStorageUnavailable, err))
 	}
 	s.setJobState(context.WithoutCancel(ctx), jobID, "verifying", "")
 	if err := s.verifySize(ctx, objectPath, input.Size); err != nil {
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "storage_verify_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "storage_verify_failed")
 		return Record{}, fmt.Errorf("verify uploaded object: %w", ErrStorageUnavailable)
 	}
-
-	now := time.Now().UTC()
-	imageInfo := imageDetails{}
 	if mediaType == "image" {
-		imageInfo = buildImagePreview(ctx, s.objects, objectPath, actor.ID, mediaID, now)
+		if err := verifyImageIntegrity(ctx, s.objects, objectPath, input.Size, hex.EncodeToString(hasher.Sum(nil))); err != nil {
+			s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "storage_verify_failed")
+			return Record{}, fmt.Errorf("verify uploaded image: %w", errors.Join(ErrStorageUnavailable, err))
+		}
 	}
-	previewPath := imageInfo.previewPath
+
+	now := createdAt
+	imageInfo := imageDetails{}
+	previewCleanupRequired := false
+	if mediaType == "image" {
+		previewTracker := &previewPutTracker{ObjectStorage: s.objects, previewPath: cleanupPreviewPath}
+		imageInfo = buildImagePreview(ctx, previewTracker, objectPath, actor.ID, mediaID, now)
+		if imageInfo.width <= 0 || imageInfo.height <= 0 {
+			// The staged original was already decoded and measured. A transient
+			// preview read failure must not discard its authoritative dimensions.
+			imageInfo.width, imageInfo.height = input.Width, input.Height
+		}
+		previewCleanupRequired = previewTracker.attempted && previewTracker.err != nil
+	}
+	previewPath = imageInfo.previewPath
 	if mediaType == "video" {
 		previewPath = buildVideoPreview(ctx, s.objects, s.ffmpegPath, objectPath, actor.ID, mediaID, now, input.DurationMS)
 	}
@@ -246,32 +306,35 @@ func (s *Store) Upload(ctx context.Context, actor identity.User, input UploadInp
 	record.HasPreview = previewPath != ""
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "database_failed")
 		return Record{}, err
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, preview_path, original_filename, media_type, mime_type, size_bytes, sha256, width, height, duration_ms, status, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`, mediaID, actor.ID, objectPath, previewPath, input.Filename, mediaType, input.MimeType, input.Size, record.SHA256, nullableInt(record.Width), nullableInt(record.Height), nullableInt64(record.DurationMS), nowText(now), nowText(now)); err != nil {
 		_ = tx.Rollback()
-		if previewPath != "" {
-			_ = s.objects.Delete(context.WithoutCancel(ctx), previewPath)
-		}
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "database_failed")
 		return Record{}, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE upload_jobs SET state = 'completed', updated_at = ? WHERE id = ?`, nowText(now), jobID); err != nil {
+	jobErrorCode := ""
+	if previewCleanupRequired {
+		jobErrorCode = "preview_cleanup_required"
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE upload_jobs SET state = 'completed', error_code = ?, updated_at = ? WHERE id = ?`, jobErrorCode, nowText(now), jobID); err != nil {
 		_ = tx.Rollback()
-		if previewPath != "" {
-			_ = s.objects.Delete(context.WithoutCancel(ctx), previewPath)
-		}
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "database_failed")
 		return Record{}, err
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, metadata_json, ip_address, created_at)
 		VALUES(?, 'media.upload', 'media', ?, ?, ?, ?)`, actor.ID, mediaID, fmt.Sprintf(`{"size_bytes":%d}`, input.Size), input.IPAddress, nowText(now))
 	if err := tx.Commit(); err != nil {
-		s.failUpload(context.WithoutCancel(ctx), jobID, objectPath, "database_failed")
+		s.failUploadPaths(ctx, jobID, objectPath, cleanupPreviewPath, "database_failed")
 		return Record{}, err
+	}
+	if previewCleanupRequired {
+		// The original and its media row are already durable. Clean only the
+		// partially written derived object; failure is retained for maintenance.
+		s.cleanupCompletedPreview(ctx, jobID, mediaID, cleanupPreviewPath)
 	}
 	if mediaType == "video" {
 		s.scheduleVideoPlayback(ContentDescriptor{ID: mediaID, OwnerID: actor.ID, ObjectPath: objectPath, Filename: input.Filename, MediaType: mediaType, MimeType: input.MimeType, Size: input.Size, CreatedText: nowText(now), DurationMS: sql.NullInt64{Int64: input.DurationMS, Valid: input.DurationMS > 0}})
@@ -401,9 +464,14 @@ func (s *Store) ListAdmin(ctx context.Context, actor identity.User, search, medi
 }
 
 func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) error {
+	release, err := s.acquireUploadLock(ctx, "media-lifecycle\x00"+id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	var ownerID, objectPath, previewPath, status string
 	var attached int
-	err := s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.status,
+	err = s.db.QueryRowContext(ctx, `SELECT m.owner_id, m.object_path, m.preview_path, m.status,
 		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM guestbook_media gm WHERE gm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id)
@@ -451,12 +519,17 @@ func (s *Store) Delete(ctx context.Context, actor identity.User, id, ip string) 
 // its references. Referenced media that is still active requires an explicit
 // force flag so an accidental request cannot silently remove displayed files.
 func (s *Store) Purge(ctx context.Context, actor identity.User, id string, force bool, ip string) error {
+	release, err := s.acquireUploadLock(ctx, "media-lifecycle\x00"+id)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if actor.Role != "admin" {
 		return ErrForbidden
 	}
 	var objectPath, previewPath, status string
 	var attached int
-	err := s.db.QueryRowContext(ctx, `SELECT m.object_path, m.preview_path, m.status,
+	err = s.db.QueryRowContext(ctx, `SELECT m.object_path, m.preview_path, m.status,
 		EXISTS(SELECT 1 FROM post_media pm WHERE pm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM guestbook_media gm WHERE gm.media_id = m.id)
 		OR EXISTS(SELECT 1 FROM message_media mm WHERE mm.media_id = m.id)
@@ -619,10 +692,7 @@ func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor
 		objectPath, mimeType, size = descriptor.PlaybackPath, descriptor.PlaybackMIME, descriptor.PlaybackSize
 	}
 	if variant == "display" && mediaType == "image" {
-		if descriptor.DisplayPath == "" {
-			return s.openImageDisplay(ctx, descriptor)
-		}
-		objectPath, mimeType, size = descriptor.DisplayPath, descriptor.DisplayMIME, descriptor.DisplaySize
+		return s.openDeliveredImageDisplay(ctx, descriptor, byteRange)
 	}
 	if variant == "playback" && mediaType != "video" || variant == "display" && mediaType != "image" {
 		return Content{}, ErrInvalid
@@ -705,20 +775,53 @@ func (s *Store) OpenContent(ctx context.Context, actor identity.User, id, byteRa
 	return s.OpenDescriptor(ctx, descriptor, byteRange, variant)
 }
 
-func (s *Store) existingRequest(ctx context.Context, userID, requestID string) (Record, bool, error) {
-	var state, objectPath string
-	err := s.db.QueryRowContext(ctx, `SELECT state, object_path FROM upload_jobs WHERE user_id = ? AND client_request_id = ?`, userID, requestID).Scan(&state, &objectPath)
+func (s *Store) existingRequest(ctx context.Context, userID, requestID string, fingerprints ...string) (Record, bool, error) {
+	fingerprint := ""
+	if len(fingerprints) > 0 {
+		fingerprint = fingerprints[0]
+	}
+	var jobID, state, objectPath, previewPath, storedFingerprint string
+	var hasProcessing int
+	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.state, u.object_path, u.preview_path, u.request_fingerprint,
+		EXISTS (SELECT 1 FROM media_processing_jobs p WHERE p.id = u.id)
+		FROM upload_jobs u WHERE u.user_id = ? AND u.client_request_id = ?`, userID, requestID).Scan(&jobID, &state, &objectPath, &previewPath, &storedFingerprint, &hasProcessing)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Record{}, false, nil
 	}
 	if err != nil {
 		return Record{}, false, err
 	}
-	if state != "completed" {
+	if hasProcessing != 0 {
 		return Record{}, false, ErrConflict
 	}
-	record, err := s.recordByObjectPath(ctx, objectPath)
-	return record, err == nil, err
+	if storedFingerprint != "" && fingerprint != "" && storedFingerprint != fingerprint {
+		return Record{}, false, ErrConflict
+	}
+	switch state {
+	case "completed":
+		record, err := s.recordByObjectPath(ctx, objectPath)
+		if err != nil {
+			return Record{}, false, err
+		}
+		if record.Status != "ready" {
+			return Record{}, false, ErrConflict
+		}
+		return record, true, nil
+	case "pending", "uploading", "verifying":
+		return Record{}, false, ErrConflict
+	case "cleanup_required":
+		// A retry must finish cleanup before it can claim this request again.
+		if record, recovered, err := s.cleanupUploadJob(ctx, jobID, objectPath, previewPath, "cleanup_required"); err != nil {
+			return Record{}, false, err
+		} else if recovered {
+			return record, true, nil
+		}
+	case "failed", "cleaned":
+		return Record{}, false, nil
+	default:
+		return Record{}, false, ErrConflict
+	}
+	return Record{}, false, nil
 }
 
 func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Record, error) {
@@ -752,32 +855,86 @@ func (s *Store) recordByObjectPath(ctx context.Context, objectPath string) (Reco
 }
 
 func (s *Store) reserve(ctx context.Context, userID, jobID, requestID, objectPath string, size int64) error {
+	_, err := s.reserveUpload(ctx, userID, jobID, requestID, objectPath, size, "")
+	return err
+}
+
+// reserveUpload either creates a reservation or atomically reclaims a
+// terminal failed/cleaned reservation for a retry. Active requests remain
+// locked behind ErrConflict, preventing two clients from writing the same
+// request ID concurrently.
+func (s *Store) reserveUpload(ctx context.Context, userID, jobID, requestID, objectPath string, size int64, fingerprint string) (string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer tx.Rollback()
+	var existingID, state, storedFingerprint string
+	var hasProcessing int
+	err = tx.QueryRowContext(ctx, `SELECT u.id, u.state, u.request_fingerprint,
+		EXISTS (SELECT 1 FROM media_processing_jobs p WHERE p.id = u.id)
+		FROM upload_jobs u WHERE u.user_id = ? AND u.client_request_id = ?`, userID, requestID).Scan(&existingID, &state, &storedFingerprint, &hasProcessing)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	if err == nil {
+		if hasProcessing != 0 {
+			// Staged videos own their upload_jobs row and checkpoint lifecycle;
+			// synchronous image retries must never reuse that primary key.
+			return "", ErrConflict
+		}
+		if storedFingerprint != "" && fingerprint != "" && storedFingerprint != fingerprint {
+			return "", ErrConflict
+		}
+		switch state {
+		case "failed", "cleaned":
+			var used, reserved, quota int64
+			if err := tx.QueryRowContext(ctx, `SELECT
+				COALESCE((SELECT SUM(size_bytes) FROM media WHERE owner_id = ? AND status = 'ready'), 0),
+				COALESCE((SELECT SUM(expected_size) FROM upload_jobs WHERE user_id = ? AND state IN ('pending','uploading','verifying')), 0),
+				media_quota_bytes FROM users WHERE id = ?`, userID, userID, userID).Scan(&used, &reserved, &quota); err != nil {
+				return "", err
+			}
+			if size > quota || used > quota-size || reserved > quota-size-used {
+				return "", ErrQuotaExceeded
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE upload_jobs SET object_path = ?, preview_path = '', state = 'pending', expected_size = ?, error_code = '', request_fingerprint = ?, updated_at = ? WHERE id = ? AND state IN ('failed','cleaned')`, objectPath, size, fingerprint, nowText(time.Now().UTC()), existingID); err != nil {
+				return "", err
+			}
+			if err := tx.Commit(); err != nil {
+				return "", err
+			}
+			return existingID, nil
+		case "completed", "pending", "uploading", "verifying", "cleanup_required":
+			return "", ErrConflict
+		default:
+			return "", ErrConflict
+		}
+	}
 	var used, reserved, quota int64
 	err = tx.QueryRowContext(ctx, `SELECT
 		COALESCE((SELECT SUM(size_bytes) FROM media WHERE owner_id = ? AND status = 'ready'), 0),
 		COALESCE((SELECT SUM(expected_size) FROM upload_jobs WHERE user_id = ? AND state IN ('pending','uploading','verifying')), 0),
 		media_quota_bytes FROM users WHERE id = ?`, userID, userID, userID).Scan(&used, &reserved, &quota)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if size > quota || used > quota-size || reserved > quota-size-used {
-		return ErrQuotaExceeded
+		return "", ErrQuotaExceeded
 	}
 	now := nowText(time.Now().UTC())
-	_, err = tx.ExecContext(ctx, `INSERT INTO upload_jobs(id, user_id, client_request_id, object_path, state, expected_size, created_at, updated_at)
-		VALUES(?, ?, ?, ?, 'pending', ?, ?, ?)`, jobID, userID, requestID, objectPath, size, now, now)
+	_, err = tx.ExecContext(ctx, `INSERT INTO upload_jobs(id, user_id, client_request_id, object_path, state, expected_size, request_fingerprint, created_at, updated_at)
+		VALUES(?, ?, ?, ?, 'pending', ?, ?, ?, ?)`, jobID, userID, requestID, objectPath, size, fingerprint, now, now)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return ErrConflict
+			return "", ErrConflict
 		}
-		return err
+		return "", err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return jobID, nil
 }
 
 func (s *Store) setJobState(ctx context.Context, jobID, state, code string) {
@@ -785,11 +942,7 @@ func (s *Store) setJobState(ctx context.Context, jobID, state, code string) {
 }
 
 func (s *Store) failUpload(ctx context.Context, jobID, objectPath, code string) {
-	state := "failed"
-	if err := s.objects.Delete(ctx, objectPath); err != nil && !errors.Is(err, storage.ErrNotFound) {
-		state = "cleanup_required"
-	}
-	s.setJobState(ctx, jobID, state, code)
+	s.failUploadPaths(ctx, jobID, objectPath, "", code)
 }
 
 func validateUpload(input UploadInput) (string, string, error) {

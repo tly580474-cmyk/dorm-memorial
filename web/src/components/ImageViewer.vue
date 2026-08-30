@@ -4,6 +4,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 export interface ViewerItem {
   id: string
   filename?: string
+  mime_type?: string
   size_bytes?: number
   has_preview?: boolean
 }
@@ -44,15 +45,18 @@ const src = computed(() => {
   return `/api/media/${encodeURIComponent(item.id)}/content${query ? `?${query}` : ''}`
 })
 const current = computed(() => props.items[index.value] ?? null)
+const isGif = computed(() => current.value?.mime_type?.toLowerCase() === 'image/gif' || /\.gif$/i.test(current.value?.filename ?? ''))
 const previousQualitySrc = ref('')
 const previewSrc = computed(() => previousQualitySrc.value || (current.value?.has_preview ? `/api/media/${encodeURIComponent(current.value.id)}/content?variant=preview` : ''))
 
 const loaded = ref(false)
 const loadFailed = ref(false)
+const autoDowngraded = ref(false)
 function resetLoadState(resetQuality = true) {
 	window.clearTimeout(retryTimer)
-	if (resetQuality) { useOriginal.value = false; previousQualitySrc.value = '' }
+	if (resetQuality) { useOriginal.value = isGif.value; previousQualitySrc.value = '' }
 	retryAttempt.value = 0
+	autoDowngraded.value = false
 	retryNonce.value = resetQuality ? 0 : retryNonce.value + 1
   loaded.value = false
   loadFailed.value = false
@@ -71,6 +75,16 @@ function onImageError(event: Event) {
 		retryAttempt.value += 1
 		const delay = Math.min(8000, 1000 * 2 ** (retryAttempt.value - 1))
 		retryTimer = window.setTimeout(() => { retryNonce.value += 1 }, delay)
+		return
+	}
+	if (!useOriginal.value && !autoDowngraded.value) {
+		autoDowngraded.value = true
+		useOriginal.value = true
+		retryAttempt.value = 0
+		retryNonce.value = 0
+		loaded.value = false
+		loadFailed.value = false
+		resetTransform()
 		return
 	}
 	loadFailed.value = true
@@ -263,7 +277,7 @@ onBeforeUnmount(() => {
               <small v-if="current.size_bytes">{{ formatBytes(current.size_bytes) }}</small>
             </figcaption>
             <div v-if="loadFailed" class="image-viewer-error" role="status">
-              <span>图片暂时无法读取</span>
+              <span>{{ useOriginal ? '原图暂时无法读取' : '图片暂时无法读取' }}</span>
 			  <button type="button" @click.stop="resetLoadState(false)">重新加载</button>
             </div>
           </figure>

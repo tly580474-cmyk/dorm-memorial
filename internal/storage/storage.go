@@ -44,6 +44,12 @@ type DirectoryRefresher interface {
 	RefreshDirectory(ctx context.Context, objectPath string) error
 }
 
+// UncachedStorage reads the persisted object rather than the local copy of an
+// upload. Integrity checks must not accidentally verify their own input bytes.
+type UncachedStorage interface {
+	OpenUncached(ctx context.Context, objectPath string) (io.ReadCloser, error)
+}
+
 // CacheWarmer is implemented by storage decorators that can populate a local
 // cache without tying completion to a browser's short-lived Range request.
 type CacheWarmer interface {

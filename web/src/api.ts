@@ -4,6 +4,7 @@ type ApiErrorBody = { error?: { message?: string } }
 export type MediaProcessingPhase = 'staged' | 'transcoding' | 'uploading' | 'verifying' | 'completed' | 'failed'
 export type MediaProcessingStep = 'probing' | 'encoding' | 'finalizing' | ''
 export type MediaProcessingJob = { id: string; media_id: string; phase: MediaProcessingPhase; step: MediaProcessingStep; encoder: string; error_code: string; media?: Media }
+export type MediaLimits = { max_image_upload_bytes: number; supported_image_mime_types: string[]; max_image_pixels?: number }
 
 export class ApiError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -169,6 +170,7 @@ export const api = {
   deleteGuestbookEntry: (id: string) => request<void>(`/api/guestbook/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   setAvatar: (mediaID: string) => request<{ user: User }>('/api/profile/avatar', { method: 'POST', body: JSON.stringify({ media_id: mediaID }) }),
   clearAvatar: () => request<{ user: User }>('/api/profile/avatar', { method: 'DELETE' }),
+  mediaLimits: () => request<MediaLimits>('/api/media/limits'),
   mediaUsage: () => request<{ usage: MediaUsage }>('/api/media/usage'),
   deleteMedia: (id: string) => request<void>(`/api/media/${encodeURIComponent(id)}`, { method: 'DELETE', body: '{}' }),
   uploadMedia: (file: File, uploadID: string, metadata: { width?: number; height?: number; duration_ms?: number }, onProgress: (percent: number) => void, onProcessing: (job: MediaProcessingJob) => void = () => undefined) => new Promise<{ media: Media; usage: MediaUsage }>((resolve, reject) => {
