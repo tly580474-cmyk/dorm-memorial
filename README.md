@@ -19,6 +19,7 @@
 - 消息与通知先行切片：[`docs/MESSAGES_NOTIFICATIONS.md`](./docs/MESSAGES_NOTIFICATIONS.md)
 - 注销·媒体上限·图片查看器·语音·消息美化：[`docs/FEATURES_ACCOUNT_MEDIA_MESSAGING.md`](./docs/FEATURES_ACCOUNT_MEDIA_MESSAGING.md)
 - 视频处理优化清单与验证：[`docs/VIDEO_OPTIMIZATION_CHECKLIST.md`](./docs/VIDEO_OPTIMIZATION_CHECKLIST.md)
+- 图片查看器加载与重影修复：[`docs/IMAGE_VIEWER_FIX.md`](./docs/IMAGE_VIEWER_FIX.md)
 
 视频处理需要 FFmpeg；建议同时安装 ffprobe（优先查找 FFmpeg 同目录，其次查找 PATH）。缺少 ffprobe 时保守回退到转码，不直接复用未经检测的原文件。服务器必须为暂存及编码输出预留磁盘空间；原文件与播放资源完成远端校验后才标记可用。
 

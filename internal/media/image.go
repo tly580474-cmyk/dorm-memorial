@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/color"
 	_ "image/gif"
@@ -27,31 +28,38 @@ type imageDetails struct {
 	previewPath string
 }
 
-func buildImageDisplay(ctx context.Context, objects storage.ObjectStorage, objectPath, ownerID, mediaID, createdText string) (string, string, int64) {
+func imageDisplayPath(ownerID, mediaID, createdText string) string {
+	createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
+	return "/display/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
+}
+
+// Rendering must not wait for the derived file to be archived to remote storage.
+func renderImageDisplay(ctx context.Context, objects storage.ObjectStorage, objectPath string) ([]byte, error) {
 	body, err := objects.Open(ctx, objectPath)
 	if err != nil {
-		return "", "", 0
+		return nil, err
 	}
-	source, _, err := image.Decode(body)
-	body.Close()
+	defer body.Close()
+	// Validate dimensions before allocating pixels, retaining the header so that
+	// reading it does not require a second remote download of the original.
+	var prefix bytes.Buffer
+	config, _, err := image.DecodeConfig(io.TeeReader(io.LimitReader(body, 8<<20), &prefix))
 	if err != nil {
-		return "", "", 0
+		return nil, err
 	}
-	bounds := source.Bounds()
-	if bounds.Dx() <= 0 || bounds.Dy() <= 0 || int64(bounds.Dx())*int64(bounds.Dy()) > maxPreviewPixels {
-		return "", "", 0
+	if config.Width <= 0 || config.Height <= 0 || int64(config.Width)*int64(config.Height) > maxPreviewPixels {
+		return nil, fmt.Errorf("image dimensions exceed display limit")
+	}
+	source, _, err := image.Decode(io.MultiReader(bytes.NewReader(prefix.Bytes()), body))
+	if err != nil {
+		return nil, err
 	}
 	display := scaleToFit(source, displayLongEdge)
 	var encoded bytes.Buffer
 	if err := jpeg.Encode(&encoded, display, &jpeg.Options{Quality: 88}); err != nil {
-		return "", "", 0
+		return nil, err
 	}
-	createdAt, _ := time.Parse(time.RFC3339Nano, createdText)
-	displayPath := "/display/" + remoteOwnerSegment(ownerID) + "/" + createdAt.UTC().Format("2006/01") + "/" + mediaID + ".jpg"
-	if err := objects.Put(ctx, displayPath, bytes.NewReader(encoded.Bytes()), int64(encoded.Len())); err != nil {
-		return "", "", 0
-	}
-	return displayPath, "image/jpeg", int64(encoded.Len())
+	return encoded.Bytes(), nil
 }
 
 func buildImagePreview(ctx context.Context, objects storage.ObjectStorage, objectPath, ownerID, mediaID string, createdAt time.Time) imageDetails {

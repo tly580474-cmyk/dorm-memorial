@@ -20,14 +20,6 @@ const emit = defineEmits<{
 }>()
 
 const index = ref(props.initialIndex)
-watch(
-  () => props.initialIndex,
-  (value) => { index.value = value; resetTransform() },
-)
-watch(
-  () => props.items,
-  () => resetTransform(),
-)
 
 function formatBytes(value?: number) {
   if (!value || value <= 0) return ''
@@ -52,13 +44,14 @@ const src = computed(() => {
   return `/api/media/${encodeURIComponent(item.id)}/content${query ? `?${query}` : ''}`
 })
 const current = computed(() => props.items[index.value] ?? null)
-const previewSrc = computed(() => current.value?.has_preview ? `/api/media/${encodeURIComponent(current.value.id)}/content?variant=preview` : '')
+const previousQualitySrc = ref('')
+const previewSrc = computed(() => previousQualitySrc.value || (current.value?.has_preview ? `/api/media/${encodeURIComponent(current.value.id)}/content?variant=preview` : ''))
 
 const loaded = ref(false)
 const loadFailed = ref(false)
 function resetLoadState(resetQuality = true) {
 	window.clearTimeout(retryTimer)
-	if (resetQuality) useOriginal.value = false
+	if (resetQuality) { useOriginal.value = false; previousQualitySrc.value = '' }
 	retryAttempt.value = 0
 	retryNonce.value = resetQuality ? 0 : retryNonce.value + 1
   loaded.value = false
@@ -66,7 +59,14 @@ function resetLoadState(resetQuality = true) {
   resetTransform()
 }
 
-function onImageError() {
+function isCurrentImage(event: Event) {
+	return props.open && (event.currentTarget as HTMLImageElement).getAttribute('src') === src.value
+}
+
+function onImageError(event: Event) {
+	if (!isCurrentImage(event)) return
+	window.clearTimeout(retryTimer)
+	loaded.value = false
 	if (!useOriginal.value && retryAttempt.value < 5) {
 		retryAttempt.value += 1
 		const delay = Math.min(8000, 1000 * 2 ** (retryAttempt.value - 1))
@@ -79,19 +79,24 @@ function onImageError() {
 function loadOriginal() {
 	if (useOriginal.value) return
 	window.clearTimeout(retryTimer)
+	if (loaded.value) previousQualitySrc.value = src.value
 	useOriginal.value = true
 	loaded.value = false
 	loadFailed.value = false
 }
 
-function onImageLoaded() {
+function onImageLoaded(event: Event) {
+	if (!isCurrentImage(event)) return
+	window.clearTimeout(retryTimer)
 	loaded.value = true
+	loadFailed.value = false
 	if (useOriginal.value) return
 	for (const nextIndex of [index.value - 1, index.value + 1]) {
 		const item = props.items[nextIndex]
 		if (!item) continue
 		const image = new Image()
-		image.src = `/api/media/${encodeURIComponent(item.id)}/content?variant=display&prefetch=1`
+		image.fetchPriority = 'low'
+		image.src = `/api/media/${encodeURIComponent(item.id)}/content?variant=display`
 	}
 }
 
@@ -186,7 +191,6 @@ function step(delta: number) {
   if (next < 0 || next >= props.items.length) return
   emit('update:index', next)
   index.value = next
-  resetLoadState()
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -203,17 +207,22 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 watch(
-  () => props.open,
-  (open) => {
+  [() => props.open, () => props.initialIndex],
+  ([open, initialIndex]) => { if (open) index.value = initialIndex },
+  { immediate: true },
+)
+watch(
+  [() => props.open, () => current.value?.id],
+  ([open]) => {
+    resetLoadState()
     if (open) {
-      index.value = props.initialIndex
-      resetLoadState()
       window.addEventListener('keydown', onKeydown)
     } else {
       window.removeEventListener('keydown', onKeydown)
       dragging.value = false
     }
   },
+  { immediate: true },
 )
 
 onBeforeUnmount(() => {
@@ -243,8 +252,8 @@ onBeforeUnmount(() => {
         >
           <figure class="image-viewer-figure" :style="{ transform: `translate(${translateX}px, ${translateY}px) scale(${scale})` }">
 			<div class="image-viewer-stack">
-			  <img v-if="previewSrc" class="image-viewer-preview" :src="previewSrc" alt="" draggable="false" />
-			  <img v-if="!loadFailed" class="image-viewer-active" :src="src" :alt="current?.filename ?? ''" draggable="false"
+			  <img v-if="previewSrc && !loaded" class="image-viewer-preview" :src="previewSrc" alt="" draggable="false" />
+			  <img v-if="!loadFailed" :key="src" class="image-viewer-active" :src="src" :alt="current?.filename ?? ''" draggable="false"
 				@load="onImageLoaded" @error="onImageError"
 				:class="{ 'is-loaded': loaded }" />
 			  <div v-if="!loaded && !loadFailed" class="image-viewer-loading" role="status" aria-live="polite"><span></span><small>{{ useOriginal ? '正在加载原图…' : '正在准备清晰图片…' }}</small></div>
@@ -325,7 +334,7 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
 }
 .image-viewer-preview { opacity: .72; filter: blur(1px); }
-.image-viewer-active { opacity: 0; transition: opacity 0.2s ease; }
+.image-viewer-active { opacity: 0; }
 .image-viewer-active.is-loaded { opacity: 1; }
 .image-viewer-loading { grid-area: 1 / 1; z-index: 1; align-self: end; display: inline-flex; align-items: center; gap: 7px; margin-bottom: 18px; padding: 7px 11px; border-radius: 999px; background: rgba(0,0,0,.58); color: rgba(255,255,255,.9); pointer-events: none; }
 .image-viewer-loading span { width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.35); border-top-color: #fff; border-radius: 50%; animation: viewer-spin .8s linear infinite; }

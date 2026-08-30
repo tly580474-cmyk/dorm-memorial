@@ -120,6 +120,7 @@ type Store struct {
 	background      map[string]bool
 	videoTranscodes chan struct{}
 	imageRenders    chan struct{}
+	imageDisplays   map[string]*imageDisplayJob
 }
 
 func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) *Store {
@@ -127,7 +128,7 @@ func NewStore(db *sql.DB, objects storage.ObjectStorage, ffmpegPaths ...string) 
 	if len(ffmpegPaths) > 0 && strings.TrimSpace(ffmpegPaths[0]) != "" {
 		ffmpegPath = strings.TrimSpace(ffmpegPaths[0])
 	}
-	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2)}
+	return &Store{db: db, objects: objects, ffmpegPath: ffmpegPath, stagingDir: "data/media-staging", videoEncoder: "auto", verifyDelays: []time.Duration{0, time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 15 * time.Second}, background: make(map[string]bool), videoTranscodes: make(chan struct{}, 1), imageRenders: make(chan struct{}, 2), imageDisplays: make(map[string]*imageDisplayJob)}
 }
 
 func (s *Store) ConfigureVideoProcessing(stagingDir, encoder string) {
@@ -619,8 +620,7 @@ func (s *Store) OpenDescriptor(ctx context.Context, descriptor ContentDescriptor
 	}
 	if variant == "display" && mediaType == "image" {
 		if descriptor.DisplayPath == "" {
-			s.scheduleImageDisplay(descriptor)
-			return Content{}, ErrPreviewPending
+			return s.openImageDisplay(ctx, descriptor)
 		}
 		objectPath, mimeType, size = descriptor.DisplayPath, descriptor.DisplayMIME, descriptor.DisplaySize
 	}
@@ -668,26 +668,6 @@ func (s *Store) scheduleVideoPlayback(descriptor ContentDescriptor) {
 		now := nowText(time.Now().UTC())
 		_, _ = s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
 			VALUES(?, 'playback', ?, ?, ?, ?, ?)
-			ON CONFLICT(media_id, kind) DO UPDATE SET object_path = excluded.object_path, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
-			descriptor.ID, path, mimeType, size, now, now)
-	})
-}
-
-func (s *Store) scheduleImageDisplay(descriptor ContentDescriptor) {
-	s.runBackground("display:"+descriptor.ID, func(ctx context.Context) {
-		select {
-		case s.imageRenders <- struct{}{}:
-			defer func() { <-s.imageRenders }()
-		case <-ctx.Done():
-			return
-		}
-		path, mimeType, size := buildImageDisplay(ctx, s.objects, descriptor.ObjectPath, descriptor.OwnerID, descriptor.ID, descriptor.CreatedText)
-		if path == "" || size <= 0 {
-			return
-		}
-		now := nowText(time.Now().UTC())
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO media_variants(media_id, kind, object_path, mime_type, size_bytes, created_at, updated_at)
-			VALUES(?, 'display', ?, ?, ?, ?, ?)
 			ON CONFLICT(media_id, kind) DO UPDATE SET object_path = excluded.object_path, mime_type = excluded.mime_type, size_bytes = excluded.size_bytes, updated_at = excluded.updated_at`,
 			descriptor.ID, path, mimeType, size, now, now)
 	})

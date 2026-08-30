@@ -209,19 +209,18 @@ func TestTargetVideoBitrateBoundsOutputGrowth(t *testing.T) {
 	}
 }
 
-func TestBuildImageDisplayBoundsLongEdge(t *testing.T) {
+func TestRenderImageDisplayBoundsLongEdge(t *testing.T) {
 	var source bytes.Buffer
 	if err := png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 2400, 1200))); err != nil {
 		t.Fatal(err)
 	}
 	objects := newMemoryObjects()
 	objects.objects["/source.png"] = source.Bytes()
-	created := time.Now().UTC().Format(time.RFC3339Nano)
-	displayPath, mimeType, size := buildImageDisplay(context.Background(), objects, "/source.png", "owner", "0123456789abcdef0123456789abcdef", created)
-	if displayPath == "" || mimeType != "image/jpeg" || size <= 0 {
-		t.Fatalf("path=%q mime=%q size=%d", displayPath, mimeType, size)
+	encoded, err := renderImageDisplay(context.Background(), objects, "/source.png")
+	if err != nil {
+		t.Fatal(err)
 	}
-	config, format, err := image.DecodeConfig(bytes.NewReader(objects.objects[displayPath]))
+	config, format, err := image.DecodeConfig(bytes.NewReader(encoded))
 	if err != nil || format != "jpeg" || config.Width != 2048 || config.Height != 1024 {
 		t.Fatalf("format=%q size=%dx%d err=%v", format, config.Width, config.Height, err)
 	}
