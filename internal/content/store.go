@@ -17,6 +17,7 @@ import (
 
 	"dorm-memorial/internal/identity"
 	"dorm-memorial/internal/messaging"
+	"dorm-memorial/internal/validation"
 	"github.com/microcosm-cc/bluemonday"
 )
 
@@ -68,6 +69,10 @@ type Post struct {
 	LikedByMe        bool       `json:"liked_by_me"`
 	Media            []Media    `json:"media"`
 	ExternalVideoURL string     `json:"external_video_url"`
+	createdAtText    string
+	updatedAtText    string
+	submittedAtText  string
+	publishedAtText  string
 }
 
 type Media struct {
@@ -101,6 +106,7 @@ type GuestbookEntry struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 	Media            []Media   `json:"media"`
 	ExternalVideoURL string    `json:"external_video_url"`
+	createdAtText    string
 }
 
 type GuestbookInput struct {
@@ -166,14 +172,14 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 	defer tx.Rollback()
 	var submitted any
 	if status == "published" {
-		submitted = now.Format(time.RFC3339Nano)
+		submitted = timeText(now)
 	}
 	var published any
 	if status == "published" {
 		published = submitted
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO posts(id, author_id, title, body, body_html, status, visibility, content_date, submitted_at, published_at, external_video_url, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Title, input.Body, input.BodyHTML, status, input.Visibility, nullableDate(contentDate), submitted, published, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, actor.ID, input.Title, input.Body, input.BodyHTML, status, input.Visibility, nullableDate(contentDate), submitted, published, input.ExternalVideoURL, timeText(now), timeText(now))
 	if err != nil {
 		return Post{}, err
 	}
@@ -184,7 +190,7 @@ func (s *Store) Create(ctx context.Context, actor identity.User, input WriteInpu
 		return Post{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, metadata_json, ip_address, created_at)
-		VALUES(?, ?, 'post', ?, ?, ?, ?)`, actor.ID, "post.create", id, fmt.Sprintf(`{"status":%q}`, status), ip, now.Format(time.RFC3339Nano)); err != nil {
+		VALUES(?, ?, 'post', ?, ?, ?, ?)`, actor.ID, "post.create", id, fmt.Sprintf(`{"status":%q}`, status), ip, timeText(now)); err != nil {
 		return Post{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -215,9 +221,9 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 	var submitted any
 	if input.Submit {
 		nextStatus = "published"
-		submitted = time.Now().UTC().Format(time.RFC3339Nano)
+		submitted = timeText(time.Now().UTC())
 	} else if status == "published" {
-		submitted = time.Now().UTC().Format(time.RFC3339Nano)
+		submitted = timeText(time.Now().UTC())
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -238,7 +244,10 @@ func (s *Store) Update(ctx context.Context, actor identity.User, id string, inpu
 	if err := replaceTags(ctx, tx, id, input.Tags); err != nil {
 		return Post{}, err
 	}
-	if err := replaceMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
+	// Attachments belong to the post author. An administrator may edit a post,
+	// but must not be able to attach the administrator's media (or accidentally
+	// reject media that already belongs to the author).
+	if err := replaceMedia(ctx, tx, authorID, id, input.MediaIDs); err != nil {
 		return Post{}, err
 	}
 	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'post.update', 'post', ?, ?, ?)`, actor.ID, id, ip, nowText())
@@ -267,7 +276,7 @@ func (s *Store) Moderate(ctx context.Context, actor identity.User, id, action, n
 		return Post{}, ErrForbidden
 	}
 	if len([]rune(note)) > 500 {
-		return Post{}, errors.New("moderation note is too long")
+		return Post{}, validation.New("moderation note is too long")
 	}
 	var query string
 	switch action {
@@ -276,7 +285,7 @@ func (s *Store) Moderate(ctx context.Context, actor identity.User, id, action, n
 	case "hide":
 		query = `UPDATE posts SET status = 'hidden', moderation_note = ?, updated_at = ? WHERE id = ? AND status IN ('pending', 'published')`
 	default:
-		return Post{}, errors.New("invalid moderation action")
+		return Post{}, validation.New("invalid moderation action")
 	}
 	var result sql.Result
 	var err error
@@ -355,7 +364,7 @@ func (s *Store) ListComments(ctx context.Context, actor identity.User, postID st
 func (s *Store) AddComment(ctx context.Context, actor identity.User, postID, body, ip string) (Comment, error) {
 	body = strings.TrimSpace(body)
 	if body == "" || len([]rune(body)) > 2000 {
-		return Comment{}, errors.New("comment must be 1-2000 characters")
+		return Comment{}, validation.New("comment must be 1-2000 characters")
 	}
 	var postAuthorID string
 	if err := s.db.QueryRowContext(ctx, `SELECT author_id FROM posts WHERE id = ? AND status = 'published' AND visibility = 'members'`, postID).Scan(&postAuthorID); err != nil {
@@ -365,10 +374,10 @@ func (s *Store) AddComment(ctx context.Context, actor identity.User, postID, bod
 		return Comment{}, err
 	}
 	id, now := newID(), time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO comments(id, post_id, author_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, postID, actor.ID, body, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO comments(id, post_id, author_id, body, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'visible', ?, ?)`, id, postID, actor.ID, body, timeText(now), timeText(now)); err != nil {
 		return Comment{}, err
 	}
-	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'comment.create', 'comment', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'comment.create', 'comment', ?, ?, ?)`, actor.ID, id, ip, timeText(now))
 	if postAuthorID != actor.ID {
 		_ = messaging.CreateNotification(ctx, s.db, messaging.NotificationInput{UserID: postAuthorID, ActorID: actor.ID, Kind: "post_comment", TargetType: "post", TargetID: postID, Title: actor.Nickname + "评论了你的回忆", Body: truncateRunes(body, 80), EventKey: "comment:" + id})
 	}
@@ -411,7 +420,7 @@ func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, i
 	if input.RecipientID != "" {
 		recipient = input.RecipientID
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO guestbook_entries(id, author_id, recipient_id, body, external_video_url, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 'visible', ?, ?)`, id, actor.ID, recipient, input.Body, input.ExternalVideoURL, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO guestbook_entries(id, author_id, recipient_id, body, external_video_url, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 'visible', ?, ?)`, id, actor.ID, recipient, input.Body, input.ExternalVideoURL, timeText(now), timeText(now)); err != nil {
 		return GuestbookEntry{}, err
 	}
 	if err := replaceGuestbookMedia(ctx, tx, actor.ID, id, input.MediaIDs); err != nil {
@@ -444,7 +453,7 @@ func (s *Store) CreateGuestbookEntry(ctx context.Context, actor identity.User, i
 			}
 		}
 	}
-	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.create', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, now.Format(time.RFC3339Nano))
+	_, _ = tx.ExecContext(ctx, `INSERT INTO audit_logs(actor_id, action, target_type, target_id, ip_address, created_at) VALUES(?, 'guestbook.create', 'guestbook_entry', ?, ?, ?)`, actor.ID, id, ip, timeText(now))
 	if err := tx.Commit(); err != nil {
 		return GuestbookEntry{}, err
 	}
@@ -459,7 +468,7 @@ func (s *Store) ListGuestbook(ctx context.Context, actor identity.User, recipien
 		status = "visible"
 	}
 	if status != "visible" && status != "hidden" {
-		return GuestbookPage{}, errors.New("invalid guestbook status")
+		return GuestbookPage{}, validation.New("invalid guestbook status")
 	}
 	if status == "hidden" && actor.Role != "admin" && recipientID != actor.ID {
 		return GuestbookPage{}, ErrForbidden
@@ -480,7 +489,7 @@ func (s *Store) ListGuestbook(ctx context.Context, actor identity.User, recipien
 	if cursorValue != "" {
 		decoded, err := decodeCursor(cursorValue)
 		if err != nil {
-			return GuestbookPage{}, errors.New("invalid cursor")
+			return GuestbookPage{}, validation.New("invalid cursor")
 		}
 		where += " AND (g.created_at < ? OR (g.created_at = ? AND g.id < ?))"
 		args = append(args, decoded.Sort, decoded.Sort, decoded.ID)
@@ -502,16 +511,18 @@ func (s *Store) ListGuestbook(ctx context.Context, actor identity.User, recipien
 	if err := rows.Err(); err != nil {
 		return GuestbookPage{}, err
 	}
-	for index := range entries {
-		if err := s.loadGuestbookMedia(ctx, &entries[index]); err != nil {
-			return GuestbookPage{}, err
-		}
+	if err := s.loadGuestbookMediaForEntries(ctx, entries); err != nil {
+		return GuestbookPage{}, err
 	}
 	page := GuestbookPage{Entries: entries}
 	if len(entries) > limit {
 		last := entries[limit-1]
 		page.Entries = entries[:limit]
-		page.NextCursor = encodeCursor(cursor{Sort: last.CreatedAt.Format(time.RFC3339Nano), ID: last.ID})
+		sortValue := last.createdAtText
+		if sortValue == "" {
+			sortValue = timeText(last.CreatedAt)
+		}
+		page.NextCursor = encodeCursor(cursor{Sort: sortValue, ID: last.ID})
 	}
 	return page, nil
 }
@@ -634,11 +645,11 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 		where = "WHERE p.status = 'pending'"
 		sortExpr = "p.submitted_at"
 	default:
-		return Page{}, errors.New("invalid list scope")
+		return Page{}, validation.New("invalid list scope")
 	}
 	if options.Status != "" && (options.Scope == "mine" || options.Scope == "admin") {
 		if !validStatus(options.Status) || (options.Scope == "mine" && options.Status == "deleted") {
-			return Page{}, errors.New("invalid status filter")
+			return Page{}, validation.New("invalid status filter")
 		}
 		where += " AND p.status = ?"
 		args = append(args, options.Status)
@@ -646,7 +657,7 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 	if options.Cursor != "" {
 		decoded, err := decodeCursor(options.Cursor)
 		if err != nil {
-			return Page{}, errors.New("invalid cursor")
+			return Page{}, validation.New("invalid cursor")
 		}
 		where += fmt.Sprintf(" AND (%s < ? OR (%s = ? AND p.id < ?))", sortExpr, sortExpr)
 		args = append(args, decoded.Sort, decoded.Sort, decoded.ID)
@@ -672,26 +683,46 @@ func (s *Store) List(ctx context.Context, actor identity.User, options ListOptio
 	if err := rows.Close(); err != nil {
 		return Page{}, err
 	}
-	for index := range posts {
-		if err := s.loadTags(ctx, &posts[index]); err != nil {
-			return Page{}, err
-		}
-		if err := s.loadMedia(ctx, &posts[index]); err != nil {
-			return Page{}, err
-		}
+	if err := s.loadTagsForPosts(ctx, posts); err != nil {
+		return Page{}, err
+	}
+	if err := s.loadMediaForPosts(ctx, posts); err != nil {
+		return Page{}, err
 	}
 	page := Page{Posts: posts}
 	if len(posts) > options.Limit {
 		last := posts[options.Limit-1]
 		page.Posts = posts[:options.Limit]
-		sortTime := last.PublishedAt
-		if options.Scope == "mine" || options.Scope == "admin" {
+		var sortTime *time.Time
+		switch options.Scope {
+		case "mine", "admin":
 			sortTime = &last.UpdatedAt
-		} else if options.Scope == "pending" {
+		case "pending":
 			sortTime = last.SubmittedAt
+		default:
+			// The feed sorts by COALESCE(published_at, updated_at), so use
+			// the same fallback when an older/inconsistent row has no
+			// published_at value.
+			sortTime = last.PublishedAt
+			if sortTime == nil {
+				sortTime = &last.UpdatedAt
+			}
 		}
 		if sortTime != nil {
-			page.NextCursor = encodeCursor(cursor{Sort: sortTime.Format(time.RFC3339Nano), ID: last.ID})
+			sortValue := last.updatedAtText
+			switch options.Scope {
+			case "pending":
+				sortValue = last.submittedAtText
+			case "feed":
+				sortValue = last.publishedAtText
+				if sortValue == "" {
+					sortValue = last.updatedAtText
+				}
+			}
+			if sortValue == "" {
+				sortValue = timeText(*sortTime)
+			}
+			page.NextCursor = encodeCursor(cursor{Sort: sortValue, ID: last.ID})
 		}
 	}
 	return page, nil
@@ -743,6 +774,14 @@ func scanPost(row scanner) (Post, error) {
 	post.ContentDate = parseOptionalTime(contentDate)
 	post.SubmittedAt = parseOptionalTime(submittedAt)
 	post.PublishedAt = parseOptionalTime(publishedAt)
+	post.createdAtText = createdAt
+	post.updatedAtText = updatedAt
+	if submittedAt.Valid {
+		post.submittedAtText = submittedAt.String
+	}
+	if publishedAt.Valid {
+		post.publishedAtText = publishedAt.String
+	}
 	post.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
 	post.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
 	post.Tags = []string{}
@@ -762,6 +801,37 @@ func (s *Store) loadTags(ctx context.Context, post *Post) error {
 			return err
 		}
 		post.Tags = append(post.Tags, name)
+	}
+	return rows.Err()
+}
+
+func (s *Store) loadTagsForPosts(ctx context.Context, posts []Post) error {
+	if len(posts) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(posts))
+	args := make([]any, len(posts))
+	for index := range posts {
+		posts[index].Tags = []string{}
+		indexes[posts[index].ID] = index
+		args[index] = posts[index].ID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ct.post_id, t.name
+		FROM tags t JOIN content_tags ct ON ct.tag_id = t.id
+		WHERE ct.post_id IN (`+placeholders(len(posts))+`)
+		ORDER BY ct.post_id, t.name COLLATE NOCASE`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var postID, name string
+		if err := rows.Scan(&postID, &name); err != nil {
+			return err
+		}
+		if index, ok := indexes[postID]; ok {
+			posts[index].Tags = append(posts[index].Tags, name)
+		}
 	}
 	return rows.Err()
 }
@@ -791,6 +861,51 @@ func (s *Store) loadMedia(ctx context.Context, post *Post) error {
 			item.DurationMS = &duration.Int64
 		}
 		post.Media = append(post.Media, item)
+	}
+	return rows.Err()
+}
+
+func (s *Store) loadMediaForPosts(ctx context.Context, posts []Post) error {
+	if len(posts) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(posts))
+	args := make([]any, len(posts))
+	for index := range posts {
+		posts[index].Media = []Media{}
+		indexes[posts[index].ID] = index
+		args[index] = posts[index].ID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT pm.post_id, m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.width, m.height, m.duration_ms, m.preview_path <> ''
+		FROM media m JOIN post_media pm ON pm.media_id = m.id
+		WHERE pm.post_id IN (`+placeholders(len(posts))+`) AND m.status <> 'deleted'
+		ORDER BY pm.post_id, pm.position`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var postID string
+		var item Media
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&postID, &item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status, &width, &height, &duration, &item.HasPreview); err != nil {
+			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			item.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			item.Height = &value
+		}
+		if duration.Valid {
+			value := duration.Int64
+			item.DurationMS = &value
+		}
+		if index, ok := indexes[postID]; ok {
+			posts[index].Media = append(posts[index].Media, item)
+		}
 	}
 	return rows.Err()
 }
@@ -830,6 +945,7 @@ func scanGuestbookEntry(row scanner) (GuestbookEntry, error) {
 		return GuestbookEntry{}, err
 	}
 	entry.Author.Deactivated = authorStatus.Valid && authorStatus.String == "deactivated"
+	entry.createdAtText = created
 	entry.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	entry.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	entry.Media = []Media{}
@@ -866,6 +982,55 @@ func (s *Store) loadGuestbookMedia(ctx context.Context, entry *GuestbookEntry) e
 		entry.Media = append(entry.Media, item)
 	}
 	return rows.Err()
+}
+
+func (s *Store) loadGuestbookMediaForEntries(ctx context.Context, entries []GuestbookEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(entries))
+	args := make([]any, len(entries))
+	for index := range entries {
+		entries[index].Media = []Media{}
+		indexes[entries[index].ID] = index
+		args[index] = entries[index].ID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT gm.entry_id, m.id, m.original_filename, m.media_type, m.mime_type, m.size_bytes, m.status, m.width, m.height, m.duration_ms, m.preview_path <> ''
+		FROM media m JOIN guestbook_media gm ON gm.media_id = m.id
+		WHERE gm.entry_id IN (`+placeholders(len(entries))+`) AND m.status <> 'deleted'
+		ORDER BY gm.entry_id, gm.position`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var entryID string
+		var item Media
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&entryID, &item.ID, &item.OriginalFilename, &item.MediaType, &item.MimeType, &item.SizeBytes, &item.Status, &width, &height, &duration, &item.HasPreview); err != nil {
+			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			item.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			item.Height = &value
+		}
+		if duration.Valid {
+			value := duration.Int64
+			item.DurationMS = &value
+		}
+		if index, ok := indexes[entryID]; ok {
+			entries[index].Media = append(entries[index].Media, item)
+		}
+	}
+	return rows.Err()
+}
+
+func placeholders(count int) string {
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
 }
 
 func replaceTags(ctx context.Context, tx *sql.Tx, postID string, tags []string) error {
@@ -924,23 +1089,23 @@ func validateGuestbookInput(input GuestbookInput) (GuestbookInput, error) {
 	}
 	input.ExternalVideoURL = externalVideoURL
 	if input.RecipientID != "" && len(input.RecipientID) != 32 {
-		return input, errors.New("invalid guestbook recipient")
+		return input, validation.New("invalid guestbook recipient")
 	}
 	if len([]rune(input.Body)) > 2000 {
-		return input, errors.New("guestbook message must be at most 2000 characters")
+		return input, validation.New("guestbook message must be at most 2000 characters")
 	}
 	if input.Body == "" && len(input.MediaIDs) == 0 && input.ExternalVideoURL == "" {
-		return input, errors.New("guestbook message, media, or external video is required")
+		return input, validation.New("guestbook message, media, or external video is required")
 	}
 	if len(input.MediaIDs) > 6 {
-		return input, errors.New("a guestbook entry can have at most 6 media files")
+		return input, validation.New("a guestbook entry can have at most 6 media files")
 	}
 	seen := make(map[string]bool)
 	clean := make([]string, 0, len(input.MediaIDs))
 	for _, id := range input.MediaIDs {
 		id = strings.TrimSpace(id)
 		if len(id) != 32 {
-			return input, errors.New("invalid media id")
+			return input, validation.New("invalid media id")
 		}
 		if !seen[id] {
 			seen[id] = true
@@ -961,41 +1126,41 @@ func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	}
 	input.ExternalVideoURL = externalVideoURL
 	if len([]rune(input.Body)) > 10000 {
-		return input, nil, errors.New("content body is too long")
+		return input, nil, validation.New("content body is too long")
 	}
 	if len([]rune(input.Title)) > 120 {
-		return input, nil, errors.New("content title is too long")
+		return input, nil, validation.New("content title is too long")
 	}
 	if len(input.BodyHTML) > 100000 {
-		return input, nil, errors.New("rich text body is too long")
+		return input, nil, validation.New("rich text body is too long")
 	}
 	if input.Submit && input.Body == "" && len(input.MediaIDs) == 0 && input.ExternalVideoURL == "" {
-		return input, nil, errors.New("content body is required before submission")
+		return input, nil, validation.New("content body is required before submission")
 	}
 	if input.Visibility == "" {
 		input.Visibility = "members"
 	}
 	if input.Visibility != "members" && input.Visibility != "private" {
-		return input, nil, errors.New("invalid visibility")
+		return input, nil, validation.New("invalid visibility")
 	}
 	var contentDate *time.Time
 	if input.ContentDate != "" {
 		parsed, err := time.Parse("2006-01-02", input.ContentDate)
 		if err != nil {
-			return input, nil, errors.New("content_date must use YYYY-MM-DD")
+			return input, nil, validation.New("content_date must use YYYY-MM-DD")
 		}
 		parsed = parsed.UTC()
 		contentDate = &parsed
 	}
 	if len(input.Tags) > 10 {
-		return input, nil, errors.New("a post can have at most 10 tags")
+		return input, nil, validation.New("a post can have at most 10 tags")
 	}
 	seen := make(map[string]bool)
 	cleanTags := make([]string, 0, len(input.Tags))
 	for _, tag := range input.Tags {
 		tag = strings.TrimSpace(tag)
 		if tag == "" || len([]rune(tag)) > 30 {
-			return input, nil, errors.New("tags must be 1-30 characters")
+			return input, nil, validation.New("tags must be 1-30 characters")
 		}
 		key := strings.ToLower(tag)
 		if !seen[key] {
@@ -1005,14 +1170,14 @@ func validateWrite(input WriteInput) (WriteInput, *time.Time, error) {
 	}
 	input.Tags = cleanTags
 	if len(input.MediaIDs) > 20 {
-		return input, nil, errors.New("a post can have at most 20 media files")
+		return input, nil, validation.New("a post can have at most 20 media files")
 	}
 	seenMedia := make(map[string]bool)
 	cleanMedia := make([]string, 0, len(input.MediaIDs))
 	for _, mediaID := range input.MediaIDs {
 		mediaID = strings.TrimSpace(mediaID)
 		if len(mediaID) != 32 {
-			return input, nil, errors.New("invalid media id")
+			return input, nil, validation.New("invalid media id")
 		}
 		if !seenMedia[mediaID] {
 			seenMedia[mediaID] = true
@@ -1032,7 +1197,7 @@ func normalizeExternalVideo(value string) (string, error) {
 	if fromIframe {
 		matches := iframeSource.FindStringSubmatch(value)
 		if len(matches) == 0 {
-			return "", errors.New("iframe embed code does not contain a valid src")
+			return "", validation.New("iframe embed code does not contain a valid src")
 		}
 		value = ""
 		for _, candidate := range matches[1:] {
@@ -1046,14 +1211,14 @@ func normalizeExternalVideo(value string) (string, error) {
 		value = "https:" + value
 	}
 	if len(value) > 2048 {
-		return "", errors.New("external video URL is too long")
+		return "", validation.New("external video URL is too long")
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", errors.New("external video must be a valid http or https URL or iframe embed code")
+		return "", validation.New("external video must be a valid http or https URL or iframe embed code")
 	}
 	if fromIframe && !allowedEmbedHost(parsed.Hostname()) {
-		return "", errors.New("iframe player domain is not supported")
+		return "", validation.New("iframe player domain is not supported")
 	}
 	return parsed.String(), nil
 }
@@ -1089,7 +1254,7 @@ func nullableDate(value *time.Time) any {
 	if value == nil {
 		return nil
 	}
-	return value.Format(time.RFC3339Nano)
+	return timeText(*value)
 }
 
 func encodeCursor(value cursor) string {
@@ -1105,7 +1270,7 @@ func decodeCursor(value string) (cursor, error) {
 	var decoded cursor
 	err = json.Unmarshal(data, &decoded)
 	if err != nil || decoded.Sort == "" || decoded.ID == "" {
-		return cursor{}, errors.New("invalid cursor")
+		return cursor{}, validation.New("invalid cursor")
 	}
 	return decoded, nil
 }
@@ -1118,7 +1283,11 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-func nowText() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+func timeText(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func nowText() string { return timeText(time.Now().UTC()) }
 
 func truncateRunes(value string, limit int) string {
 	runes := []rune(strings.TrimSpace(value))

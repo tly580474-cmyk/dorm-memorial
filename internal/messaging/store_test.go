@@ -10,6 +10,7 @@ import (
 
 	"dorm-memorial/internal/database"
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/validation"
 )
 
 func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
@@ -135,6 +136,55 @@ func TestDirectMessagesUnreadRecallAndPrivacy(t *testing.T) {
 	}
 }
 
+func TestMessageCursorHandlesCanonicalExactSecond(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "message-cursor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	alice := registerMessagingUser(t, identities, admin, "cursor-alice", "cursor-alice@example.test", "小爱")
+	bob := registerMessagingUser(t, identities, admin, "cursor-bob", "cursor-bob@example.test", "小博")
+	store := NewStore(db)
+	direct, err := store.StartDirect(ctx, alice, bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.SendMessage(ctx, alice, direct.ID, "旧消息", nil, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := store.SendMessage(ctx, alice, direct.ID, "新消息", nil, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyOld := "2024-01-01T00:00:00Z"
+	legacyNewer := "2024-01-02T00:00:00.123000Z"
+	if _, err := db.ExecContext(ctx, `UPDATE messages SET created_at = CASE id WHEN ? THEN ? ELSE ? END WHERE id IN (?, ?)`, old.ID, legacyOld, legacyNewer, old.ID, newer.ID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListMessages(ctx, alice, direct.ID, "", 1)
+	if err != nil || len(page.Messages) != 1 || page.Messages[0].ID != newer.ID || page.NextCursor == "" {
+		t.Fatalf("first page=%+v err=%v", page, err)
+	}
+	cursor, err := decodeCursor(page.NextCursor)
+	if err != nil || cursor.Sort != legacyNewer {
+		t.Fatalf("cursor sort=%q err=%v want %q", cursor.Sort, err, legacyNewer)
+	}
+	next, err := store.ListMessages(ctx, alice, direct.ID, page.NextCursor, 1)
+	if err != nil || len(next.Messages) != 1 || next.Messages[0].ID != old.ID {
+		t.Fatalf("second page=%+v err=%v oldID=%s newerID=%s cursor=%s", next, err, old.ID, newer.ID, page.NextCursor)
+	}
+}
+
 func TestDisabledDirectPeerIsHiddenFromConversations(t *testing.T) {
 	ctx := context.Background()
 	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "disabled-direct-peer.db"))
@@ -215,6 +265,9 @@ func TestAdminMessageManagementOnlyIncludesGroupChat(t *testing.T) {
 	recalled, err := store.ListAdminGroupMessages(ctx, admin, "", "recalled", 100)
 	if err != nil || len(recalled) != 1 || recalled[0].Body != "" {
 		t.Fatalf("recalled admin messages=%+v err=%v", recalled, err)
+	}
+	if _, err := store.ListAdminGroupMessages(ctx, admin, "", "unknown", 100); !validation.Is(err) {
+		t.Fatalf("invalid admin message status error=%v", err)
 	}
 	page, err := store.ListMessages(ctx, alice, groupConversations[0].ID, "", 20)
 	if err != nil || len(page.Messages) != 1 || page.Messages[0].Status != "recalled" || page.Messages[0].Body != "" {

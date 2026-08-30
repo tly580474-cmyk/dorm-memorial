@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	mediastore "dorm-memorial/internal/media"
 	"dorm-memorial/internal/messaging"
 	"dorm-memorial/internal/storage"
+	"dorm-memorial/internal/validation"
 )
 
 const sessionCookie = "dm_session"
@@ -61,8 +63,9 @@ func New(cfg config.Config, db *sql.DB, identities *identity.Store, logger *slog
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", s.live)
 	mux.HandleFunc("GET /health/ready", s.ready)
-	mux.HandleFunc("POST /api/auth/register", s.register)
-	mux.HandleFunc("POST /api/auth/login", s.login)
+	authLimit := &authLimiter{slots: make(chan struct{}, 2)}
+	mux.HandleFunc("POST /api/auth/register", authLimit.protect(s.register))
+	mux.HandleFunc("POST /api/auth/login", authLimit.protect(s.login))
 	mux.Handle("POST /api/auth/logout", s.requireAuth(http.HandlerFunc(s.logout)))
 	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.me)))
 	mux.Handle("POST /api/auth/deactivate", s.requireAuth(http.HandlerFunc(s.deactivateAccount)))
@@ -244,17 +247,23 @@ func (s *Server) clearNotifications(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) middleware(next http.Handler) http.Handler {
+	csrf := http.NewCrossOriginProtection()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
-		if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/media/") {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https://i.ytimg.com; media-src 'self' blob: http: https:; frame-src https://player.bilibili.com https://youtube.com https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 		}
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		if err := csrf.Check(r); err != nil {
 			writeError(w, http.StatusForbidden, "cross-site request rejected")
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/media/") && crossOriginMediaRead(r) {
+			writeError(w, http.StatusForbidden, "cross-origin media request rejected")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -341,6 +350,11 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusForbidden, "该账号已注销")
 			return
 		}
+		if !errors.Is(err, identity.ErrInvalidCredentials) {
+			s.logger.Error("login_failed", "error", err)
+			writeError(w, http.StatusServiceUnavailable, "登录服务暂时不可用，请稍后重试")
+			return
+		}
 		writeError(w, http.StatusUnauthorized, "用户名、邮箱或密码不正确")
 		return
 	}
@@ -365,7 +379,11 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user ident
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	p := mustPrincipal(r)
-	_ = s.identity.RevokeSession(r.Context(), p.User.ID, p.SessionID)
+	if err := s.identity.RevokeSession(r.Context(), p.User.ID, p.SessionID); err != nil && !errors.Is(err, identity.ErrNotFound) {
+		s.logger.Error("session_revoke_failed", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "退出登录失败，请稍后重试")
+		return
+	}
 	clearSessionCookie(w, s.cfg.CookieSecure)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -384,6 +402,8 @@ func (s *Server) deactivateAccount(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "当前密码不正确")
 		case errors.Is(err, identity.ErrNotFound):
 			writeError(w, http.StatusConflict, "账号状态已变化，请刷新页面")
+		case errors.Is(err, identity.ErrLastAdmin):
+			writeError(w, http.StatusConflict, "必须保留至少一个启用中的管理员，请先转交管理权限")
 		default:
 			writeError(w, http.StatusInternalServerError, "注销失败，请稍后重试")
 		}
@@ -812,6 +832,8 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		maxFileSize = s.cfg.MaxVideoUploadBytes
 	} else if strings.HasPrefix(mimeType, "image/") {
 		maxFileSize = s.cfg.MaxImageUploadBytes
+	} else if strings.HasPrefix(mimeType, "audio/") {
+		maxFileSize = mediastore.MaxAudioUploadBytes
 	}
 	if r.ContentLength > maxFileSize {
 		switch {
@@ -819,6 +841,8 @@ func (s *Server) uploadMedia(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个视频不能超过 %d MiB", maxFileSize/(1024*1024)))
 		case strings.HasPrefix(mimeType, "image/"):
 			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个图片不能超过 %d MiB", maxFileSize/(1024*1024)))
+		case strings.HasPrefix(mimeType, "audio/"):
+			writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("单个音频不能超过 %d MiB", maxFileSize/(1024*1024)))
 		default:
 			writeError(w, http.StatusRequestEntityTooLarge, "单个文件不能超过 8 GiB")
 		}
@@ -922,7 +946,6 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "不支持的媒体版本")
 		return
 	}
-	requestedVariant := variant
 	if variant == "watch" {
 		if descriptor.MediaType != "video" {
 			writeError(w, http.StatusBadRequest, "播放资源只适用于视频")
@@ -936,11 +959,9 @@ func (s *Server) mediaContent(w http.ResponseWriter, r *http.Request) {
 	etag := `"media-` + r.PathValue("id") + `-` + variant + `"`
 	w.Header().Set("X-Media-Variant", variant)
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "private, max-age=604800, immutable")
-	if requestedVariant == "watch" {
-		// A legacy upload may gain a prepared rendition after this URL was read.
-		w.Header().Set("Cache-Control", "private, no-cache")
-	}
+	// Revalidate authorization before reusing private media. A week-long fresh
+	// response would remain readable after logout, revocation or deletion.
+	w.Header().Set("Cache-Control", "private, no-cache")
 	if r.Header.Get("Range") == "" && r.Header.Get("If-None-Match") == etag {
 		w.Header().Set("Server-Timing", trace.ServerTiming())
 		w.WriteHeader(http.StatusNotModified)
@@ -1038,7 +1059,8 @@ func (s *Server) frontend() http.Handler {
 func mustPrincipal(r *http.Request) principal { return r.Context().Value(principalKey).(principal) }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
 		writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 		return false
 	}
@@ -1068,12 +1090,18 @@ func writeIdentityError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "邀请码无效、已过期或已用完")
 	case errors.Is(err, identity.ErrConflict):
 		writeError(w, http.StatusConflict, "用户名或邮箱已被使用")
+	case errors.Is(err, identity.ErrAccountChanged):
+		writeError(w, http.StatusConflict, "账号状态已变化，请刷新后重试")
 	case errors.Is(err, identity.ErrForbidden):
 		writeError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, identity.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
+	case errors.Is(err, identity.ErrLastAdmin):
+		writeError(w, http.StatusConflict, "必须保留至少一个启用中的管理员")
+	case validation.Is(err):
+		writeValidationError(w, err)
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "账号操作失败，请稍后重试")
 	}
 }
 
@@ -1085,8 +1113,10 @@ func writeContentError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "无权访问该内容")
 	case errors.Is(err, content.ErrConflict):
 		writeError(w, http.StatusConflict, "内容状态已变化，请刷新后重试")
+	case validation.Is(err):
+		writeValidationError(w, err)
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "内容操作失败，请稍后重试")
 	}
 }
 
@@ -1098,8 +1128,17 @@ func writeMessagingError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "无权访问该会话")
 	case errors.Is(err, messaging.ErrConflict):
 		writeError(w, http.StatusConflict, "消息状态已变化或已超过撤回时间")
+	case validation.Is(err):
+		writeValidationError(w, err)
 	default:
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeError(w, http.StatusInternalServerError, "消息操作失败，请稍后重试")
+	}
+}
+
+func writeValidationError(w http.ResponseWriter, err error) {
+	var safe validation.ValidationError
+	if errors.As(err, &safe) {
+		writeError(w, http.StatusBadRequest, safe.Message)
 	}
 }
 

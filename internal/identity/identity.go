@@ -15,8 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"dorm-memorial/internal/validation"
+
 	"golang.org/x/crypto/bcrypt"
 )
+
+const MaxPasswordBytes = 72
 
 var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
@@ -25,6 +29,8 @@ var (
 	ErrConflict           = errors.New("username or email already exists")
 	ErrForbidden          = errors.New("forbidden")
 	ErrNotFound           = errors.New("not found")
+	ErrLastAdmin          = errors.New("must retain an active administrator")
+	ErrAccountChanged     = errors.New("account changed concurrently")
 	usernamePattern       = regexp.MustCompile(`^[a-zA-Z0-9_-]{3,24}$`)
 )
 
@@ -167,10 +173,10 @@ func (s *Store) UpdateAdminUser(ctx context.Context, actor User, targetID string
 	}
 	input.Role, input.Status = strings.TrimSpace(input.Role), strings.TrimSpace(input.Status)
 	if (input.Role != "admin" && input.Role != "member") || (input.Status != "active" && input.Status != "disabled" && input.Status != "deactivated") {
-		return AdminUser{}, errors.New("invalid user role or status")
+		return AdminUser{}, validation.New("invalid user role or status")
 	}
 	if targetID == actor.ID && (input.Role != actor.Role || input.Status != actor.Status) {
-		return AdminUser{}, errors.New("不能修改当前登录管理员的角色或状态")
+		return AdminUser{}, validation.New("不能修改当前登录管理员的角色或状态")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -189,7 +195,7 @@ func (s *Store) UpdateAdminUser(ctx context.Context, actor User, targetID string
 			return AdminUser{}, err
 		}
 		if admins <= 1 {
-			return AdminUser{}, errors.New("必须保留至少一个启用中的管理员")
+			return AdminUser{}, ErrLastAdmin
 		}
 	}
 	now := nowText()
@@ -315,6 +321,9 @@ func (s *Store) Register(ctx context.Context, input RegisterInput, ip string) (U
 }
 
 func (s *Store) Authenticate(ctx context.Context, identifier, password string) (User, error) {
+	if len(identifier) > 254 || len(password) > MaxPasswordBytes {
+		return User{}, ErrInvalidCredentials
+	}
 	var user User
 	var passwordHash string
 	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.username, u.email, u.password_hash, u.role, u.status,
@@ -324,7 +333,13 @@ func (s *Store) Authenticate(ctx context.Context, identifier, password string) (
 		&user.ID, &user.Username, &user.Email, &passwordHash, &user.Role, &user.Status,
 		&user.Nickname, &user.Bio, &user.BedNo, &user.MemorialNote, &user.AvatarPath,
 	)
-	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrInvalidCredentials
+	}
+	if err != nil {
+		return User{}, err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
 		return User{}, ErrInvalidCredentials
 	}
 	if user.Status != "active" {
@@ -346,7 +361,7 @@ func (s *Store) SelfDeactivate(ctx context.Context, actor User, password, ip str
 		}
 		return err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
+	if len(password) > MaxPasswordBytes || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)) != nil {
 		return ErrInvalidCredentials
 	}
 	now := nowText()
@@ -355,8 +370,16 @@ func (s *Store) SelfDeactivate(ctx context.Context, actor User, password, ip str
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET status = 'deactivated', updated_at = ? WHERE id = ? AND status = 'active'`, now, actor.ID); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE users SET status = 'deactivated', updated_at = ?
+		WHERE id = ? AND status = 'active' AND
+		(role <> 'admin' OR EXISTS (SELECT 1 FROM users WHERE role = 'admin' AND status = 'active' AND id <> ?))`, now, actor.ID, actor.ID)
+	if err != nil {
 		return err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return err
+	} else if changed != 1 {
+		return ErrLastAdmin
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE user_id = ?`, now, actor.ID); err != nil {
 		return err
@@ -469,7 +492,7 @@ func (s *Store) CreateInvite(ctx context.Context, actor User, maxUses int, ttl t
 		return "", time.Time{}, ErrForbidden
 	}
 	if maxUses < 1 || maxUses > 20 || ttl < time.Minute || ttl > 90*24*time.Hour {
-		return "", time.Time{}, errors.New("invalid invite limits")
+		return "", time.Time{}, validation.New("invalid invite limits")
 	}
 	raw, err := randomBytes(10)
 	if err != nil {
@@ -487,7 +510,7 @@ func (s *Store) CreateInvite(ctx context.Context, actor User, maxUses int, ttl t
 func (s *Store) UpdateProfile(ctx context.Context, userID string, input ProfileInput, ip string) (User, error) {
 	input.Nickname = strings.TrimSpace(input.Nickname)
 	if len([]rune(input.Nickname)) < 1 || len([]rune(input.Nickname)) > 40 || len([]rune(input.Bio)) > 500 || len([]rune(input.MemorialNote)) > 500 || len([]rune(input.BedNo)) > 30 {
-		return User{}, errors.New("invalid profile fields")
+		return User{}, validation.New("invalid profile fields")
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE profiles SET nickname = ?, bio = ?, bed_no = ?, memorial_note = ?, updated_at = ? WHERE user_id = ?`, input.Nickname, input.Bio, input.BedNo, input.MemorialNote, nowText(), userID)
 	if err != nil {
@@ -502,17 +525,17 @@ func (s *Store) UpdateAccount(ctx context.Context, userID, currentSessionID stri
 	input.Email = strings.TrimSpace(input.Email)
 	input.Nickname = strings.TrimSpace(input.Nickname)
 	if !usernamePattern.MatchString(input.Username) {
-		return User{}, errors.New("username must be 3-24 letters, numbers, underscores, or hyphens")
+		return User{}, validation.New("username must be 3-24 letters, numbers, underscores, or hyphens")
 	}
 	parsedEmail, err := mail.ParseAddress(input.Email)
-	if err != nil || parsedEmail.Address != input.Email || !strings.Contains(input.Email, "@") {
-		return User{}, errors.New("invalid email")
+	if err != nil || len(input.Email) > 254 || parsedEmail.Address != input.Email || !strings.Contains(input.Email, "@") {
+		return User{}, validation.New("invalid email")
 	}
 	if length := len([]rune(input.Nickname)); length < 1 || length > 40 {
-		return User{}, errors.New("nickname must be 1-40 characters")
+		return User{}, validation.New("nickname must be 1-40 characters")
 	}
-	if input.NewPassword != "" && (len(input.NewPassword) < 10 || len(input.NewPassword) > 128) {
-		return User{}, errors.New("password must be 10-128 characters")
+	if input.NewPassword != "" && (len(input.NewPassword) < 10 || len(input.NewPassword) > MaxPasswordBytes) {
+		return User{}, validation.New("password must be 10-72 UTF-8 bytes")
 	}
 
 	var currentUsername, currentEmail, passwordHash string
@@ -522,9 +545,10 @@ func (s *Store) UpdateAccount(ctx context.Context, userID, currentSessionID stri
 		}
 		return User{}, err
 	}
+	expectedPasswordHash := passwordHash
 	sensitiveChange := input.Username != currentUsername || input.Email != currentEmail || input.NewPassword != ""
 	if sensitiveChange {
-		if input.CurrentPassword == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(input.CurrentPassword)) != nil {
+		if input.CurrentPassword == "" || len(input.CurrentPassword) > MaxPasswordBytes || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(input.CurrentPassword)) != nil {
 			return User{}, ErrInvalidCredentials
 		}
 	}
@@ -549,8 +573,17 @@ func (s *Store) UpdateAccount(ctx context.Context, userID, currentSessionID stri
 	}
 	defer tx.Rollback()
 	now := nowText()
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, email = ?, password_hash = ?, updated_at = ? WHERE id = ?`, input.Username, input.Email, passwordHash, now, userID); err != nil {
+	// A nickname request may have read the old hash while another request was
+	// changing the password. Never restore that stale hash or modify a user
+	// whose account has since been disabled.
+	result, err := tx.ExecContext(ctx, `UPDATE users SET username = ?, email = ?, password_hash = ?, updated_at = ? WHERE id = ? AND status = 'active' AND password_hash = ?`, input.Username, input.Email, passwordHash, now, userID, expectedPasswordHash)
+	if err != nil {
 		return User{}, err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return User{}, err
+	} else if changed != 1 {
+		return User{}, ErrAccountChanged
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE profiles SET nickname = ?, updated_at = ? WHERE user_id = ?`, input.Nickname, now, userID); err != nil {
 		return User{}, err
@@ -604,17 +637,17 @@ func (s *Store) ClearAvatar(ctx context.Context, userID, ip string) (User, strin
 
 func validateAccount(username, email, password, nickname string) error {
 	if !usernamePattern.MatchString(strings.TrimSpace(username)) {
-		return errors.New("username must be 3-24 letters, numbers, underscores, or hyphens")
+		return validation.New("username must be 3-24 letters, numbers, underscores, or hyphens")
 	}
 	parsedEmail, err := mail.ParseAddress(strings.TrimSpace(email))
-	if err != nil || parsedEmail.Address != strings.TrimSpace(email) || !strings.Contains(email, "@") {
-		return errors.New("invalid email")
+	if err != nil || len(email) > 254 || parsedEmail.Address != strings.TrimSpace(email) || !strings.Contains(email, "@") {
+		return validation.New("invalid email")
 	}
-	if len(password) < 10 || len(password) > 128 {
-		return errors.New("password must be 10-128 characters")
+	if len(password) < 10 || len(password) > MaxPasswordBytes {
+		return validation.New("password must be 10-72 UTF-8 bytes")
 	}
 	if n := len([]rune(strings.TrimSpace(nickname))); n < 1 || n > 40 {
-		return errors.New("nickname must be 1-40 characters")
+		return validation.New("nickname must be 1-40 characters")
 	}
 	return nil
 }

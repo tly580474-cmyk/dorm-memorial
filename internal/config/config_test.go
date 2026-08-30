@@ -66,3 +66,30 @@ func TestProductionRequiresSecureCookie(t *testing.T) {
 		t.Fatal("expected production without secure cookies to fail")
 	}
 }
+
+func TestProductionCannotBypassSecurityWithEnvironmentSpelling(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("APP_ENV", " Production ")
+	t.Setenv("APP_COOKIE_SECURE", "false")
+	t.Setenv("APP_PUBLIC_URL", "https://community.example")
+	if _, err := Load(); err == nil {
+		t.Fatal("production cookie check bypassed")
+	}
+	t.Setenv("APP_COOKIE_SECURE", "true")
+	t.Setenv("APP_PUBLIC_URL", "http://community.example")
+	if _, err := Load(); err == nil {
+		t.Fatal("production accepted insecure public URL")
+	}
+	t.Setenv("APP_PUBLIC_URL", "https://community.example")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPublicURLRejectsCredentials(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("APP_PUBLIC_URL", "https://user:password@community.example")
+	if _, err := Load(); err == nil {
+		t.Fatal("public URL accepted credentials")
+	}
+}

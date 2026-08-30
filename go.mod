@@ -1,6 +1,6 @@
 module dorm-memorial
 
-go 1.26
+go 1.26.7
 
 require (
 	github.com/microcosm-cc/bluemonday v1.0.27

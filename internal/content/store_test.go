@@ -199,3 +199,117 @@ func TestNormalizeExternalVideoEmbed(t *testing.T) {
 		t.Fatalf("direct video=%q err=%v", got, err)
 	}
 }
+
+func TestAdminUpdateUsesPostAuthorMedia(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "admin-update-media.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := identities.CreateInvite(ctx, admin, 1, time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	author, err := identities.Register(ctx, identity.RegisterInput{
+		InviteCode: code,
+		Username:   "post-author",
+		Email:      "post-author@example.test",
+		Password:   "member-password",
+		Nickname:   "作者",
+	}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaID := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.ExecContext(ctx, `INSERT INTO media(id, owner_id, object_path, original_filename, media_type, mime_type, size_bytes, sha256, status, created_at, updated_at)
+		VALUES(?, ?, '/author/photo.png', 'photo.png', 'image', 'image/png', 128, ?, 'ready', ?, ?)`, mediaID, author.ID, mediaID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db)
+	post, err := store.Create(ctx, author, WriteInput{Body: "原始内容", MediaIDs: []string{mediaID}}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.Update(ctx, admin, post.ID, WriteInput{Body: "管理员修订内容", MediaIDs: []string{mediaID}}, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("admin update rejected author's media: %v", err)
+	}
+	if len(updated.Media) != 1 || updated.Media[0].ID != mediaID {
+		t.Fatalf("updated media=%+v", updated.Media)
+	}
+}
+
+func TestFeedCursorFallsBackWhenPublishedAtIsMissing(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, filepath.Join(t.TempDir(), "feed-cursor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	identities := identity.NewStore(db)
+	if _, err := identities.BootstrapAdmin(ctx, "admin", "admin@example.test", "correct-horse-battery", "管理员"); err != nil {
+		t.Fatal(err)
+	}
+	admin, err := identities.Authenticate(ctx, "admin", "correct-horse-battery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := identities.CreateInvite(ctx, admin, 2, time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	author, err := identities.Register(ctx, identity.RegisterInput{
+		InviteCode: code,
+		Username:   "feed-author",
+		Email:      "feed-author@example.test",
+		Password:   "member-password",
+		Nickname:   "作者",
+	}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db)
+	first, err := store.Create(ctx, author, WriteInput{Body: "第一篇"}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Submit(ctx, author, first.ID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create(ctx, author, WriteInput{Body: "第二篇"}, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Submit(ctx, author, second.ID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a legacy/inconsistent published row. Feed ordering uses the
+	// updated_at fallback, so pagination must encode that same value.
+	legacyFirst := "2024-01-01T00:00:00Z"
+	legacySecond := "2024-01-02T00:00:00.123000Z"
+	if _, err := db.ExecContext(ctx, `UPDATE posts SET published_at = NULL, updated_at = CASE id WHEN ? THEN ? ELSE ? END WHERE id IN (?, ?)`, first.ID, legacyFirst, legacySecond, first.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.List(ctx, author, ListOptions{Scope: "feed", Limit: 1})
+	if err != nil || len(page.Posts) != 1 || page.Posts[0].ID != second.ID || page.NextCursor == "" {
+		t.Fatalf("first page=%+v err=%v", page, err)
+	}
+	decoded, err := decodeCursor(page.NextCursor)
+	if err != nil || decoded.Sort != legacySecond {
+		t.Fatalf("cursor sort=%q err=%v want %q", decoded.Sort, err, legacySecond)
+	}
+	next, err := store.List(ctx, author, ListOptions{Scope: "feed", Limit: 1, Cursor: page.NextCursor})
+	if err != nil || len(next.Posts) != 1 || next.Posts[0].ID != first.ID {
+		t.Fatalf("second page=%+v err=%v firstID=%s secondID=%s cursor=%s", next, err, first.ID, second.ID, page.NextCursor)
+	}
+}

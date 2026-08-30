@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"dorm-memorial/internal/identity"
+	"dorm-memorial/internal/validation"
 )
 
 var (
@@ -50,6 +51,7 @@ type Message struct {
 	CreatedAt      time.Time    `json:"created_at"`
 	RecalledAt     *time.Time   `json:"recalled_at"`
 	Attachments    []Attachment `json:"attachments"`
+	createdAtText  string
 }
 
 type Conversation struct {
@@ -78,15 +80,16 @@ type AdminMessage struct {
 }
 
 type Notification struct {
-	ID         string     `json:"id"`
-	Actor      *Person    `json:"actor"`
-	Kind       string     `json:"kind"`
-	TargetType string     `json:"target_type"`
-	TargetID   string     `json:"target_id"`
-	Title      string     `json:"title"`
-	Body       string     `json:"body"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ReadAt     *time.Time `json:"read_at"`
+	ID            string     `json:"id"`
+	Actor         *Person    `json:"actor"`
+	Kind          string     `json:"kind"`
+	TargetType    string     `json:"target_type"`
+	TargetID      string     `json:"target_id"`
+	Title         string     `json:"title"`
+	Body          string     `json:"body"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ReadAt        *time.Time `json:"read_at"`
+	createdAtText string
 }
 
 type NotificationPage struct {
@@ -168,7 +171,7 @@ func (s *Store) ListConversations(ctx context.Context, actor identity.User) ([]C
 func (s *Store) StartDirect(ctx context.Context, actor identity.User, recipientID string) (Conversation, error) {
 	recipientID = strings.TrimSpace(recipientID)
 	if recipientID == "" || recipientID == actor.ID {
-		return Conversation{}, errors.New("invalid direct message recipient")
+		return Conversation{}, validation.New("invalid direct message recipient")
 	}
 	var active int
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ? AND status = 'active')`, recipientID).Scan(&active); err != nil {
@@ -215,7 +218,7 @@ func (s *Store) ListMessages(ctx context.Context, actor identity.User, conversat
 	if cursorValue != "" {
 		cursor, err := decodeCursor(cursorValue)
 		if err != nil {
-			return MessagePage{}, errors.New("invalid message cursor")
+			return MessagePage{}, validation.New("invalid message cursor")
 		}
 		where += " AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))"
 		args = append(args, cursor.Sort, cursor.Sort, cursor.ID)
@@ -241,15 +244,17 @@ func (s *Store) ListMessages(ctx context.Context, actor identity.User, conversat
 	if err := rows.Close(); err != nil {
 		return MessagePage{}, err
 	}
-	for index := range desc {
-		if err := s.loadAttachments(ctx, &desc[index]); err != nil {
-			return MessagePage{}, err
-		}
+	if err := s.loadAttachmentsForMessages(ctx, desc); err != nil {
+		return MessagePage{}, err
 	}
 	page := MessagePage{Messages: []Message{}}
 	if len(desc) > limit {
 		oldest := desc[limit-1]
-		page.NextCursor = encodeCursor(messageCursor{Sort: oldest.CreatedAt.Format(time.RFC3339Nano), ID: oldest.ID})
+		sortValue := oldest.createdAtText
+		if sortValue == "" {
+			sortValue = nowText(oldest.CreatedAt)
+		}
+		page.NextCursor = encodeCursor(messageCursor{Sort: sortValue, ID: oldest.ID})
 		desc = desc[:limit]
 	}
 	for index := len(desc) - 1; index >= 0; index-- {
@@ -262,10 +267,10 @@ func (s *Store) SendMessage(ctx context.Context, actor identity.User, conversati
 	body = strings.TrimSpace(body)
 	mediaIDs = uniqueIDs(mediaIDs)
 	if (body == "" && len(mediaIDs) == 0) || len([]rune(body)) > 4000 {
-		return Message{}, errors.New("message requires text or attachments")
+		return Message{}, validation.New("message requires text or attachments")
 	}
 	if len(mediaIDs) > 6 {
-		return Message{}, errors.New("message supports at most 6 attachments")
+		return Message{}, validation.New("message supports at most 6 attachments")
 	}
 	if err := s.requireMember(ctx, conversationID, actor.ID); err != nil {
 		return Message{}, err
@@ -386,6 +391,9 @@ func (s *Store) ListAdminGroupMessages(ctx context.Context, actor identity.User,
 		query += ` AND (m.body LIKE ? COLLATE NOCASE OR u.username LIKE ? COLLATE NOCASE OR p.nickname LIKE ? COLLATE NOCASE)`
 		args = append(args, needle, needle, needle)
 	}
+	if status != "" && status != "sent" && status != "recalled" {
+		return nil, validation.New("invalid message status")
+	}
 	if status == "sent" || status == "recalled" {
 		query += ` AND m.status = ?`
 		args = append(args, status)
@@ -438,7 +446,7 @@ func (s *Store) ListNotifications(ctx context.Context, actor identity.User, curs
 	if cursorValue != "" {
 		cursor, err := decodeCursor(cursorValue)
 		if err != nil {
-			return NotificationPage{}, errors.New("invalid notification cursor")
+			return NotificationPage{}, validation.New("invalid notification cursor")
 		}
 		where += " AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))"
 		args = append(args, cursor.Sort, cursor.Sort, cursor.ID)
@@ -466,7 +474,11 @@ func (s *Store) ListNotifications(ctx context.Context, actor identity.User, curs
 	if len(items) > limit {
 		last := items[limit-1]
 		page.Notifications = items[:limit]
-		page.NextCursor = encodeCursor(messageCursor{Sort: last.CreatedAt.Format(time.RFC3339Nano), ID: last.ID})
+		sortValue := last.createdAtText
+		if sortValue == "" {
+			sortValue = nowText(last.CreatedAt)
+		}
+		page.NextCursor = encodeCursor(messageCursor{Sort: sortValue, ID: last.ID})
 	}
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL`, actor.ID).Scan(&page.UnreadCount); err != nil {
 		return NotificationPage{}, err
@@ -501,7 +513,7 @@ type sqlExecutor interface {
 
 func CreateNotification(ctx context.Context, executor sqlExecutor, input NotificationInput) error {
 	if input.UserID == "" || input.EventKey == "" || input.Title == "" {
-		return errors.New("invalid notification")
+		return validation.New("invalid notification")
 	}
 	var actor any
 	if input.ActorID != "" {
@@ -630,6 +642,7 @@ func scanMessage(row scanner) (Message, error) {
 		return Message{}, err
 	}
 	item.Sender.Deactivated = senderStatus == "deactivated"
+	item.createdAtText = created
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	if recalled.Valid {
 		value, _ := time.Parse(time.RFC3339Nano, recalled.String)
@@ -678,6 +691,56 @@ func (s *Store) loadAttachments(ctx context.Context, item *Message) error {
 	return rows.Err()
 }
 
+func (s *Store) loadAttachmentsForMessages(ctx context.Context, messages []Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	indexes := make(map[string]int, len(messages))
+	args := make([]any, len(messages))
+	for index := range messages {
+		messages[index].Attachments = []Attachment{}
+		indexes[messages[index].ID] = index
+		args[index] = messages[index].ID
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT mm.message_id, media.id, media.original_filename, media.media_type, media.mime_type, media.size_bytes,
+		media.width, media.height, media.duration_ms, media.preview_path <> ''
+		FROM message_media mm JOIN media ON media.id = mm.media_id
+		WHERE mm.message_id IN (`+placeholders(len(messages))+`) AND media.status = 'ready'
+		ORDER BY mm.message_id, mm.position`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var messageID string
+		var attachment Attachment
+		var width, height, duration sql.NullInt64
+		if err := rows.Scan(&messageID, &attachment.ID, &attachment.OriginalFilename, &attachment.MediaType, &attachment.MimeType, &attachment.SizeBytes, &width, &height, &duration, &attachment.HasPreview); err != nil {
+			return err
+		}
+		if width.Valid {
+			value := int(width.Int64)
+			attachment.Width = &value
+		}
+		if height.Valid {
+			value := int(height.Int64)
+			attachment.Height = &value
+		}
+		if duration.Valid {
+			value := duration.Int64
+			attachment.DurationMS = &value
+		}
+		if index, ok := indexes[messageID]; ok && messages[index].Status != "recalled" {
+			messages[index].Attachments = append(messages[index].Attachments, attachment)
+		}
+	}
+	return rows.Err()
+}
+
+func placeholders(count int) string {
+	return strings.TrimRight(strings.Repeat("?,", count), ",")
+}
+
 func scanNotification(row scanner) (Notification, error) {
 	var item Notification
 	var created string
@@ -686,6 +749,7 @@ func scanNotification(row scanner) (Notification, error) {
 		return Notification{}, err
 	}
 	item.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	item.createdAtText = created
 	if readAt.Valid {
 		value, _ := time.Parse(time.RFC3339Nano, readAt.String)
 		item.ReadAt = &value
@@ -714,7 +778,7 @@ func decodeCursor(value string) (messageCursor, error) {
 	var cursor messageCursor
 	err = json.Unmarshal(data, &cursor)
 	if err != nil || cursor.Sort == "" || cursor.ID == "" {
-		return messageCursor{}, errors.New("invalid cursor")
+		return messageCursor{}, validation.New("invalid cursor")
 	}
 	return cursor, nil
 }
@@ -742,4 +806,4 @@ func uniqueIDs(values []string) []string {
 	return result
 }
 
-func nowText(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05.000000000Z") }
+func nowText(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }

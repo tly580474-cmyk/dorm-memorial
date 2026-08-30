@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,21 @@ func TestOpenMigratesAndReopens(t *testing.T) {
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil || count != 15 {
 		t.Fatalf("migrations count=%d err=%v", count, err)
+	}
+}
+
+func TestIntegrityCheckDetectsForeignKeyViolations(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "foreign-key.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(parent_id INTEGER REFERENCES parent(id)); INSERT INTO child(parent_id) VALUES(42)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := IntegrityCheck(ctx, db); err == nil || !strings.Contains(err.Error(), "foreign key check failed") {
+		t.Fatalf("IntegrityCheck error=%v", err)
 	}
 }
 

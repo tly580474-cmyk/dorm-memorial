@@ -119,5 +119,28 @@ func IntegrityCheck(ctx context.Context, db *sql.DB) error {
 	if result != "ok" {
 		return errors.New("database integrity check failed: " + result)
 	}
+	rows, err := db.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var table, parent string
+		var rowID, foreignKeyID sql.NullInt64
+		if err := rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+			return fmt.Errorf("foreign key check: %w", err)
+		}
+		return fmt.Errorf("foreign key check failed: table=%s rowid=%v parent=%s fkid=%v", table, nullableInt64(rowID), parent, nullableInt64(foreignKeyID))
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("foreign key check: %w", err)
+	}
 	return nil
+}
+
+func nullableInt64(value sql.NullInt64) any {
+	if !value.Valid {
+		return nil
+	}
+	return value.Int64
 }

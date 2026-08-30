@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -42,7 +43,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("read .env: %w", err)
 	}
 	cfg := Config{
-		Environment:       env(fileValues, "APP_ENV", "development"),
+		Environment:       strings.ToLower(strings.TrimSpace(env(fileValues, "APP_ENV", "development"))),
 		Address:           env(fileValues, "APP_ADDRESS", "127.0.0.1:8080"),
 		DatabasePath:      env(fileValues, "APP_DATABASE_PATH", "data/dorm-memorial.db"),
 		FrontendDir:       env(fileValues, "APP_FRONTEND_DIR", "web/dist"),
@@ -91,6 +92,16 @@ func Load() (Config, error) {
 	}
 	cfg.SessionTTL = ttl
 
+	if cfg.Environment != "development" && cfg.Environment != "test" && cfg.Environment != "production" {
+		return Config{}, errors.New("APP_ENV must be development, test, or production")
+	}
+	publicURL, err := url.Parse(cfg.PublicURL)
+	if err != nil || publicURL.Host == "" || publicURL.User != nil || (publicURL.Scheme != "http" && publicURL.Scheme != "https") || publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return Config{}, errors.New("APP_PUBLIC_URL must be an http or https URL without credentials, query, or fragment")
+	}
+	if cfg.Environment == "production" && publicURL.Scheme != "https" {
+		return Config{}, errors.New("APP_PUBLIC_URL must use https in production")
+	}
 	if cfg.Environment == "production" && !cfg.CookieSecure {
 		return Config{}, errors.New("APP_COOKIE_SECURE must be true in production")
 	}
@@ -101,8 +112,8 @@ func Load() (Config, error) {
 		return Config{}, errors.New("APP_VIDEO_ENCODER must be auto, cpu, nvenc, qsv, or amf")
 	}
 	bootstrapSet := cfg.BootstrapUsername != "" || cfg.BootstrapEmail != "" || cfg.BootstrapPassword != ""
-	if bootstrapSet && (cfg.BootstrapUsername == "" || cfg.BootstrapEmail == "" || len(cfg.BootstrapPassword) < 12) {
-		return Config{}, errors.New("bootstrap admin requires username, email, and a password of at least 12 characters")
+	if bootstrapSet && (cfg.BootstrapUsername == "" || cfg.BootstrapEmail == "" || len(cfg.BootstrapPassword) < 12 || len(cfg.BootstrapPassword) > 72) {
+		return Config{}, errors.New("bootstrap admin requires username, email, and a password of 12-72 UTF-8 bytes")
 	}
 	return cfg, nil
 }
